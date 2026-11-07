@@ -1,0 +1,84 @@
+{
+  "source": "Cassini RSS Rev7E X-band + UVIS beta Cen x6 (visible tau)",
+  "r0_km": 70000,
+  "dr_km": 0.25,
+  "n": 280001,
+  "quantity": "normal optical depth, geometric / visible-equivalent (extinction efficiency 1)",
+  "notes": "Shape: RSS_2005_123_X43_E (Marouf, CO-SR-RSS-4/5-OCC-V2.0, 2018), 1 km resolution, 0.25 km sampling, ring elevation -23.57 deg, radii + pole/timing corrections. Radio tau is an extinction tau (Q_ext = 2 for particles >> 3.6 cm): measured tau_X/tau_UVIS = 2.00 in the C ring and Cassini Division; RSS is rescaled by a 50 km smooth ratio map R = <tau_UVIS>/<tau_X/2> (R ~1.0 C ring, ~1.15 ramps, ~1.3-1.9 A ring, wake/geometry effects). B ring 92150-117020 km (RSS saturated): mean TRANSMISSION of 6 UVIS HSP beta Cen occultations (Colwell et al., CO-SR-UVIS-HSP-2/4-OCC-V3.0), B = 66.7 deg, 1 km bins, registered to the RSS radius scale (offsets < 0.35 km); tau = -mu ln<T>; 2849 samples (712 km, 2.9% of the B ring) are detection-limited (<T> < 2 sigma photon noise, i.e. tau > ~8) and are set to 8 (opaque). Low-elevation views of the real A/B rings are more transparent than a homogeneous slab with this tau (self-gravity wakes): RSS at B = 23.6 deg sees ~25-45% lower normal tau in the A ring and ~40% lower in B1. Eccentric features (Titan, Maxwell, Huygens ringlets; B-ring outer edge m=2; A-ring outer edge m=7) and density-wave phases are a snapshot at the RSS Rev7E longitude (2005-123). Gap floors smoothed (+-1.5 km), negative noise clipped; gap edges deconvolved to steps at the half-level crossing (data resolution ~1 km; real edges are sharp at tens of m). NaN = no data: r < 74300 km (D ring, tau ~1e-3 below detection) and r > 136774 km (Roche Division / F ring).",
+  "products": {
+    "rss": [
+      "RSS_2005_123_X43_E"
+    ],
+    "uvis": [
+      "UVIS_HSP_2008_231_BETCEN_I",
+      "UVIS_HSP_2008_202_BETCEN_I",
+      "UVIS_HSP_2008_260_BETCEN_I",
+      "UVIS_HSP_2008_290_BETCEN_I",
+      "UVIS_HSP_2008_343_BETCEN_I",
+      "UVIS_HSP_2009_065_BETCEN_I"
+    ],
+    "uvisRegistrationKm": {
+      "UVIS_HSP_2008_231_BETCEN_I": 0.051,
+      "UVIS_HSP_2008_202_BETCEN_I": 0.006,
+      "UVIS_HSP_2008_260_BETCEN_I": 0.096,
+      "UVIS_HSP_2008_290_BETCEN_I": 0.149,
+      "UVIS_HSP_2008_343_BETCEN_I": -0.012,
+      "UVIS_HSP_2009_065_BETCEN_I": -0.342
+    }
+  },
+  "zones": {
+    "C_in": {
+      "mean": 0.062,
+      "max": 2.3
+    },
+    "C": {
+      "mean": 0.095,
+      "max": 0.47
+    },
+    "C_out": {
+      "mean": 0.132,
+      "max": 2.23
+    },
+    "C_ramp": {
+      "mean": 0.147,
+      "max": 0.35
+    },
+    "B1": {
+      "mean": 1.323,
+      "max": 4.13
+    },
+    "B2": {
+      "mean": 4.245,
+      "max": 8
+    },
+    "B3": {
+      "mean": 5.534,
+      "max": 8
+    },
+    "B4": {
+      "mean": 3.122,
+      "max": 8
+    },
+    "B5": {
+      "mean": 1.412,
+      "max": 4.28
+    },
+    "CD": {
+      "mean": 0.113,
+      "max": 2.79
+    },
+    "CD_ramp": {
+      "mean": 0.155,
+      "max": 0.37
+    },
+    "A_in": {
+      "mean": 0.767,
+      "max": 4.04
+    },
+    "A_out": {
+      "mean": 0.645,
+      "max": 3.23
+    }
+  },
+  "edges": 31
+}

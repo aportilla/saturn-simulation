@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>GL probe</title>
+<style>body{background:#111;color:#ddd;font:13px monospace;white-space:pre;margin:12px}</style></head>
+<body><div id="out"></div>
+<script type="module">
+const out = document.getElementById('out');
+const c = document.createElement('canvas');
+const gl = c.getContext('webgl2');
+const lines = [];
+if (!gl) lines.push('NO WEBGL2');
+else {
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  lines.push('renderer: ' + (dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)));
+  lines.push('vendor: ' + (dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR)));
+  lines.push('version: ' + gl.getParameter(gl.VERSION));
+  for (const e of ['EXT_color_buffer_float','EXT_float_blend','OES_texture_float_linear','EXT_color_buffer_half_float','EXT_clip_control','EXT_disjoint_timer_query_webgl2','WEBGL_multi_draw'])
+    lines.push(e + ': ' + (gl.getExtension(e) ? 'yes' : 'no'));
+  lines.push('MAX_TEXTURE_SIZE: ' + gl.getParameter(gl.MAX_TEXTURE_SIZE));
+  lines.push('MAX_DRAW_BUFFERS: ' + gl.getParameter(gl.MAX_DRAW_BUFFERS));
+  lines.push('MAX_VERTEX_TEXTURE_IMAGE_UNITS: ' + gl.getParameter(gl.MAX_VERTEX_TEXTURE_IMAGE_UNITS));
+  lines.push('MAX_FRAGMENT_UNIFORM_VECTORS: ' + gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS));
+  lines.push('MAX_ARRAY_TEXTURE_LAYERS: ' + gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS));
+  lines.push('ALIASED_POINT_SIZE_RANGE: ' + Array.from(gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE)).join(','));
+}
+lines.push('webgpu: ' + ('gpu' in navigator));
+lines.push('devicePixelRatio: ' + devicePixelRatio);
+out.textContent = lines.join('\n');
+console.log(lines.join(' | '));
+window.__svReady = true;
+</script>
+</body></html>

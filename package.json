@@ -1,0 +1,23 @@
+{
+  "name": "saturn-ring-sim",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Physically-scaled real-time simulation of the Saturn system, with a procedural particle-level ring model you can fly into.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview",
+    "shot": "node scripts/shot.mjs"
+  },
+  "dependencies": {
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.187.0",
+    "puppeteer-core": "^25.16.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.6"
+  }
+}

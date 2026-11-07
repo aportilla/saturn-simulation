@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ring Optical Depth</title>
+    <style>
+      .viz-root {
+        color-scheme: light;
+        --surface-1: #fcfcfb;
+        --page: #f9f9f7;
+        --text-primary: #0b0b0b;
+        --text-secondary: #52514e;
+        --text-muted: #898781;
+        --grid: #e1e0d9;
+        --axis: #c3c2b7;
+        --series-1: #2a78d6;
+        --series-2: #eb6834;
+        --series-3: #1baf7a;
+        --zone: rgba(11, 11, 11, 0.28);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:where(:not([data-theme='light'])) .viz-root {
+          color-scheme: dark;
+          --surface-1: #1a1a19;
+          --page: #0d0d0d;
+          --text-primary: #f0efec;
+          --text-secondary: #c3c2b7;
+          --text-muted: #898781;
+          --grid: #2c2c2a;
+          --axis: #383835;
+          --series-1: #3987e5;
+          --series-2: #d95926;
+          --series-3: #199e70;
+          --zone: rgba(255, 255, 255, 0.3);
+        }
+      }
+      :root[data-theme='dark'] .viz-root {
+        color-scheme: dark;
+        --surface-1: #1a1a19;
+        --page: #0d0d0d;
+        --text-primary: #f0efec;
+        --text-secondary: #c3c2b7;
+        --text-muted: #898781;
+        --grid: #2c2c2a;
+        --axis: #383835;
+        --series-1: #3987e5;
+        --series-2: #d95926;
+        --series-3: #199e70;
+        --zone: rgba(255, 255, 255, 0.3);
+      }
+      html, body { margin: 0; }
+      body.viz-root { background: var(--page); color: var(--text-primary); font: 12px/1.4 system-ui, -apple-system, 'Segoe UI', sans-serif; }
+      header { padding: 10px 16px 4px; }
+      header h1 { font-size: 15px; margin: 0 0 2px; font-weight: 600; }
+      header p { margin: 0; color: var(--text-secondary); }
+      .legend { display: flex; gap: 16px; flex-wrap: wrap; padding: 4px 16px 6px; color: var(--text-secondary); }
+      .legend span::before { content: ''; display: inline-block; width: 14px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; background: var(--c); }
+      #panels { padding: 0 16px; }
+      canvas { display: block; width: 100%; background: var(--surface-1); border-radius: 6px; margin: 0 0 8px; }
+      #tip { position: fixed; pointer-events: none; background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--axis); border-radius: 6px; padding: 6px 8px; font-variant-numeric: tabular-nums; white-space: pre; display: none; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12); }
+      table { border-collapse: collapse; margin: 6px 16px 16px; font-variant-numeric: tabular-nums; }
+      th, td { padding: 3px 8px; text-align: right; border-bottom: 1px solid var(--grid); }
+      th:first-child, td:first-child { text-align: left; }
+      th { color: var(--text-secondary); font-weight: 600; }
+    </style>
+  </head>
+  <body class="viz-root">
+    <header>
+      <h1>Saturn main rings: normal optical depth profile and zone model</h1>
+      <p id="sub">loading…</p>
+    </header>
+    <div class="legend" id="legend"></div>
+    <div id="panels"></div>
+    <div id="tip"></div>
+    <table id="table"></table>
+    <script type="module" src="./ringplot.ts"></script>
+  </body>
+</html>
