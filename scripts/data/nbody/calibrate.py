@@ -4,11 +4,13 @@
 usage ($PY = the venv python, see README.md):
   $PY scripts/data/nbody/calibrate.py --target scripts/data/nbody/results/A128-sd.json --like data-raw/nbody/A128-sd
       [--name A128] [--orbits 2] [--stages contrast,morphology,time] [--jobs 6] [--out results/calib_A128.json]
+      [--start results/calib_<other>.json] [--strength S] [--exclude pitch_med,pitch_iqr,...] [--pitch-target DEG]
 
 Each candidate is a synthetic run (procedural.py synth: the port of WakeField.ts / wakes.glsl with overridden
 parameters, particles drawn like the near field) analysed by analyze.py exactly like the N-body run. The score is
-sum_i ((m_i - m_i^Nbody) / s_i)^2 over the metrics below (s_i = tolerance: max(15 % of the target, its standard
-error, a floor)). Coordinate search in three stages, each starting from the best candidate so far:
+sum_i ((m_i - m_i^Nbody) / s_i)^2 over the metrics below (s_i = tolerance: max(15 % of the target, a floor)).
+The app defaults are always scored first. Coordinate search over the stages given by --stages, in that order, each
+starting from the best candidate so far:
   contrast    gamma (strength fixed at the zone value; only -ln(gamma) * strength matters)    -> D quantiles
   spacing     tile_scale (tile = lambda * 6 / sin 20 deg * tile_scale: crest spacing; 1 in the app) -> spectrum
   morphology  spreadPar x spreadPerp x R_C                                                    -> ACF, skeleton
@@ -20,9 +22,14 @@ error, a floor)). Coordinate search in three stages, each starting from the best
   generations model variant (not in the app): n_gen = 3, 4 overlapping generations born every T_LIFE/n_gen with
               amplitude (2/n_gen) sin^2 (sum = strength), T_LIFE 3-5 (uWakeGen already has a third, unused slot)
   contrast2   gamma x 0.8 .. 1.25 around the best
-Metrics: spectral peak and power-weighted spacing / lambda, D quantiles p5 p25 p75 p95 p99 (lambda/16), ACF L_par and
-L_perp (1/e) / lambda, first minimum and side-peak height across crests, skeleton end and branch points per lambda^2
-and filament length / lambda, orientation median and IQR, temporal C at 0.1, 0.2, 0.3 orbit.
+Metrics (21): spectral peak and power-weighted spacing / lambda, D quantiles p5 p25 p75 p95 p99 (lambda/16), ACF L_par
+and L_perp (1/e) / lambda, first minimum and side-peak height across crests, skeleton end and branch points per
+lambda^2 and filament length / lambda, spectral pitch, crest orientation median and IQR (pooled), mean within-snapshot
+orientation IQR and the std of the snapshot median over time, temporal C at 0.1, 0.2, 0.3 orbit. --exclude drops
+metrics: for size-distribution mass fields the structure-tensor orientation is noise-dominated (a few boulders), so
+calib_A128-sd uses --exclude pitch_med,pitch_iqr,pitch_iqr_inst,pitch_drift --pitch-target 21. In a 4 lambda_T box
+the spectral peak is quantised, so calib_B105-sd uses --exclude pitch_spec.
+Candidates run for --orbits (2) orbits, so score differences below ~5 are not significant.
 """
 import argparse
 import itertools
@@ -37,6 +44,18 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import nbcommon as nb  # noqa: E402
+
+def filament_length(r):
+    """Mean filament length 2L/n_end / lambda. analyze.py averages the per-snapshot ratio, which is undefined when a
+    snapshot has no crest end points (long procedural crests closing on themselves in a small periodic box); then use
+    the ratio of the mean crest length and end-point density instead."""
+    sk = r['skeleton']
+    f = sk['filament_length_over_lambda'][0]
+    if f is not None and math.isfinite(f):
+        return f
+    n_end = sk['n_end_per_lambda2'][0]
+    return 2 * sk['crest_length_per_lambda2'][0] / n_end if n_end > 0 else float('nan')
+
 
 METRICS = [
     # name, getter, floor
@@ -53,7 +72,8 @@ METRICS = [
     ('acf_side', lambda r: r['acf']['side_peak_height'][0], 0.04),
     ('n_end', lambda r: r['skeleton']['n_end_per_lambda2'][0], 0.08),
     ('n_branch', lambda r: r['skeleton']['n_branch_per_lambda2'][0], 0.08),
-    ('filament', lambda r: r['skeleton']['filament_length_over_lambda'][0], 0.3),
+    ('filament', filament_length, 0.3),
+    ('pitch_spec', lambda r: r['spectrum']['pitch_deg'][0], 2.0),
     ('pitch_med', lambda r: r['orientation']['median'], 1.5),
     ('pitch_iqr', lambda r: r['orientation']['q75'] - r['orientation']['q25'], 1.5),
     ('pitch_iqr_inst', lambda r: r['orientation']['instantaneous']['iqr_mean'], 1.5),
@@ -65,13 +85,23 @@ METRICS = [
 
 
 def metric_vector(res):
-    return {name: float(get(res)) for name, get, _ in METRICS}
+    """Metric values of an analysis result (null in a result file -> nan)."""
+    out = {}
+    for name, get, _ in METRICS:
+        v = get(res)
+        out[name] = float('nan') if v is None else float(v)
+    return out
+
+
+EXCLUDE = set()
 
 
 def score(cand, target, se=None):
     s = 0.0
     parts = {}
     for name, get, floor in METRICS:
+        if name in EXCLUDE:
+            continue
         t = target[name]
         tol = max(0.15 * abs(t), floor, (se or {}).get(name, 0.0))
         d = (cand[name] - t) / tol
@@ -131,8 +161,13 @@ def main(argv):
     ap.add_argument('--start', help='start from the best parameters of a previous calib_*.json (instead of the app defaults)')
     ap.add_argument('--strength', type=float, help='search with this wake strength instead of the zone value (the contrast '
                                                    'depends on -ln(gamma) * strength; the app defaults are scored unchanged)')
+    ap.add_argument('--exclude', default='', help='comma-separated metrics to leave out of the score (e.g. the structure-'
+                                                  'tensor orientation of boulder-dominated mass fields)')
+    ap.add_argument('--pitch-target', type=float, help='pitch (deg) the time/envelope stages aim m0 at (default: the '
+                                                       'target\'s orientation median)')
     ap.add_argument('--out')
     a = ap.parse_args(argv)
+    EXCLUDE.update(m for m in a.exclude.split(',') if m)
     with open(a.target) as f:
         tres = json.load(f)
     target = metric_vector(tres)
@@ -141,7 +176,7 @@ def main(argv):
         params = json.load(f)
     import procedural as pr
     sc = pr.simulator_config(params)
-    pitch_target = target['pitch_med']
+    pitch_target = a.pitch_target if a.pitch_target is not None else target['pitch_med']
     base = dict(gamma=sc['gamma'], strength=sc['strength'], spread_par=sc['spread_par'], spread_perp=sc['spread_perp'],
                 rc=sc['rc'], t_life=sc['t_life'], m0x=sc['m0x'], m0y=sc['m0y'], tile_scale=sc['tile_scale'], n_gen=sc['n_gen'],
                 env_w=sc['env_w'])
@@ -188,7 +223,8 @@ def main(argv):
     for stage in a.stages.split(','):
         b = dict(best['params'])
         if stage == 'contrast':
-            cands = [dict(b, gamma=g) for g in (0.06, 0.09, 0.12, 0.16, 0.2, 0.25, 0.32) if abs(g - b['gamma']) > 1e-6]
+            cands = [dict(b, gamma=g) for g in (0.06, 0.09, 0.12, 0.16, 0.2, 0.25, 0.32, 0.4, 0.5, 0.63)
+                     if abs(g - b['gamma']) > 1e-6]
         elif stage == 'morphology':
             cands = [dict(b, spread_par=sp, spread_perp=sq, rc=rc) for sp in (1.6, 2.4, 3.2) for sq in (5.0, 7.0, 9.0)
                      for rc in (0.45, 0.7, 1.0)]
@@ -238,7 +274,8 @@ def main(argv):
                                                  parts={k: round(v, 3) for k, v in best['parts'].items()}),
                candidates=[dict(params=r['params'], score=round(r['score'], 3), metrics={k: round(v, 4) for k, v in r['metrics'].items()})
                            for r in results],
-               orbits_per_candidate=a.orbits, metrics_doc=[m[0] for m in METRICS])
+               orbits_per_candidate=a.orbits, metrics_doc=[m[0] for m in METRICS if m[0] not in EXCLUDE],
+               excluded=sorted(EXCLUDE), pitch_target=pitch_target, stages=a.stages, start=a.start)
     path = a.out or os.path.join(nb.RESULTS_DIR, f'calib_{name}.json')
     nb.write_json(path, out)
     print(f'wrote {path}')

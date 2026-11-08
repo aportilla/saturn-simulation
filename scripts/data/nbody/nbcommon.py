@@ -102,8 +102,22 @@ def wrap_offset(D, Ly):
     return D - Ly * math.floor(D / Ly + 0.5)
 
 
+def strict_json(o):
+    """numpy -> Python, non-finite floats -> None (null), so the files are strict JSON (readable by JSON.parse)."""
+    if isinstance(o, dict):
+        return {k: strict_json(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [strict_json(v) for v in o]
+    if hasattr(o, 'tolist'):
+        return strict_json(o.tolist())
+    if isinstance(o, float) or (isinstance(o, (int, np.integer)) and not isinstance(o, bool)):
+        o = float(o) if isinstance(o, float) else int(o)
+        return o if not isinstance(o, float) or math.isfinite(o) else None
+    return o
+
+
 def write_json(path, obj):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w') as f:
-        json.dump(obj, f, indent=1, default=lambda o: o.tolist() if hasattr(o, 'tolist') else float(o))
+        json.dump(strict_json(obj), f, indent=1, allow_nan=False)
         f.write('\n')
