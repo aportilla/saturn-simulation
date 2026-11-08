@@ -40,8 +40,12 @@ export const VIEWS = [
   // 30 m above the layer the strips hold relatively few, large particles: +-5 % realization noise per strip even
   // with 6 realizations -> 6 wider strips and a 0.08 step limit. Known since the Nov 2026 sun-path fix: in the
   // grazing far strip (0.35-0.42, 0.3-1 km) the particles are ~9 % darker than the medium (their former 2-sample
-  // sun path brightened the mid-plane boulders by ~20 %, the medium's grazing top layer hardly at all) -> 0.10
-  { id: 'a-ring-30m', note: 'preset; rows within ~60 m of the camera excluded (single metre-sized boulders dominate); known far-strip particle deficit, step limit 0.10', params: { preset: 'a-ring-30m', t: T_STD }, rows: [0.35, 0.78], strips: 6, jump: 0.10 },
+  // sun path brightened the mid-plane boulders by ~20 %, the medium's grazing top layer hardly at all) -> 0.10.
+  // Since the near-field contact step (NearContact) the resolved particles no longer overlap: they block more light
+  // than the medium's independently placed (Poisson) particles of the same tau - near + medium +0.3 % (far strip) to
+  // +3.6 % (nearest), measured contact on / off in the same realizations - which adds 0.016 to the step between the
+  // far strip and the next -> 0.11
+  { id: 'a-ring-30m', note: 'preset; rows within ~60 m of the camera excluded (single metre-sized boulders dominate); known far-strip particle deficit and contact brightening, step limit 0.11', params: { preset: 'a-ring-30m', t: T_STD }, rows: [0.35, 0.78], strips: 6, jump: 0.11 },
   { id: 'lit-500m', note: '500 m below the lit A ring, looking up', params: { cam: 'ring', r: 128000e3, z: -500, yaw: -120, pitch: 10, t: T_ARC }, rows: [0.0, 0.55] },
   // known (2026-11): on the unlit face the particles are ~5-8 % brighter than the medium they replace (near-field
   // photometry), which leaves a soft ~0.07 step where the particle range ends -> looser step limit for this view

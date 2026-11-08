@@ -11,7 +11,8 @@
 //               oblate-Saturn frequencies (GM, R_ref, J2, J4, J6; rel. 1e-6), and the orbital period at the
 //               orbits of Pan (133,584 km: 0.575050 d) and Daphnis (136,505 km: 0.594080 d) within 2e-4.
 // 3. kinematics near-field particle positions (R0 read-back) of one size class at t0 and t0 + dt (both time
-//               directions), self-gravity wakes off (wakes=0: their displacement field evolves and adds to dx, dy):
+//               directions), self-gravity wakes off (wakes=0: their displacement field evolves and adds to dx, dy)
+//               and the contact step off (it moves resolved particles apart; scripts/test/contact.mjs):
 //               least-squares shear slope d(dy)/dx vs -q Omega dt (ratio 1 +- 0.002), rms of the radial /
 //               vertical / non-shear azimuthal displacements vs the epicycle and vertical-oscillation predictions
 //               2|sin(kappa dt/2)| sigX, 2|sin(nu dt/2)| sigZ and |q Omega dt cos(kappa dt/2) - 4 (Omega/kappa)
@@ -95,6 +96,8 @@ await withHarness('physics', { usage: 'node scripts/test/physics.mjs [--base URL
       const sv = window.__sv;
       const near = sv.pipeline.passes.near?.inner ?? sv.pipeline.passes.near;
       if (!near || !near.classes || !near.r0RT) return { error: 'near-field internals (classes / r0RT) not found — update physics.mjs' };
+      // the analytic orbits only: the contact step moves resolved particles apart in R0 (checked by test:contact)
+      if (near.contact) near.contact.enabled = false;
       const lod = sv.pipeline.ctx.lod;
       let k = K;
       if (!(k >= 0)) {

@@ -29,8 +29,10 @@
 //    px); warp +-1000x (running): no NaN, residual within 1.5x the paused limit.
 // 5. cost (--cost, informational): the contact step's own GPU time - the captured frame's step re-run between
 //    synchronous 1-pixel read-backs, min over trials (robust when other agents share the GPU), with the list
-//    compaction / materialization / first grid + search split - at the default view (render scale 0.5, fov 60:
-//    b-default, a-default) and the close-ups; plus uncapped fps with contact on / off alternating in one page.
+//    compaction / materialization / first grid + search split (cumulative stages, each measured on its own: noisy
+//    under contention) - and the whole frame (pipeline.render of the paused frame) with the step off / on,
+//    interleaved within each trial, at the default views (render scale 0.5, fov 60: b-default, a-default) and the
+//    close-ups; plus uncapped fps with contact on / off alternating in one page (noisiest).
 // Measured values: scripts/test/README.md ("contact").
 import { pathToFileURL } from 'node:url';
 import { fmt, openApp, sleep, table, waitFrames, withHarness } from './lib.mjs';
@@ -468,7 +470,9 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await withHar
   // ---- cost (informational): the contact step's own GPU time (robust to other GPU users) and an fps A/B
   if (args.flag('cost')) {
     const crows = [];
-    const costViews = { ...VIEWS, 'b-default': { preset: 'b-ring-inside' }, 'a-default': { preset: 'a-ring-inside' } };
+    // (b-fov12: the B ring through a narrow field of view at render scale 1 - particles resolved farther away, the
+    // largest contact set of the places; not in the default list)
+    const costViews = { ...VIEWS, 'b-default': { preset: 'b-ring-inside' }, 'a-default': { preset: 'a-ring-inside' }, 'b-fov12': { preset: 'b-ring-inside', fov: 12, scale: 1 } };
     for (const id of args.list('cost-views', ['b-default', 'a-default', 'b-inside', 'a-inside'])) {
       const v = costViews[id];
       if (!v) continue;

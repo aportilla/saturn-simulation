@@ -12,7 +12,7 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
 ## Commands
 - `npm run dev` → http://127.0.0.1:5173 (often already running; check with `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5173/`)
 - `npm run typecheck` (tsc --noEmit) and `npm run build` (typecheck + vite build) — keep both clean
-- **Regression suite** (real GPU, starts its own private Vite server unless `--base` answers; ~8 min):
+- **Regression suite** (real GPU, starts its own private Vite server unless `--base` answers; ~9 min):
   `npm test` = `test:smoke` (every preset: console/page/GL errors, pass fallbacks, NaN/negative pixels) +
   `test:physics` (ephemeris, J2–J6 frequencies, particle kinematics vs the exact Hill solution) +
   `test:counts` (drawn particles vs the analytic expectation, HUD "complete") + `test:seam` (near field +
@@ -21,8 +21,10 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
   (the astronaut doesn't change the auto exposure) + `test:edges` (moonlet gap edges and B-ring edge modes: gaps
   empty, rendered edges = streamline model, near field follows) + `test:moonflux` (unresolved-moon point flux =
   resolved brightness, measured shapes) + `test:particles` (resolved-particle regolith law / factor LUT / relief:
-  GLSL vs CPU mirrors, projected-area and photometry contracts; prints new constants when the relief changes).
-  `npm run test:fps` = informational fps table per preset × quality. Details, tolerances, measured values and the
+  GLSL vs CPU mirrors, projected-area and photometry contracts; prints new constants when the relief changes) +
+  `test:contact` (near-field contact resolution: overlaps before / after vs an independent CPU pair search,
+  displacement bound, R0 write-back and drawn flags, frame-to-frame smoothness, warp ±1000; `--cost` adds the
+  step's GPU time and a whole-frame off / on A/B). `npm run test:fps` = informational fps table per preset × quality. Details, tolerances, measured values and the
   shared helpers: `scripts/test/README.md`.
 - Screenshots on the real GPU (headless Chrome, ANGLE/Metal); console errors and page errors are printed:
   - one page: `node scripts/shot.mjs "<url>" <out.png> --until "window.__svReady===true" --wait 3000 [--w --h --dpr --eval "<js>"]`
@@ -76,6 +78,7 @@ mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,ove
 | LOD contract (which particles are drawn vs. carried by the medium), self-gravity wakes | `src/rings/RingLod.ts` + `shaders/ringLod.glsl`, `src/rings/WakeField.ts` + `shaders/wakes.glsl` (CPU/GLSL mirrors) |
 | 2-D ring structure (streamline map: moonlet gap edges, normal modes of eccentric edges; hooks for relief and 2-D τ modulation) — every main-ring τ lookup goes through it | `src/rings/RingStructure.ts` + `src/rings/streamlines.ts` + `src/rings/ringModes.ts` (CPU) + `shaders/ringStructure.glsl`; table `public/data/rings/moonlet_response.*` from `scripts/data/rings/moonlet_response.mjs` |
 | individual ring particles (near field) | `src/render/passes/NearFieldPass.ts`, `src/render/near/*` |
+| particle contacts (resolved particles pushed out of each other's overlaps: hash grid + Jacobi, written back into R0 after the update pass) | `src/render/near/NearContact.ts` (run from `NearFieldPass.render`); check `npm run test:contact` |
 | particle shape, spin, relief, regolith photometry (+ CPU mirrors) | `src/render/near/nearCommon.glsl` (`nearShape`, `nearOrientation`, `nearRelief`, `nearRegolithFactor`), `nearDraw.frag.glsl`, `NearRegolith.ts`, `NearRelief.ts`, `NearNoise.ts`; `ringRegolithIF` in `src/render/shaders/lighting.glsl` |
 | astronaut companion (camera-pinned, 1.9 m, for scale; lit like the particles) | `src/render/passes/AstronautPass.ts`, `src/render/astronaut/*` |
 | ring medium at all scales, outer rings, spokes | `src/render/passes/RingLayerPass.ts`, `src/render/rings/*` |
@@ -112,6 +115,11 @@ mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,ove
   (`near/NearRegolith.ts` mirrors `ringRegolithIF` and builds the LUT); their shapes keep ⟨projected area⟩ = πa²
   (κ, `NR_K0..3`) and the relief photometry table `RELIEF_PHOT` (`near/NearRelief.ts`) — after changing the relief
   or the shading, run `npm run test:particles` and paste the constants it prints.
+- **Contacts are stateless and bounded**: `NearContact` is a deterministic function of the frame's analytic
+  positions (no per-particle state, so time warp / reverse / pause need nothing), moves a particle by at most what
+  its overlaps require, never changes presence and sets a drawn flag only where the displacement moved a present
+  particle into view (count contract). It rewrites R0 right after the update pass: anything that reads particle
+  positions (draw lists, shadow casters, `ctx.nearShadow`) must run after it. The medium is not touched.
 - Changing a default in `src/app/settings.ts` / `FrameState.defaultSettings()` needs a bump of the localStorage
   key in `settings.ts`, or users keep their old saved values.
 
@@ -126,7 +134,11 @@ mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,ove
   the draw is dropped with `GL_INVALID_OPERATION` (see `NearShadow.prepare`).
 - Performance: measure with `npm run test:fps` (or `scripts/shots.mjs --uncapped` and `?fps=0`), **one fresh
   page load per measurement** (several navigations in one tab leave old WebGL contexts alive and roughly halve the fps); GPU
-  timer queries are unreliable on ANGLE/Metal. Another agent's browser on the same GPU also skews numbers.
+  timer queries are unreliable on ANGLE/Metal. Another agent's browser on the same GPU also skews numbers. To time
+  GPU work inside a page, fence with a synchronous 1-pixel `readPixels` (Chrome's `gl.finish()` does not wait) and
+  take the min over trials (`costInPage` / `frameCostInPage` in `scripts/test/contact.mjs`).
+- On ANGLE/Metal a stencil `blitFramebuffer` silently leaves the following stencil-tested draws without any output
+  (no GL error): draw stencil patterns in place instead (`NearContact`'s grid routing).
 - Vite reloads the page when a GLSL/TS file changes, so screenshots taken while files are being edited can catch
   the loading screen.
 - `data-raw/` is git-ignored and not needed at runtime (only by `scripts/data/**`); `public/data/` is committed.

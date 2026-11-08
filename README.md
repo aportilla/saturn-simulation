@@ -82,7 +82,11 @@ implied ring mass, 1.34×10¹⁹ kg, matches Cassini's measured 1.54 ± 0.49×10
 with the exact column density. Each follows the exact linearised orbit in the co-orbiting frame — guiding-centre
 drift −qΩx (Keplerian shear), epicycles at κ with the 2:1 shape, vertical oscillation at ν — in closed form, so it
 is exact at any time warp, including in reverse. Self-gravity wakes (Toomre wavelength ≈ 40 m in the A ring,
-trailing at ~20°) are transient sheared clumps.
+trailing at ~20°) are transient sheared clumps. Independent orbits would let neighbours pass through each other
+(a third of the B ring's mid-plane is solid ice), so every frame the particles you can see resolved are pushed out
+of each other's overlaps: along the line between their centres, by no more than the overlap requires, the
+smaller one yielding to a boulder. The positions stay a smooth function of time, so contacts look the same at any
+time warp, in reverse or paused.
 
 **An astronaut for scale.** A spacesuited companion, 1.9 m tall, floats a few metres in front of you, lower
 right, wherever you go (`V` hides it). It is lit exactly like the ring particles around it — sunlight through
@@ -161,6 +165,10 @@ Full provenance, formats and accuracy: [`docs/data-sources.md`](docs/data-source
   structure; in the most compressed wave crests particles far from the camera may be missing.
 * Particle shapes and surface detail are procedural; light reflected from one part of the rings onto another is
   not modelled.
+* Particle contacts are resolved geometrically, per frame, among the particles that are resolved on screen (≥ 3–6
+  pixels in radius): there are no collisions in the dynamics (no bouncing, sticking or aggregate growth). In the
+  densest clusters (B-ring mid-layer, A-ring wake cores) some 10–13 % of the visible overlaps remain, and a small
+  particle lying entirely inside a larger one is left there (it is hidden).
 * Daphnis's orbit is extrapolated (Horizons coverage ends in 2018); Hyperion's actual present-day orientation is
   unknowable (chaotic rotation).
 * Only the seven small inner moons have measured shapes, and only at the models' ~2° resolution (finer relief is
