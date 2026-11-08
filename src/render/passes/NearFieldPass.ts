@@ -14,6 +14,9 @@
 //   1. per active class: (re-base / init the state rows when needed), update pass -> R0 rows: camera-relative
 //      position + radius + "drawn" flag (LOD draw probability with a stable per-particle threshold,
 //      view-frustum and statistical occlusion culling)
+//  1b. contact resolution (NearContact.ts): the particles resolved on screen (>= 1.5-3 render px radius, not
+//      statistically occluded) are pushed apart where their analytic positions overlap (hash grid per size class,
+//      mass-weighted Jacobi iterations, displacement <= the overlap), written back into R0 before anything reads it
 //   2. HistoPyramid compaction of R0 into lists (point sprites / large quads / shadow casters)
 //   3. sun shadow map of all present particles >= ~8 cm in a tube along the sun direction around the camera
 //      (NearShadow.ts): per texel the most sunward caster's exact projected outline (x its relief profile at high
@@ -55,6 +58,7 @@ import {
 } from '../near/NearNoise';
 import { REGOLITH_A0, REGOLITH_A1, REGOLITH_LUT_NA, REGOLITH_LUT_NALB, regolithTable } from '../near/NearRegolith';
 import { reliefPhotUniform } from '../near/NearRelief';
+import { NearContact } from '../near/NearContact';
 import {
   NearShadow, NEAR_SHADOW_CASTER_FS, NEAR_SHADOW_CASTER_VS, NEAR_SHADOW_COMMON_GLSL, NEAR_SHADOW_LOOKUP_GLSL,
   NEAR_SHADOW_PROFILE_GLSL,
@@ -186,7 +190,10 @@ export class NearFieldPass implements RenderPass {
   /** near-field sun shadow map (crisp shadows from nearby particles) */
   shadowsEnabled = true;
   /** debugging / profiling: skip sub-passes */
-  skip = { update: false, compact: false, points: false, quads: false, shadow: false };
+  skip = { update: false, contact: false, compact: false, points: false, quads: false, shadow: false };
+  /** contact resolution of the resolved particles (NearContact.ts; `contact.enabled` toggles it) */
+  contact!: NearContact;
+  private contactLayoutChanged = true;
 
   private ctx!: PipelineContext;
   private texRows = 0;
@@ -374,6 +381,7 @@ export class NearFieldPass implements RenderPass {
     cg.setDrawRange(0, 0);
     this.casters = new Points(cg, this.shMat);
     this.casters.frustumCulled = false;
+    this.contact = new NearContact(common, sh, tables(), this.clsSpinW, this.pyr);
 
     this.fsMesh = new Mesh(fullscreenGeometry(), this.updMat);
     this.fsMesh.frustumCulled = false;
@@ -459,6 +467,7 @@ export class NearFieldPass implements RenderPass {
     this.allocVersion = lod.allocVersion;
     this.anchorId = f.ring.anchorId;
     this.capStale = true;
+    this.contactLayoutChanged = true;
   }
   private capStale = true;
 
@@ -575,6 +584,17 @@ export class NearFieldPass implements RenderPass {
       r.render(this.fsMesh, fsCamera);
     }
     this.r0RT.viewport.set(0, 0, TEX_W, this.texRows);
+
+    // --- contact resolution among the visibly resolved particles (NearContact.ts): their non-overlapping positions
+    // go back into R0 before anything reads it (draw lists, shadow casters, the astronaut's shadow lookups)
+    this.lap('contact');
+    if (!this.skip.update && !this.skip.contact) {
+      this.contact.run({
+        renderer: r, frame: f, lod, profile: ctx.profile, wakes: ctx.wakes, r0RT: this.r0RT, texRows: this.texRows,
+        active: this.classes.map((c) => c.active), quality: this.qualityU.value, layoutChanged: this.contactLayoutChanged,
+      });
+      this.contactLayoutChanged = false;
+    } else this.contact.ran = false;
 
     // --- compaction (the shadow-map geometry, set before the update pass, decides the caster list)
     if (!this.shadowOn) this.shadow.prepare(r);
@@ -800,6 +820,8 @@ export class NearFieldPass implements RenderPass {
         : ''),
       boxes: boxes.join(' '),
       shadowCasters: fmtCount(this.listCounts[2]),
+      // resolved particles pushed apart where their analytic positions overlap (NearContact.ts)
+      contact: this.contact ? this.contact.stats() : 'off',
       classes: per.join(' '),
     };
   }
@@ -807,6 +829,7 @@ export class NearFieldPass implements RenderPass {
   dispose(): void {
     this.r0RT?.dispose();
     for (const s of this.stateRT) s.dispose();
+    this.contact?.dispose();
     this.pyr.dispose();
     for (const m of [this.updMat, this.stMat, this.l1Mat, this.ptMat, this.qdMat, this.shMat]) m?.dispose();
     this.shadow?.dispose();
