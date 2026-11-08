@@ -3,14 +3,17 @@
 // which bundles and runs this file automatically). Manual use:
 //   node_modules/.bin/rolldown scripts/data/nbody/wakefield_ref.ts --file <tmp>/wf.mjs --format esm --platform node
 //   node <tmp>/wf.mjs '{"seed":12345,"cases":[{"rKm":128000,"tau":0.66,"sigma":284,"omega":1.34e-4,"kappa":1.33e-4,"t":8.4e8}]}'
-// Prints JSON: per case the texture texels, lambda, tile, strength, shape and the generation uniforms after update(t).
-import { WakeField } from '../../../src/rings/WakeField';
+// Prints JSON: per case the zone values, the wake set, the texture texels (both layers) and delta-texture texels,
+// lambda, tile, strength and the uniforms after update(t).
+import { WakeField, type WakeShape } from '../../../src/rings/WakeField';
 import { zoneParamsAtKm } from '../../../src/rings/ringRegions';
 
-interface Case { rKm: number; tau: number; sigma: number; omega: number; kappa: number; qShear?: number; t: number; shape?: { gamma?: number; spreadPar?: number; spreadPerp?: number } }
-const args = JSON.parse(process.argv[2] ?? '{}') as { seed?: number; texels?: [number, number][]; cases?: Case[] };
+interface Case { rKm: number; tau: number; sigma: number; omega: number; kappa: number; qShear?: number; t: number; shape?: Partial<WakeShape> }
+const args = JSON.parse(process.argv[2] ?? '{}') as { seed?: number; texels?: [number, number][]; dtexels?: [number, number][]; cases?: Case[] };
 const texels = args.texels ?? [[0, 0], [1, 0], [0, 1], [17, 93], [128, 64], [200, 31], [255, 255]];
+const dtexels = args.dtexels ?? [[0, 0], [1, 0], [0, 1], [17, 33], [40, 12], [63, 63]];
 const out: unknown[] = [];
+const v4 = (v: { x: number; y: number; z: number; w: number }) => [v.x, v.y, v.z, v.w];
 for (const c of args.cases ?? []) {
   const wf = new WakeField(args.seed ?? 12345);
   if (c.shape) wf.shapeOverride = c.shape;
@@ -24,15 +27,21 @@ for (const c of args.cases ?? []) {
   wf.update(c.t);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const data = (wf as any).data as Float32Array;
-  const N = wf.N;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ddata = (wf as any).ddata as Float32Array;
+  const N = wf.N, DN = wf.DN;
+  const u = wf.uniforms;
   out.push({
-    zone: { key: zp.zone?.key, q: zp.q, aMin: zp.aMin, aMax: zp.aMax, H: zp.H, wake: zp.wake, sigma0: zp.sigma0, sigmaSlope: zp.sigmaSlope },
+    zone: { key: zp.zone?.key, q: zp.q, aMin: zp.aMin, aMax: zp.aMax, H: zp.H, wake: zp.wake, wakeB: zp.wakeB, sigma0: zp.sigma0, sigmaSlope: zp.sigmaSlope },
     lambda: wf.lambda, tile: wf.tile, strength: wf.strength, shape: wf.shape,
-    gen: wf.uniforms.uWakeGen.value.slice(0, 2).map((v) => [v.x, v.y, v.z, v.w]),
-    sel: [wf.uniforms.uWakeSel.value.x, wf.uniforms.uWakeSel.value.y],
-    wshape: [wf.uniforms.uWakeShape.value.x, wf.uniforms.uWakeShape.value.y, wf.uniforms.uWakeShape.value.z, wf.uniforms.uWakeShape.value.w],
+    gen: u.uWakeGen.value.map(v4),
+    uniforms: {
+      clock: v4(u.uWakeClock.value), delta: v4(u.uWakeDelta.value), shape: v4(u.uWakeShape.value),
+      m0: [u.uWakeM0.value.x, u.uWakeM0.value.y], bounds: v4(u.uWakeBounds.value),
+    },
     pitchDeg: wf.pitchDeg,
-    texels: texels.map(([i, j]) => Array.from(data.slice((j * N + i) * 4, (j * N + i) * 4 + 4))),
+    texels: texels.map(([i, j]) => [0, 1].map((L) => Array.from(data.slice(((L * N + j) * N + i) * 4, ((L * N + j) * N + i) * 4 + 4)))),
+    dtexels: dtexels.map(([i, j]) => Array.from(ddata.slice((j * DN + i) * 4, (j * DN + i) * 4 + 4))),
   });
 }
-console.log(JSON.stringify({ texels, cases: out }));
+console.log(JSON.stringify({ texels, dtexels, cases: out }));

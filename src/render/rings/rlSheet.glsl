@@ -7,6 +7,7 @@ uniform vec2 uRlSpokeAct;           // (seasonal activity 0..1, peak tau)
 uniform vec4 uRlWakeStat;           // measured wake statistics: (fB, Wb, Wg, profile wake value they refer to)
 uniform vec2 uRlWakeNrm;            // unit normal to the wake crests, (radial, azimuthal) components
 uniform vec2 uRlWakeLamRef;         // (Toomre wavelength at the anchor [m], surface density there [kg/m^2])
+uniform float uRlWakeReach;         // radial reach of the explicit wake field (clipmap) around the anchor [m]; 0: none
 uniform vec4 uRlWakeHeff;           // path decorrelation heights / H: (lit view, lit sun, unlit view, unlit sun)
 
 const float RL_GM = 3.79312062e16;
@@ -120,6 +121,15 @@ float rlToomre(float r, RlS S) {
   if (uRlWakeLamRef.y > 0.0) return max(uRlWakeLamRef.x * (sig / uRlWakeLamRef.y) * rr * rr * rr, 2.0);
   return max(39.478 * 6.674e-11 * sig * r * r * r / RL_GM, 2.0);
 }
+// Toomre wavelength for the unresolved-wake statistics (path ratio chi, decorrelation): the explicit wake field and the
+// statistics measured from it (uRlWakeStat) have the anchor's wavelength throughout the field's reach, so within it the
+// sheet and the march's statistical branch use the anchor's too (otherwise they disagree with the explicit field across
+// the march -> sheet handover: test:seam --only handover); the local wavelength takes over beyond the reach.
+float rlWakeLambda(float r, RlS S) {
+  float lamLoc = rlToomre(r, S);
+  if (uRlWakeReach <= 0.0 || uRlWakeLamRef.y <= 0.0) return lamLoc;
+  return mix(uRlWakeLamRef.x, lamLoc, smoothstep(0.5 * uRlWakeReach, uRlWakeReach, abs(r - uRingR0)));
+}
 
 // diagnostics of the last sheet evaluation (ring-layer debug views 24 / 25): (mid-plane height z0 [m], relief sun
 // visibility, solar incidence cosine on the lit face of the local layer, |slope|)
@@ -190,7 +200,7 @@ void rlMainSheet(vec3 rd, vec3 p, float dr, float theta, float fp, float unresFr
     Wb /= mW;
     Wg /= mW;
     vec3 nW = uRlWakeNrm.x * eR + uRlWakeNrm.y * eP;
-    float lam = rlToomre(r, S);
+    float lam = rlWakeLambda(r, S);
     vec2 hk = lit ? uRlWakeHeff.xy : uRlWakeHeff.zw;       // decorrelation heights (view, sun) / H
     float cv = smoothstep(0.0, 0.5, hk.x * S.H * abs(dot(V, nW)) / (mu * lam));
     float cs = smoothstep(0.0, 0.5, hk.y * S.H * abs(dot(uSunDir, nW)) / (mu0 * lam));

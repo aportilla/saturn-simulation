@@ -7,13 +7,13 @@ follow [Adding a tool](#adding-a-tool) so the next session can run it too.
 
 | command | what it checks | runtime* |
 |---|---|---|
-| `npm test` | refs + smoke + physics + counts + seam (incl. handover) + exposure + edges + moonflux + particles + propellers + relief + contact + sources against one private dev server; summary table | ~11 min |
+| `npm test` | refs + smoke + physics + counts + seam (incl. handover) + exposure + edges + moonflux + particles + propellers + relief + contact + sources against one private dev server; summary table | ~12 min |
 | `npm run check:refs` | bibliography ↔ docs sync, no browser: every author–year citation in README / ring-physics.md / data-sources.md has an entry in `src/app/references.ts`, every entry is cited; `-- --online` re-verifies DOIs / arXiv ids | ~1 s (online ~1 min) |
 | `npm run test:sources` | the Sources panel (key G) and every place's Sources line in the explainer: keys, focus, filtering, links | ~20 s |
 | `npm run test:smoke` | every place loads and renders cleanly (errors, fallbacks, NaN / negative pixels) | ~1.5 min |
 | `npm run test:physics` | Sun ephemeris, orbital frequencies, near-field particle kinematics | ~15 s |
 | `npm run test:counts` | drawn particle counts vs the analytic expectation, HUD count line, radius sampler | ~30 s |
-| `npm run test:seam` | near field + medium vs medium alone (seams/arcs), particle flux vs render scale, the medium's wake representations vs a reference field across the march → sheet handover | ~3.2 min |
+| `npm run test:seam` | near field + medium vs medium alone (seams/arcs), particle flux vs render scale, the medium's wake representations vs a reference field across the march → sheet handover | ~4.5 min |
 | `npm run test:fps` | uncapped fps table: places × particle quality (informational) | ~2.5 min |
 | `npm run test:exposure` | the camera-pinned astronaut doesn't change the auto exposure (meter mask) | ~45 s |
 | `npm run test:edges` | gap edges perturbed by moonlets and the B-ring edge modes (streamline map): gaps empty, rendered edges = model, near field follows | ~50 s |
@@ -22,6 +22,7 @@ follow [Adding a tool](#adding-a-tool) so the next session can run it too.
 | `npm run test:propellers` | propeller moonlets and the sub-km τ texture: named positions vs Tiscareno 2010 Table 1, texture statistics, footprint prefilter, GPU τ vs the CPU model, near-field presence and its cost gate, moonlet bodies | ~1 min |
 | `npm run test:relief` | the rings' vertical relief (one height field z0): model checks, GPU heights / slopes vs the CPU mirror, ray / height-field hits, equinox shadow length, near field and station keeping on the local mid-plane | ~1 min |
 | `npm run test:contact` | near-field contact resolution: overlaps before / after (independent CPU pair search), displacement bound, R0 write-back and drawn flags, frame-to-frame smoothness, warp; `--cost`: GPU time | ~40 s (`--cost` +2–3 min) |
+| `npm run test:wakecost` | GPU cost of the shared wake functions (`wakeDensity`, `wakeDisplacement`) per call, in-page micro-benchmark (informational) | ~10 s |
 | `node scripts/shot.mjs …` / `node scripts/shots.mjs …` | screenshots (one / batch spec) | — |
 | `node scripts/img.mjs profile\|mean\|crop\|rotate …` | PNG brightness profiles, region ratios, contrast-stretched zooms, rotate/scale | — |
 
@@ -106,7 +107,8 @@ run caught tiny negative radiances from the F-ring line profiles, since fixed).
 ### seam — `scripts/test/seam.mjs` (`--only seam,flux,handover`, `--views id,…`)
 1. **seam**: per view, mean HDR radiance (`hdrRT`, after the ring layer and before glare / tone mapping, so
    exposure doesn't matter) in horizontal strips over the view's ring rows, averaged over `--realizations 6`
-   particle / wake realizations (the frame anchor id is bumped to re-seed), with the near field on and off
+   particle / wake realizations (the frame anchor id is bumped to re-seed the particles, and the test-only
+   `WakeField.realization` draws an independent wake pattern at the same time and place), with the near field on and off
    (`nearField=0`: the medium carries all optical depth). Checks: every strip ratio in [0.85, 1.15]; the largest
    step between neighbouring strips ≤ 0.06 (an arc / seam is a step the medium-only image does not have; the arc
    fixed in Nov 2026 was ≈ 0.1); blue/green-dominated pixels in the ring rows ≤ 0.2 %. Screenshots
@@ -114,14 +116,17 @@ run caught tiny negative radiances from the F-ring line profiles, since fixed).
 
    | view | rows | measured ratios | max step (limit) | notes |
    |---|---|---|---|---|
-   | `arc-repro` | 0.42–1.0 | 1.000 … 1.015 | 0.006 (0.06) | the user-reported arc: 2 km above the unlit A ring, yaw 60, pitch −22 |
-   | `a-ring-1km` | 0.25–1.0 | 0.899 … 0.985 | 0.024 (0.06) | preset; particles 2–10 % darker than the medium (see below) |
-   | `a-ring-30m` | 0.35–0.78, 6 strips | 0.922 … 1.035 | 0.107 (0.11) | few large particles per strip → realization noise ±5 %; grazing far strip ~8 % particle deficit (below); contact brightening (below) |
-   | `lit-500m` | 0.0–0.55 | 0.887 … 0.945 | 0.021 (0.06) | 500 m below the lit A ring looking up; particles 5–11 % darker than the medium |
-   | `under-rings` | 0.0–0.45 | 0.959 … 1.011 | 0.016 (0.09) | unlit face from below (the former +5–8 % particle excess is gone, limit kept) |
+   | `arc-repro` | 0.42–1.0 | 0.998 … 1.010 | 0.005 (0.06) | the user-reported arc: 2 km above the unlit A ring, yaw 60, pitch −22 |
+   | `a-ring-1km` | 0.25–1.0 | 0.890 … 0.984 | 0.029 (0.06) | preset; particles 2–11 % darker than the medium (see below) |
+   | `a-ring-30m` | 0.35–0.78, 6 strips | 0.950 … 1.056 | 0.032 (0.11) | few large particles per strip → realization noise ±5 %; grazing far strip ~9 % particle deficit (below); contact brightening (below; the 0.11 limit was set for it with one wake pattern, step 0.107) |
+   | `lit-500m` | 0.0–0.55 | 0.891 … 0.944 | 0.023 (0.06) | 500 m below the lit A ring looking up; particles 6–11 % darker than the medium |
+   | `under-rings` | 0.0–0.45 | 0.971 … 1.023 | 0.017 (0.09) | unlit face from below (the former +5–8 % particle excess is gone, limit kept) |
 
-   Measured 2026-11-08 after the sun-path fix (before: arc-repro 0.972 … 1.005 / 0.012, a-ring-1km 0.928 … 1.035 /
-   0.044, a-ring-30m 0.952 … 1.019 / 0.056, lit-500m 0.914 … 0.967 / 0.019, under-rings 0.974 … 1.080 / 0.075). The
+   Measured 2026-11-08 with the re-calibrated wake field (docs/ring-physics.md §10.11) and 6 independent wake patterns
+   per view (with the previous field, one pattern: arc-repro 1.000 … 1.015 / 0.006, a-ring-1km 0.899 … 0.985 / 0.024,
+   a-ring-30m 0.913 … 1.022 / 0.095, lit-500m 0.887 … 0.945 / 0.021, under-rings 0.959 … 1.011 / 0.016). Before the
+   sun-path fix: arc-repro 0.972 … 1.005 / 0.012, a-ring-1km 0.928 … 1.035 /
+   0.044, a-ring-30m 0.952 … 1.019 / 0.056, lit-500m 0.914 … 0.967 / 0.019, under-rings 0.974 … 1.080 / 0.075. The
    particles' and the medium's statistical sun paths used 2 fixed wake-density samples that brightened both by up to
    ~25 % (most for mid-plane boulders); with the shared stratified nodes both are unbiased, the unlit-face particle
    excess vanished, and what remains on the lit face (particles darker than the medium) is mostly the clipmap
@@ -134,8 +139,8 @@ run caught tiny negative radiances from the F-ring line profiles, since fixed).
    1.023, 1.036 (far → near strip); before it the view measured 0.920 … 1.027, step 0.093 (limit 0.10, now 0.11).
 2. **flux**: particle-only flux (ring layer pass disabled) in the near strips of `a-ring-30m` at render scale
    0.5 vs 1, 4 realizations: sub-pixel particles are rasterized differently at the two scales but the expected
-   flux must not change — ratio 1 ± 0.08 (measured 0.983).
-3. **handover** (`--only handover`, `--hviews id,…`, `--hstrips 13`, `--hreal 1`): the medium's own wake
+   flux must not change — ratio 1 ± 0.08 (measured 0.961; 0.970–0.983 with the previous wake field).
+3. **handover** (`--only handover`, `--hviews id,…`, `--hstrips 13`, `--hreal 3`): the medium's own wake
    representations, near field and far field off, each forced through the ring-layer pass's test hook
    (`uRlForce` in rlMarch.glsl, installed after the pass's update every frame): `explicit` (march, clipmap wake field
    with the prefilter correction), `stat` (march, statistical branch), `sheet` (far-field sheet everywhere),
@@ -147,18 +152,24 @@ run caught tiny negative radiances from the F-ring line profiles, since fixed).
    the band: sheet / reference within 1 ± 0.08 (L) and 0.06 (T); explicit / reference T within 0.06, L within 0.22
    (known prefilter excess, below); stat / sheet within 0.03; production / reference step between neighbouring band
    strips ≤ 0.04 (a seam where the representations meet). Per-view overrides (with their reason) in
-   `HANDOVER_VIEWS`. ~55 s.
+   `HANDOVER_VIEWS`. Strip means are averaged over `--hreal 3` independent wake patterns (`WakeField.realization`,
+   bumped with the anchor id): the statistics describe the ensemble, and one pattern's strips (a few wake tiles each)
+   scatter by ±5 % along the wakes with the re-calibrated field. ~2 min.
 
    | view (region) | L sheet/ref | L expl/ref | L stat/sheet | L step | T sheet/ref | T expl/ref | T stat/sheet | T step |
    |---|---|---|---|---|---|---|---|---|
-   | `a-ring-1km` along | 0.988 … 1.001 | 1.082 … 1.128 | 1.001 … 1.002 | 0.031 | 1.010 … 1.032 | 1.000 … 1.016 | 0.998 … 1.001 | 0.016 |
-   | `a-ring-1km` across | 1.040 … 1.048 | 1.027 … 1.033 | 1.002 … 1.003 | 0.008 | 0.983 … 1.049 | 0.895 … 0.980 (0.12) | 0.986 … 1.010 | 0.030 |
-   | `a-1km-yaw120` left | 1.144 … 1.170 (0.18) | 1.052 … 1.068 | 0.940 … 0.992 (0.07) | 0.029 | 0.870 … 1.009 (0.15) | 0.873 … 0.982 (0.15) | 0.987 … 1.017 | 0.041 (0.05) |
-   | `a-1km-yaw120` right | 1.034 … 1.053 | 1.133 … 1.196 | 0.996 … 0.999 | 0.038 | 1.004 … 1.022 | 1.030 … 1.049 | 0.996 … 1.002 | 0.015 |
-   | `unlit-2km` left | 0.912 … 0.965 (0.12) | 1.093 … 1.113 | 1.006 … 1.007 | 0.019 | 1.010 … 1.051 | 0.998 … 1.009 | 1.000 … 1.001 | 0.012 |
-   | `unlit-2km` right | 0.998 … 1.021 | 1.073 … 1.088 | 1.002 … 1.007 | 0.016 | 1.039 … 1.068 (0.08) | 0.980 … 0.992 | 0.999 … 1.001 | 0.024 |
+   | `a-ring-1km` along | 1.019 … 1.032 | 1.040 … 1.079 | 1.001 … 1.002 | 0.013 | 0.971 … 0.994 | 1.005 … 1.035 (0.12) | 0.998 … 1.000 | 0.011 |
+   | `a-ring-1km` across | 1.027 … 1.046 | 1.016 … 1.021 | 1.002 … 1.003 | 0.005 | **0.980 … 1.116** (residual 4) | 0.962 … 1.005 (0.12) | 0.986 … 1.009 | **0.058** (4) |
+   | `a-1km-yaw120` left | **1.164 … 1.186** (0.18; residual 2) | 1.036 … 1.060 | 0.940 … 0.992 (0.07) | 0.042 (0.05) | 0.909 … 0.989 (0.15) | 0.966 … 1.004 (0.15) | 0.988 … 1.017 | 0.043 (0.05) |
+   | `a-1km-yaw120` right | 1.070 … 1.079 | 1.064 … 1.122 | 0.997 … 0.999 | 0.009 | 0.969 … 0.998 | 1.036 … 1.049 | 0.996 … 1.003 | 0.028 |
+   | `unlit-2km` left | 0.940 … 1.008 (0.12) | 1.080 … 1.110 | 1.006 … 1.007 | 0.039 | 0.989 … 1.052 | 0.992 … 1.035 | 1.000 … 1.001 | 0.036 |
+   | `unlit-2km` right | 0.959 … 1.004 | 1.026 … 1.066 | 1.004 … 1.008 | 0.026 | **1.021 … 1.081** (0.08; residual 4) | 0.986 … 1.048 | 0.999 … 1.001 | 0.030 |
 
-   Measured 2026-11-08 (limits in parentheses where a view overrides the default). Before the Nov 2026 fix (same
+   Measured 2026-11-08 with the re-calibrated wake field (§10.11; limits in parentheses where a view overrides the
+   default; bold: failing, 4 of 70 checks). With the previous field and one pattern: L sheet/ref 0.988 … 1.048 (lit),
+   1.144 … 1.170 (yaw120 left), T sheet/ref 0.983 … 1.049 across the wakes at 1 km, 1.039 … 1.068 (unlit-2km right).
+   With the anchor's λ in the statistics (residual 4) and 4 patterns, every check of `a-ring-1km` and `unlit-2km`
+   passes (T sheet/ref 0.96 … 1.00 at 1 km, 0.98 … 1.01 at 2 km; steps ≤ 0.026). Before the Nov 2026 fix (same
    view, diagnostic probes): the explicit field was 15–26 % brighter than a 32-node sun-path reference (two fixed
    sun-path samples: through the convexity of exp(−τWs/μ0) their variance leaks into the mean), the statistical
    transmission 0.60–0.87 of the explicit one across the wakes (the two-column means decorrelated far too fast),
@@ -168,9 +179,19 @@ run caught tiny negative radiances from the F-ring line profiles, since fixed).
    — the wake cores are ~4 m wide (0.1 λ), so even 2–4 m texels spread core material into well-lit gap edges (the
    sub-texel anti-correlation of density and illumination is lost; with the density taken directly and the sun
    path from the clipmap the excess disappears, 0.993–0.996): a fix needs resolved cores or a sub-texel model;
-   (2) the two-column *reflection* model (uRlWakeHeff) is within ~5 % at low phase but 10–17 % off at high phase
-   along the wakes (yaw120) and on the unlit face along them; (3) at the band's grazing far end the homogeneous
-   march and sheet already differ by up to ~6 % at high phase (base radiative transfer).
+   (2) the two-column *reflection* model (uRlWakeHeff) is within ~5 % at low phase but 10–19 % off at high phase
+   along the wakes (yaw120: 16–19 % with the re-calibrated field's deeper gaps, just over the view's 0.18) and on the
+   unlit face along them — the medium's photometric offsets, open; (3) at the band's grazing far end the homogeneous
+   march and sheet already differ by up to ~6 % at high phase (base radiative transfer); (4) the sheet
+   (`rlMainSheet`) and the march's statistical branch take the path parameter χ = H|V·n|/(μλ) with the local Toomre
+   λ ∝ Σ(r) (`rlToomre`), while the explicit field — and so the unit of χ in the probe's path-statistics table — has the
+   anchor's λ (`uRlWakeLamRef.x`): a few km from the anchor, where Σ differs, the statistical T across the wakes is
+   up to 14 % too high and production steps at the handover (a-ring-1km across: 0.058). The probe and the Gamma model
+   are not the cause: the Python port reproduces the probe's table to 3 decimals, and the Gamma transmission with it
+   matches explicit straight paths through the field within ±4 % for χ ≤ 1.25. Fix (ring-layer shaders): use
+   `uRlWakeLamRef.x` instead of `rlToomre(...)` for χ (and the decorrelation of the two-column reflection) within the
+   explicit field's reach, e.g. `mix(uRlWakeLamRef.x, rlToomre(r, S), smoothstep(R0, R1, |dr|))`; the local λ keeps
+   its meaning far from the anchor.
 
 The near-field photometry offsets in the seam table (particles 2–11 % darker than the medium on the lit face, ~9 %
 in the grazing far strip of `a-ring-30m`) and the handover residuals are the current state, not targets: tighten
@@ -385,6 +406,17 @@ alone: b-default (9k list) 2.5–4.5, a-default (1.8k) 1.2–1.4, b-inside (49k)
 b-default +1.9 / +3.9 (28 → 32 ms), a-default +2.3 / +2.4 (10.3 → 12.6 ms), b-inside +7.5 / +10.6, a-inside
 +7.0 / +3.9, b-fov12 +7.5. Uncapped fps off → on (last run): b-default 43.2 → 40.0 (+1.9 ms), a-default 117.9 →
 107.3 (+0.8 ms), b-inside +5.7 ms, a-inside +2.6 ms, b-fov12 +6.7 ms; earlier runs were noise-dominated (±20 ms).
+
+### wakecost — `scripts/test/wakecost.mjs` (`--preset id`, `--size N`, `--k K`, `--reps R`, `--trials T`, `--async D`)
+In-page micro-benchmark of the shared self-gravity-wake functions on the real app state (the place's wake set and
+generation clock): a fullscreen pass evaluates `wakeDensity` / `wakeDisplacement` K times per pixel at scattered points
+over a size² float target, R times per trial, synchronised by a 1-pixel read-back; median of T trials minus the same
+pass with a trivial expression → GPU throughput per call. The passes blend additively: an opaque full-screen pass
+repeated R times is shaded only once on the tile-based GPU (hidden-surface removal), which made the time scale with
+neither R nor K. `--async D` overrides the asynchrony depth (WakeField `shapeOverride`). Informational, no limits: for a
+before/after comparison extract the old revision (`git archive <rev> -o x.tar`, untar, symlink `node_modules`), copy
+this script into it and run both trees alternately (other GPU users skew single runs). Measured 2026-11-08 at
+`a-ring-1km`, 1024² × 16 × 16: see docs/ring-physics.md §10.11 (cost). ~10 s.
 
 ## Tools
 

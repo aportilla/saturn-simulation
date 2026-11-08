@@ -12,7 +12,7 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
 ## Commands
 - `npm run dev` → http://127.0.0.1:5173 (often already running; check with `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5173/`)
 - `npm run typecheck` (tsc --noEmit) and `npm run build` (typecheck + vite build) — keep both clean
-- **Regression suite** (real GPU, starts its own private Vite server unless `--base` answers; ~11 min):
+- **Regression suite** (real GPU, starts its own private Vite server unless `--base` answers; ~12 min):
   `npm test` = `test:smoke` (every preset: console/page/GL errors, pass fallbacks, NaN/negative pixels) +
   `test:physics` (ephemeris, J2–J6 frequencies, particle kinematics vs the exact Hill solution) +
   `test:counts` (drawn particles vs the analytic expectation, HUD "complete") + `test:seam` (near field +
@@ -30,7 +30,8 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
   `test:contact` (near-field contact resolution: overlaps before / after vs an independent CPU pair search,
   displacement bound, R0 write-back and drawn flags, frame-to-frame smoothness, warp ±1000; `--cost` adds the
   step's GPU time and a whole-frame off / on A/B). `npm run test:fps` = informational fps table per preset ×
-  quality. Details, tolerances, measured values and the shared helpers: `scripts/test/README.md`.
+  quality; `npm run test:wakecost` = GPU cost per call of the shared wake functions (in-page micro-benchmark for
+  before/after comparisons). Details, tolerances, measured values and the shared helpers: `scripts/test/README.md`.
 - **Bibliography**: `npm run check:refs` (no GPU, ~1 s; also first in `npm test`) — every author–year citation in
   README.md, docs/ring-physics.md and docs/data-sources.md needs an entry in `src/app/references.ts` (the in-app
   Sources panel, key G) and every entry must be cited; `-- --online` re-verifies DOIs / arXiv ids. A new citation in
@@ -38,6 +39,8 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
   `npm test`) = the panel and the per-place Sources lines (`src/app/placeSources.ts`) in the browser.
 - Vertical-relief model numbers (bending waves, corrugation, sites, equinox shadow lengths):
   `node scripts/data/rings/relief_check.mjs [--t ISO]`.
+- Wake model calibration (offline, Python): `scripts/data/nbody/` — `procedural.py --verify` (port == WakeField.ts /
+  wakes.glsl, bit-exact), `check-inverse` (wakeDensity vs the particles' exact density), `calibrate.py`; README there.
 - Screenshots on the real GPU (headless Chrome, ANGLE/Metal); console errors and page errors are printed:
   - one page: `node scripts/shot.mjs "<url>" <out.png> --until "window.__svReady===true" --wait 3000 [--w --h --dpr --eval "<js>"]`
   - batch: `node scripts/shots.mjs <spec.json> <outDir> [--w --h] [--uncapped] [--base URL] [--keep-storage]`
@@ -89,7 +92,7 @@ mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,bod
 |---|---|
 | time, frames, Sun, Saturn rotation, constants, co-orbiting (Hill) frame | `src/core/*` (`ephemeris.ts`, `RingAnchor.ts`, `constants.ts`, `FrameState.ts`) |
 | ring optical depth, zones (sizes q/aMin/aMax, thickness H, Σ, albedo, wakes, dust), features | `src/rings/ringRegions.ts`, `src/rings/RingProfile.ts`; data `public/data/rings/` |
-| LOD contract (which particles are drawn vs. carried by the medium), self-gravity wakes | `src/rings/RingLod.ts` + `shaders/ringLod.glsl`, `src/rings/WakeField.ts` + `shaders/wakes.glsl` (CPU/GLSL mirrors) |
+| LOD contract (which particles are drawn vs. carried by the medium), self-gravity wakes | `src/rings/RingLod.ts` + `shaders/ringLod.glsl`, `src/rings/WakeField.ts` + `shaders/wakes.glsl` (CPU/GLSL mirrors; wake sets per zone `wakeB` in `ringRegions.ts`; Python port + N-body calibration `scripts/data/nbody/procedural.py`, keep `--verify` passing) |
 | 2-D ring structure (streamline map: moonlet gap edges, normal modes of eccentric edges; hooks for relief and 2-D τ modulation) — every main-ring τ lookup goes through it | `src/rings/RingStructure.ts` + `src/rings/streamlines.ts` + `src/rings/ringModes.ts` (CPU) + `shaders/ringStructure.glsl`; table `public/data/rings/moonlet_response.*` from `scripts/data/rings/moonlet_response.mjs` |
 | sub-km 2-D τ texture (sheared, evolving; footprint prefilter → `rlApplyTauMod` in `rlOptics.glsl`) | `src/rings/ringTexture.ts` + `shaders/ringTexture.glsl` (chunk `sv_ringTexture`, included by `sv_ringStructure`) |
 | propeller moonlets (named giants, belts: positions, partial gaps / lobes / wakes, relief; moonlet bodies) | `src/rings/propellers.ts` + `shaders/ringPropellers.glsl` (chunk `sv_ringPropellers`), `src/render/passes/PropellerMoonletPass.ts` + `src/render/propellers/*`; presets `propeller-bleriot`, `propeller-belt`; Cassini views `scripts/test/specs/propellers.json` |

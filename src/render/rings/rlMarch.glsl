@@ -319,7 +319,7 @@ void rlMarch(vec3 rd, float sA, float sB, float jitter, out vec3 Lout, out float
         float mW = fB * Wb + (1.0 - fB) * Wg;
         Wb /= mW;
         Wg /= mW;
-        float lamL = rlToomre(uRingR0 + dr, S);
+        float lamL = rlWakeLambda(uRingR0 + dr, S);
         lamV = lamL;
         vec2 hk = towardSun > 0.5 ? uRlWakeHeff.xy : uRlWakeHeff.zw;
         float cv = smoothstep(0.0, 0.5, hk.x * S.H * abs(dot(-d.xy, uRlWakeNrm)) / (max(az, 1e-4) * lamL));

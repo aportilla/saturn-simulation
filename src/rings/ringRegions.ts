@@ -33,6 +33,8 @@ export interface RingZone {
   albedo: [number, number, number];
   /** self-gravity wake strength 0..1 (0 = none) */
   wake: number;
+  /** wake parameter set (WakeField WAKE_SETS): 0 = A-ring calibration (default), 1 = B-ring calibration */
+  wakeB?: number;
   /** fraction of the optical depth in fine (micron) dust — strongly forward-scattering */
   dust: number;
   /** representative tau, used by the procedural fallback profile */
@@ -123,30 +125,32 @@ export const RING_ZONES: RingZone[] = [
     // scripts/data/rings/inside_numbers.mjs). These are consistency-driven estimates, uncertain by ~x2 in aMax.
     // Sigma from hidden density waves (Hedman & Nicholson 2016): 45-69 g/cm^2 at the Janus 2:1 wave
     // (96,350-96,690 km); Tiscareno & Harris 2018: ~25 g/cm^2 at 95,500 km.
+    // wakes (all B zones): strength 1 with the B-ring wake set (N-body at Sigma 600: Q 1.7, wakes as strong and coherent
+    // as in the A ring; docs/ring-physics.md 10.5, 10.11)
     key: 'B1', name: 'B ring (B1)', rInnerKm: 91_975, rOuterKm: 99_000,
     q: 2.9, aMin: 0.05, aMax: 3.0, H: 10, sigmaPerTau: 303, sigma0: 400, sigmaSlope: 0,
-    albedo: B1_ALB, wake: 0.6, dust: 0, tauTypical: 1.25, macroscopic: true, rhoBulk: 280,
+    albedo: B1_ALB, wake: 1.0, wakeB: 1, dust: 0, tauTypical: 1.25, macroscopic: true, rhoBulk: 280,
     ref: 'Hedman & Nicholson 2016; Tiscareno & Harris 2018; French & Nicholson 2000',
   },
   {
     // B2: Mimas 5:2 wave 39-42 g/cm^2 (H&N 2016), 43 g/cm^2 at 100,500 km (Tiscareno & Harris 2018)
     key: 'B2', name: 'B ring (B2)', rInnerKm: 99_000, rOuterKm: 104_000,
     q: 3.2, aMin: 0.05, aMax: 2.0, H: 15, sigmaPerTau: 99, sigma0: 420, sigmaSlope: 0,
-    albedo: B_ALB, wake: 0.5, dust: 0, tauTypical: 3.66, macroscopic: true, rhoBulk: 170,
+    albedo: B_ALB, wake: 1.0, wakeB: 1, dust: 0, tauTypical: 3.66, macroscopic: true, rhoBulk: 170,
     ref: 'Hedman & Nicholson 2016; Tiscareno & Harris 2018',
   },
   {
     // B3 (core): Pandora 3:2 wave 65-72 g/cm^2 at tau 3.4-4.7 (H&N 2016)
     key: 'B3', name: 'B ring (B3, core)', rInnerKm: 104_000, rOuterKm: 110_000,
     q: 3.2, aMin: 0.05, aMax: 2.0, H: 15, sigmaPerTau: 123, sigma0: 680, sigmaSlope: 0,
-    albedo: B_ALB, wake: 0.5, dust: 0, tauTypical: 5.49, macroscopic: true, rhoBulk: 210,
+    albedo: B_ALB, wake: 1.0, wakeB: 1, dust: 0, tauTypical: 5.49, macroscopic: true, rhoBulk: 210,
     ref: 'Hedman & Nicholson 2016',
   },
   {
     // B4: Enceladus 3:1 wave 65-71 g/cm^2; Janus 3:2 (116,070-116,185 km) 120-141 g/cm^2 (H&N 2016)
     key: 'B4', name: 'B ring (B4)', rInnerKm: 110_000, rOuterKm: 116_500,
     q: 3.1, aMin: 0.05, aMax: 2.5, H: 12, sigmaPerTau: 224, sigma0: 700, sigmaSlope: 0,
-    albedo: B_ALB, wake: 0.6, dust: 0, tauTypical: 3.02, macroscopic: true, rhoBulk: 300,
+    albedo: B_ALB, wake: 1.0, wakeB: 1, dust: 0, tauTypical: 3.02, macroscopic: true, rhoBulk: 300,
     ref: 'Hedman & Nicholson 2016',
   },
   {
@@ -155,7 +159,7 @@ export const RING_ZONES: RingZone[] = [
     // 117,570 km, m = 2 Mimas 2:1 distortion +-~75 km) so B-ring parameters cover all B-ring material.
     key: 'B5', name: 'B ring (B5, outer)', rInnerKm: 116_500, rOuterKm: 117_700,
     q: 2.9, aMin: 0.05, aMax: 3.0, H: 10, sigmaPerTau: 370, sigma0: 540, sigmaSlope: 0,
-    albedo: B_ALB, wake: 0.5, dust: 0, tauTypical: 1.41, macroscopic: true, rhoBulk: 340,
+    albedo: B_ALB, wake: 1.0, wakeB: 1, dust: 0, tauTypical: 1.41, macroscopic: true, rhoBulk: 340,
     ref: 'Hedman & Nicholson 2016; Nicholson et al. 2014 (B-ring edge)',
   },
   {
@@ -320,11 +324,13 @@ export function describeRadiusKm(rKm: number): string {
   return 'outside the rings';
 }
 
-export type ZoneParams = Omit<RingZone, 'key' | 'name' | 'rInnerKm' | 'rOuterKm' | 'sigma0' | 'sigmaSlope'> & {
+export type ZoneParams = Omit<RingZone, 'key' | 'name' | 'rInnerKm' | 'rOuterKm' | 'sigma0' | 'sigmaSlope' | 'wakeB'> & {
   zone: RingZone | null;
   /** affine surface-density model (always present; see header) */
   sigma0: number;
   sigmaSlope: number;
+  /** wake parameter set, blended (0 = A-ring set, 1 = B-ring set) */
+  wakeB: number;
 };
 
 /**
@@ -339,7 +345,7 @@ export function zoneParamsAtKm(rKm: number, blendKm = 40): ZoneParams {
     zone: z,
     q: base.q, aMin: base.aMin, aMax: base.aMax, H: base.H, sigmaPerTau: base.sigmaPerTau,
     sigma0: base.sigma0 ?? 0, sigmaSlope: base.sigmaSlope ?? base.sigmaPerTau,
-    albedo: [...base.albedo] as [number, number, number], wake: base.wake, dust: base.dust,
+    albedo: [...base.albedo] as [number, number, number], wake: base.wake, wakeB: base.wakeB ?? 0, dust: base.dust,
     tauTypical: base.tauTypical, macroscopic: base.macroscopic, rhoBulk: base.rhoBulk, ref: base.ref,
   };
   if (!z) return out;
@@ -356,6 +362,7 @@ export function zoneParamsAtKm(rKm: number, blendKm = 40): ZoneParams {
     out.sigmaSlope = out.sigmaSlope * (1 - w) + (other.sigmaSlope ?? other.sigmaPerTau) * w;
     for (let i = 0; i < 3; i++) out.albedo[i] = out.albedo[i] * (1 - w) + other.albedo[i] * w;
     out.wake = out.wake * (1 - w) + other.wake * w;
+    out.wakeB = out.wakeB * (1 - w) + (other.wakeB ?? 0) * w;
     out.dust = out.dust * (1 - w) + other.dust * w;
   };
   const dIn = rKm - z.rInnerKm;

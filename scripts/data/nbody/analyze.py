@@ -614,10 +614,7 @@ def fit_granola(B, phi, T):
 def temporal_procedural(run, lags_orb, nband, nt=24):
     """Shearing-frame autocorrelation (and band shear test) of the exact procedural field."""
     import procedural as pr
-    sc = run.cfg['procedural']
-    wf = pr.WakeFieldPort(run.cfg.get('seed_proc', 12345), m0x=sc['m0x'], m0y=sc['m0y'], t_life=sc['t_life'], rc=sc['rc'],
-                          tile_scale=sc.get('tile_scale', 1.0), n_gen=sc.get('n_gen', 2), env_w=sc.get('env_w', 0.0))
-    wf.configure(sc['lambda_m'], sc['strength'], sc['gamma'], sc['spread_par'], sc['spread_perp'], sc['omega'])
+    wf = pr.port_from_config(run.cfg['procedural'], run.cfg.get('seed_proc', 12345))
     xs = -run.Lx / 2 + (np.arange(0, run.nx, 2) + 0.5) * run.hx
     ys = -run.Ly / 2 + (np.arange(0, run.ny, 2) + 0.5) * run.hy
     X, Y = np.meshgrid(xs, ys, indexing='ij')

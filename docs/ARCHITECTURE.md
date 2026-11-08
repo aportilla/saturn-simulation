@@ -255,14 +255,24 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   τ in particles below 1 mm (true dust: D ring, gaps,
   F/G/E rings, Roche Division) is a never-drawn layer (`uLodTauSub`, σ_z = `uLodSigZSub`) included in all of
   these, so the medium total always equals the local τ. The top class absorbs any aMax > 16.4 m.
-* `sv_wakes` (mirror of `src/rings/WakeField.ts`): `wakeDisplacement(q)`, `wakeDensity(x)` (local frame, m;
-  range [γ^s, γ^−s]; mean 1: the single-branch inverse `wakeDensityRaw` misses the folds of the forward map in the
-  wake cores, ~10 % of the mass, restored by scaling the excess over 1 with `uWakeMassK`, measured live by the
-  ring-layer pass), `wakeDensityFiltered(x, footprint)`, `wakeMinDensity()`. Two transient sheared
-  generations (`uWakeGen[0..1]` = amplitude, shear, offsets; sin² envelopes, lifetime 3/Ω), narrow-band random
-  fields with phase dislocations and a non-shell-crossing profile (`uWakeShape` = ln γ, 1/Rc², Wmin, Wmax).
-  Spacing at peak = Toomre λ (≈ 40 m mid-A, 51–55 m in B), pitch ≈ 20° trailing; contrast γ = 0.16 (A), 0.24 (B);
-  no wakes in the C ring / Cassini Division.
+* `sv_wakes` (mirror of `src/rings/WakeField.ts`; Python port with a bit-exact `--verify`:
+  `scripts/data/nbody/procedural.py`): `wakeDisplacement(q)` (particles, at their epicyclic position), `wakeDensity(x)`
+  (local frame, m; the density of exactly those particles: mean 1, clamped to `uWakeBounds.xy` = [0.8 γ_gap^s,
+  4 γ_core^−s]), `wakeDensityFiltered(x, footprint)`, `wakeMinDensity()` (true lower bound, for culling); hooks for the
+  next work package, identities now: `wakeDisplacementP(q, p)` (participation p of a size class) and
+  `wakeDensityTau(x)` = 1 + p̄ (D − 1) (`uWakePartTau` = `WakeField.participationTau` = 1). Two transient sheared
+  generations half a lifetime apart (`uWakeGen[0..1]` = shear, offsets, texture layer); plateau handover within each
+  half-cycle at the local phase φ − d·δ(x) (`uWakeClock`; δ an advected smooth random field re-drawn every cycle,
+  `uWakeDTex`/`uWakeDelta`: local asynchrony); narrow-band random envelopes W with dislocations (`uWakeTex`, a 2-layer
+  RGBA32F array: Re W, Im W and the regularised phase gradient). Each generation's map displaces along its wave normal by
+  (C(Θ) − Θ)/K with the LOCAL wave number K (≥ 0.65 of the mean: both generations together move ≤ tile/6, the near
+  field's culling margin) and the composite circle map C = G_g∘M_γ (core density 1/γ_core, gap γ_gap); this map does
+  not fold (the old one, with the mean wave number, folded where the local one exceeded it). The inverse: closed-form
+  guess + 2 Newton steps per generation with central differences (10 texture fetches, 16 with asynchrony).
+  Parameters per wake set (`WAKE_SETS` A / B, zone field `wakeB`, calibrated against N-body runs: ring-physics.md
+  §10.11). Spacing at the envelope peak = Toomre λ (≈ 38 m mid-A, 49–55 m in B), pitch ≈ 15–20° trailing; no wakes in
+  the C ring / Cassini Division. The ring-layer pass probes the field's window mean (`rings.wakeMean`, ≈ 1; a check, no
+  correction).
 * **Near-field photometry contract** (`NearFieldPass`): sub-pixel particles use `ringParticlePhase`; resolved
   ones the regolith law `ringRegolithIF` per pixel × `nearRegolithFactor` per particle (the Sun at the particle's
   phase angle; Saturnshine likewise at Saturn's centre direction, with `extendedSourceCosine` for its ~55° disc),
@@ -373,7 +383,8 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   visibility is not used to thin it: every particle crosses the mid-plane, and wake gaps leave even the B ring
   at τ ~ 1. The near field is active while the camera is within the largest particles' reach. Seeds depend on
   the anchor id and class only; classes whose allocation is unchanged keep their particles across re-fits.
-* **Wakes** (`WakeField`): Toomre λ = 4π²GΣ/κ², pitch ≈ 20° trailing, transient sheared generations.
+* **Wakes** (`WakeField`): Toomre λ = 4π²GΣ/κ², pitch ≈ 15–20° trailing, transient sheared generations with local
+  asynchrony, calibrated against local N-body simulations (ring-physics.md §10); A-ring and B-ring parameter sets.
 * **2-D structure** (`RingStructure`, `sv_ringStructure`): the profile is the Lagrangian τ0(a'); a streamline map
   r = a' + ξ(a', θ, t), ζ(a', θ, t) gives the Eulerian τ = τ0(a') J (J = 1/(∂r/∂a'), surface-density conservation)
   for every renderer. Moonlet edge waves: the universal Hill-problem response (Hénon & Petit 1986 units) of a

@@ -26,7 +26,8 @@
     "test:particles": "node scripts/test/particles.mjs",
     "test:propellers": "node scripts/test/propellers.mjs",
     "test:relief": "node scripts/test/relief.mjs",
-    "test:contact": "node scripts/test/contact.mjs"
+    "test:contact": "node scripts/test/contact.mjs",
+    "test:wakecost": "node scripts/test/wakecost.mjs"
   },
   "dependencies": {
     "three": "^0.187.0"
