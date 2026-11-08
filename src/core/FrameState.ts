@@ -55,19 +55,28 @@ export interface RingFrame {
   tAnchor: number;
 }
 
+export type ParticleQuality = 'low' | 'medium' | 'high';
+export const PARTICLE_QUALITIES: readonly ParticleQuality[] = ['low', 'medium', 'high'];
+
 export interface RenderSettings {
   exposureMode: 'auto' | 'manual';
   /** log2 exposure compensation (auto) or absolute EV offset from the default (manual) */
   exposureEV: number;
-  /** Multiplier on the internal render resolution (the app's default is devicePixelRatio capped to ~2.4 MP) */
+  /** Multiplier on the internal render resolution (scale 1 = devicePixelRatio capped to ~2.4 MP); default 0.5 */
   renderScale: number;
-  /** Scales the near-field particle budget (1 = default; 0.25 low; 3 ultra) */
-  particleDetail: number;
+  /**
+   * Rendering fidelity of the near-field particles - never their number or positions (every particle >= 1
+   * display pixel across is always drawn). high: lumpy triaxial ellipsoids + analytic shadow map; medium:
+   * smooth spheres + shadow map; low: smooth spheres, statistical shadows only.
+   */
+  particleQuality: ParticleQuality;
   wakes: boolean;
   dustRings: boolean;
   stars: boolean;
   labels: boolean;
   nearField: boolean;
+  /** Camera-pinned astronaut in a spacesuit, lower right of the view, for scale (key V) */
+  astronaut: boolean;
   /** Bloom strength multiplier (0 disables) */
   bloom: number;
   /** Debug visualization selector (0 = off). Passes may interpret values. */
@@ -111,6 +120,10 @@ export interface FrameState {
   height: number;
   /** Angular size of one pixel (rad), vertical */
   pixelAngle: number;
+  /** Height of the display canvas in device pixels (0: same as `height`) */
+  canvasHeight: number;
+  /** Angular size of one DISPLAY (canvas) pixel (rad): the unit of the near-field count contract */
+  canvasPixelAngle: number;
   /** camera-local -> SEF rotation (3x3) */
   camToWorld: Matrix3;
   /** SEF -> camera-local rotation (3x3) */
@@ -134,13 +147,14 @@ export function defaultSettings(): RenderSettings {
   return {
     exposureMode: 'auto',
     exposureEV: 0,
-    renderScale: 1,
-    particleDetail: 1,
+    renderScale: 0.5,
+    particleQuality: 'high',
     wakes: true,
     dustRings: true,
     stars: true,
     labels: true,
     nearField: true,
+    astronaut: true,
     bloom: 1,
     debugView: 0,
   };
@@ -168,6 +182,8 @@ export function createFrameState(): FrameState {
     width: 1280,
     height: 720,
     pixelAngle: 1e-3,
+    canvasHeight: 0,
+    canvasPixelAngle: 1e-3,
     camToWorld: new Matrix3(),
     worldToCam: new Matrix3(),
     viewMatrix: new Matrix4(),
@@ -206,6 +222,7 @@ export function updateCameraDerived(f: FrameState): void {
   f.projMatrix.makePerspective(-right, right, top, -top, near, LOG_DEPTH_FAR);
   f.invProjMatrix.copy(f.projMatrix).invert();
   f.pixelAngle = (2 * Math.tan(f.fovY / 2)) / f.height;
+  f.canvasPixelAngle = (2 * Math.tan(f.fovY / 2)) / (f.canvasHeight > 0 ? f.canvasHeight : f.height);
 }
 
 /** Camera forward direction (SEF) */

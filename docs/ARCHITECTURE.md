@@ -10,7 +10,7 @@ number, size, distribution, and thickness of the particles — what it would *fe
 
 Implications:
 * Everything is at true scale and in SI units: Saturn 60,268 km equatorial radius; the main rings are
-  ~10–20 m thick across a 70,000 km span; particles are 1 cm–10 m; Iapetus orbits at 3.56 million km.
+  ~10–20 m thick across a 70,000 km span; particles are mm–10 m; Iapetus orbits at 3.56 million km.
 * Motion is physical: Keplerian orbits (J2-corrected), Keplerian shear in the rings, epicycles, vertical
   oscillation, real moon ephemerides, Saturn's rotation and winds. Default time = **now, real time (1×)**,
   with warp. At 1× the rings look almost still (mm/s random velocities; 2 cm/s shear 100 m away) —
@@ -27,7 +27,7 @@ Implications:
   Prints browser console output + page errors (shader compile errors show here). View PNGs with the Read tool.
   Put screenshots in the session scratchpad, not the repo.
 * Sandbox pages (`sandbox/*.html`) use `sandbox/common.ts` (`startSandbox`) — see its header for URL camera
-  parameters (`cam=orbit|ring|look`, `t=`, `warp=`, `fov=`, `detail=`, `ev=`, `debug=`). `window.__sv`
+  parameters (`cam=orbit|ring|look`, `t=`, `warp=`, `fov=`, `quality=`, `ev=`, `debug=`). `window.__sv`
   exposes `{frame, pipeline, clock, world, anchor, setCamera}`.
 
 ## Conventions
@@ -66,17 +66,34 @@ Implications:
 | 0 | clear (internal) | | sceneRT = (0,0,0, SKY_DIST), depth = 1 |
 | 1 | **far** `passes/FarFieldPass.ts` `FarFieldPass` | shared uniforms | sceneRT rgb + a(=distance m) + log depth |
 | 2 | **near** `passes/NearFieldPass.ts` `NearFieldPass` | sceneRT depth (depth-tested) | sceneRT rgb + a + depth |
+| 2b | **overlay** `passes/AstronautPass.ts` `AstronautPass` (`settings.astronaut`) | sceneRT depth, near shadow map (`ctx.nearShadow`), ringshine table (`ctx.ringshineTable`) | sceneRT rgb + a + depth |
 | 3 | **rings** `passes/RingLayerPass.ts` `RingLayerPass` | sceneRT (rgb, distance) | hdrRT (radiance) |
 | 3b | late HDR hooks (`far/lateHooks.ts`, run at the start of PostPass) | sceneRT.a | hdrRT (additive) |
 | 4 | **post** `PostPass.ts` `PostPass` | hdrRT | screen |
 
+* **Astronaut** (`AstronautPass`, geometry/shaders in `src/render/astronaut/`): a procedural EVA-suited figure
+  (1.9 m, ~24k triangles, per-vertex material ids) pinned to the camera — body centre at NDC (0.55, −0.3),
+  3.75 m away at fov ≥ 60° (farther when needed so it stays fully in view), idle sway on wall-clock time. Opaque
+  in sceneRT with per-vertex log depth (cm-sized triangles), so particles occlude / pass through it and the
+  medium composites over it. Lighting in physical units with the particles' models: Sun × Saturn / moon
+  shadows × ring column toward the Sun (Gaussian layer + wake samples, crossing-point τ; thin sheet far away)
+  × the near-field shadow map when it was rendered this frame; diffuse ring light = two-stream field at its
+  depth near the rings, `RingshineTable.irradianceVector` far away (blend 2,000–20,000 km); Saturnshine
+  (sunlit + ring-lit clouds, ring-attenuated across Saturn's disc); gold visor (GGX glint, Saturn mirrored).
+  A second cheap draw writes its visible pixels (fragment distance = sceneRT.a, so not where particles cover it)
+  to an R8 mask, shared as `ctx.meterMask` (frame-stamped, with its screen columns) to keep it out of the
+  exposure meter.
 * Late HDR hooks exist for **sub-pixel sources** (unresolved moons): a single opaque distance per pixel can't
   represent a sub-pixel point in front of the rings, so the far pass registers a hook that adds them to hdrRT
   after the ring layer, with an analytic ring transmission and an occlusion test against sceneRT.a.
 * **Auto exposure** (`PostPass`): highlight meter (per-cell peak/extended brightness, Sun excluded, isolated
   point sources ≤ 64× key) for small bright bodies on black sky; when lit material (> 1e-4 W m⁻² sr⁻¹) covers
-  most of the frame it blends to the 90th percentile of the lit pixels (highlights may clip ≤ 32×) so the
-  inside of the B ring or an eclipse is exposed like an eye would adapt. 0.5 s log-space adaptation; async readback.
+  most of the frame it blends to the 90th percentile of the lit pixels (interpolated within its half-stop
+  histogram bin; highlights may clip ≤ 32×) so the inside of the B ring or an eclipse is exposed like an eye
+  would adapt. 0.5 s log-space adaptation; async readback. Camera-pinned overlays (`ctx.meterMask`: the
+  astronaut's visible pixels) are metered as the scene they hide — each masked pixel reads the pixel mirrored
+  across the nearer side of the overlay's screen box — so the exposure is the same with or without them (glare
+  and tone mapping still include them; the suit may clip in full sun).
 * **Ring layer** (`RingLayerPass`): analytic sheet in the far field; inside/near the slab
   (|z| < `ringSlabHalfThickness(H)`) an adaptive ray-march (half resolution inside the layer and below 1.5 km,
   depth-validated upsample) using a per-frame 256×64 LUT of the shared `ringExtinction`/`ringLayerTauBeyond`
@@ -94,7 +111,10 @@ Implications:
 * `renderer.autoClear = false`. Passes render with `RawShaderMaterial` + `glslVersion: GLSL3`.
 * Pass interface: `RenderPass { name, enabled, init(ctx), resize?(ctx), update?(frame, ctx), render(frame, ctx), stats?(), dispose? }`.
   Keep each pass's **file path and class name** stable — the app imports them.
-* `PipelineContext`: `{ renderer, shared, profile, lod, wakes, sceneRT, hdrRT, width, height }`.
+* `PipelineContext`: `{ renderer, shared, profile, lod, wakes, sceneRT, hdrRT, width, height }`, plus optional
+  shares set by passes for later ones: `nearShadow` (NearFieldPass's sun shadow map: uniforms, the frame it was
+  last rendered, `prepare()`), `ringshineTable` (FarFieldPass's ringshine-on-Saturn texture) and `meterMask`
+  (AstronautPass's visible pixels for PostPass: texture, frame, screen columns).
 
 ### Shared uniforms & GLSL (`src/render/SharedUniforms.ts`, `src/render/shaders/*.glsl`)
 Spread `ctx.shared.u` into your material's uniforms; start shaders with `SV_HEADER_ALL` (from `chunks.ts`) or
@@ -105,12 +125,13 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   pyramid: tau, H, Σ, wake, albedo rgb, dust), local Hill-frame helpers, `ringSunTransmission(p, footprint)`.
 * `sv_lighting`: `phaseLambertSphere`, `phaseHG`, `ringPhase(cosα, dust)`, `saturnshine(p, out dir)`,
   `diskOverlapFraction`, `moonsSunVisibility(p, skip)`, `sunVisibility(p)`; moon spheres `uMoonPosR[32]`.
-* `sv_ringLod` (mirror of `src/rings/RingLod.ts`): size classes, `lodDrawProb(a,k,s)`,
-  `ringExtinction(s, z, tau, H, W, out sigTot, out sigUnres)`, `ringLayerTauBeyond(z, tau, H, dirSign)`,
-  `ringSlabHalfThickness(H)`, `ringLayerProfile`, `ringLayerColumn`, `ringLayerSegmentTau`. The part of τ in
-  particles below the smallest class (aMin < 1 cm: C ring, Cassini Division, outer A ring) is a never-drawn
-  sub-cm layer (`uLodTauSub`, σ_z = `uLodSigZSub` ≈ 0.4 H) included in all of these, so the medium total always
-  equals the local τ. The top class absorbs any aMax > 10.24 m.
+* `sv_ringLod` (mirror of `src/rings/RingLod.ts`): 14 octave size classes from 1 mm, `lodCarryParticle(a,k,s,dz)`
+  (one particle's draw probability: count contract, display pixels via `uLodPixelAngle`), `lodCarry(a,k,s,dz)`
+  (the share of class k the medium leaves out: exact class mean of the former; `a` unused), `ringExtinction(s, z, tau, H, W, out sigTot, out
+  sigUnres)`, `ringLayerTauBeyond(z, tau, H, dirSign)`, `ringSlabHalfThickness(H)`, `ringLayerProfile`,
+  `ringLayerColumn`, `ringLayerSegmentTau`. The part of τ in particles below 1 mm (true dust: D ring, gaps,
+  F/G/E rings, Roche Division) is a never-drawn layer (`uLodTauSub`, σ_z = `uLodSigZSub`) included in all of
+  these, so the medium total always equals the local τ. The top class absorbs any aMax > 16.4 m.
 * `sv_wakes` (mirror of `src/rings/WakeField.ts`): `wakeDisplacement(q)`, `wakeDensity(x)` (local frame, m;
   range [γ^s, γ^−s]), `wakeDensityFiltered(x, footprint)`, `wakeMinDensity()`. Two transient sheared
   generations (`uWakeGen[0..1]` = amplitude, shear, offsets; sin² envelopes, lifetime 3/Ω), narrow-band random
@@ -129,13 +150,37 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   Cassini occultation data if present, else procedural. Other quantities from the zone table
   `src/rings/ringRegions.ts` (q, aMin, aMax, H, Σ/τ, albedo, wake, dust).
 * **Particles** (near field): power-law sizes dN/da ∝ a^-q in [aMin, aMax] with column density fixed by τ;
-  10 octave classes from 1 cm. Vertical Gaussian, std = `sigZFrac(a)·H` (small particles ride higher).
+  14 octave classes from 1 mm (zones with aMin < 1 cm draw their mm particles where they are ≥ 1 px, i.e. within
+  a few metres). Vertical Gaussian, std = `sigZFrac(a)·H` (small particles ride higher).
   Kinematics in the Hill frame (exact linear solution): guiding center x_g, y_g(t) = y_g0 − qΩx_g t;
   epicycle x = x_g + A cos(κt+φ), y = … − 2A(Ω/κ) sin(κt+φ); vertical z = B cos(νt+ψ);
   plus wake displacement `wakeDisplacement(guidingCenter)`.
-* **LOD contract** (`RingLod`): a particle of radius a at distance s is drawn with probability
-  P = clamp((a/(s·pixelAngle·rhoMin))², 0, 1)·window_k(s); the continuous medium carries exactly the
-  remaining optical depth (`ringExtinction`). Both passes must use these functions.
+* **Count contract** (`RingLod`, `sv_ringLod`): every particle whose apparent diameter is ≥ 1 *display*
+  pixel (ρ = a/(s·displayPixelAngle) ≥ 0.5 px; `FrameState.canvasPixelAngle`) is drawn individually at its true
+  position and size — no thinning, no user-controlled count reduction; the render scale changes how particles
+  are rasterized, never which ones are drawn. Below 1 px a narrow handover: the near field draws a particle
+  with probability `lodCarryParticle` = smoothstep(0.4, 0.5, ρ), and the medium leaves out exactly the
+  cross-section-weighted mean of that over each size class's radii (`lodCarry`, used by `ringExtinction` for
+  σ_unres and by the sheet; closed form + 3-point Gauss-Legendre, so no size-within-class approximation).
+  Particles smaller than half a *render* pixel are opaque discs of half a render pixel rasterized with
+  probability (ρ_render/0.5)²·lodCarryParticle (stable per-particle threshold: expected coverage = true
+  coverage, and the ring layer's march still stops at them). `particleQuality` (high/medium/low) only
+  changes the rendering: lumpy ellipsoids + shadow map / spheres + shadow map / spheres, statistical shadows.
+* **Allocation** (`RingLod.configure`): each particle of radius a lives in its own shearing-periodic box of
+  half-size D(a) = min(√((c·a)² − dz²), box[k]), c = 1.25/(displayPixelAngle·0.4): the horizontal distance at
+  which it falls below the handover band (with zoom headroom) from the lowest camera height served (dz above
+  the slab; 0 normally), so nothing is simulated where it could not be drawn; radii within a class are sampled
+  from n(a)·D(a)² (≤ 6 power-law pieces, box a power of a on each: ~1% over the exact D), boxes up to 60 km
+  (10 m boulders are ≥ 1 px out to ~20 km at 1080p), each class generated at the max τ over its own box.
+  Independent of the camera position (particles persist while flying) unless the total exceeds the 12M-slot
+  cap (dense B ring, ~46M): then it is fitted to the camera height h (valid for [h/1.5, 1.5h], re-fit
+  outside); above the layer the zoom-in margin and the band below h are given up first (down to 1.07× / 1.13×:
+  they hold nothing drawn now, but re-fits come sooner), only then are the largest boxes clipped at a common
+  radius; the stats report the visibility-weighted deficit (~0 inside the B ring, where the layer hides
+  everything farther; B ring at 1080p: complete from ≥ 700 m above, ~3–30% short at 50–500 m). Vertical
+  visibility is not used to thin it: every particle crosses the mid-plane, and wake gaps leave even the B ring
+  at τ ~ 1. The near field is active while the camera is within the largest particles' reach. Seeds depend on
+  the anchor id and class only; classes whose allocation is unchanged keep their particles across re-fits.
 * **Wakes** (`WakeField`): Toomre λ = 4π²GΣ/κ², pitch ≈ 20° trailing, transient sheared generations.
 * **Outer rings**: F ring (eccentric, a = 140,221 km), G, E (vertical torus around Enceladus), D — analytic
   in the ring-layer pass (`OUTER_RINGS` in `ringRegions.ts`).
@@ -150,25 +195,18 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
 * `App.ts` frame loop; `passes.ts` loads each pass by dynamic import inside a `GuardedPass` (a throw in
   import/init/update/render disables the pass and falls back to `passes/stubs/*`, or a minimal tone mapper for
   post; `renderer.debug.onShaderError` names the offending pass and GLSL lines).
-* URL parameters: `preset` (place id), `t` (ISO or `now`), `warp`, `paused`, `fov`, `detail`, `scale`, `ev`,
-  `exposure`, `bloom`, `wakes`/`dustRings`/`stars`/`labels`/`nearField`/`hud`, `debug`, and the sandbox-style
+* Resolution: the canvas runs at devicePixelRatio capped to ~2.4 MP; the pipeline renders at
+  `renderScale` × that (default 0.5) and PostPass's final pass upsamples hdrRT bilinearly to the canvas.
+  The frame loop skips display refreshes to honour `AppSettings.maxFps` (default 30; 0 = uncapped).
+* URL parameters: `preset` (place id), `t` (ISO or `now`), `warp`, `paused`, `fov`, `quality` (high|medium|low), `scale`, `fps`, `ev`,
+  `exposure`, `bloom`, `wakes`/`dustRings`/`stars`/`labels`/`nearField`/`astronaut`/`hud`, `debug`, and the sandbox-style
   `cam=orbit|ring|look` parameters.
 * Test hooks: `window.__sv = { app, frame, pipeline, clock, world, renderer, camera, anchor, presets,
   goto(name, {instant}), setTime(iso), setWarp(n), info(), toggleCoorbit(), toggleBallistic(), flyTo(name) }`;
   `window.__svReady` becomes true 8 frames after the loading screen hides. `sandbox/app.html` = the app on stub
   passes. Batch screenshots: `node scripts/shots.mjs <spec.json> <outDir>` (format in its header).
 
-## File ownership (parallel development — historical; all modules are now maintained together)
-| owner | files |
-|---|---|
-| orchestrator | `src/core/**`, `src/render/Pipeline.ts`, `SharedUniforms.ts`, `fullscreen.ts`, `shaders/{common,saturn,ringProfile,lighting}.glsl`, `shaders/chunks.ts`, `src/rings/RingProfile.ts`, `src/render/passes/stubs/**`, `sandbox/common.ts`, `scripts/shot.mjs`, `docs/ARCHITECTURE.md` |
-| ring science & data | `public/data/rings/**`, `scripts/data/rings/**`, `src/rings/ringRegions.ts` (values), `docs/ring-physics.md` |
-| moons & sky data | `public/data/{moons,stars,textures,ephemeris}/**`, `scripts/data/{moons,stars,textures,ephemeris}/**`, `src/moons/**` (except `types.ts`), `src/sky/**`, `docs/data-sources.md` |
-| far field | `src/render/passes/FarFieldPass.ts`, `src/render/far/**`, `src/render/PostPass.ts`, `sandbox/far.*` |
-| ring layer | `src/render/passes/RingLayerPass.ts`, `src/render/rings/**`, `sandbox/rings.*` |
-| near field | `src/render/passes/NearFieldPass.ts`, `src/render/near/**`, `src/rings/RingLod.ts`, `src/rings/WakeField.ts`, `shaders/{ringLod,wakes}.glsl`, `sandbox/near.*` |
-| app | `index.html`, `src/main.ts`, `src/app/**`, `src/camera/**`, `src/ui/**`, `sandbox/app.*` |
-
-Don't edit files you don't own. If you need a change in a shared file, work around it locally and describe
-the needed change in your final report. In your sandbox use `passes/stubs/*` for other agents' passes so their
-in-progress work can't break yours.
+## Stub passes
+`src/render/passes/stubs/*` (`FarFieldStub`, `RingLayerStub`) are minimal, dependency-free versions of the far
+and ring-layer passes. The app falls back to them when a real pass fails (`GuardedPass`), and sandbox pages can
+use them to test one subsystem in isolation. Task → file map: `CLAUDE.md`.

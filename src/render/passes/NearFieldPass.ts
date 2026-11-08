@@ -2,13 +2,13 @@
 // to a few km of the camera, drawn individually, at true size, moving with the exact linearized orbital
 // dynamics of the local co-orbiting (Hill) frame.
 //
-// Population (shared LOD contract, src/rings/RingLod.ts): 10 octave size classes. Class k is a
-// shearing-periodic square box of half-size box[k] around the camera holding slots[k] particle slots
-// (number density nPerTau*tauBoxMax). Each slot is present with probability tau_macro(r)/tauBoxMax at its
-// guiding-center radius (real radial profile: gaps are empty, edges sharp). Static attributes (radius from
-// the power law, epicycle and vertical amplitudes/phases, spin, shape, albedo) are hashes of the slot
-// index, so the only GPU state is the azimuthal guiding center Y_e (R32F, ping-pong, re-based so that
-// the shear drift stays small for any warp, including negative).
+// Population (shared LOD contract, src/rings/RingLod.ts): 14 octave size classes of slots[k] particle slots;
+// each particle lives in its own shearing-periodic square box around the camera (half-size = its horizontal
+// reach to the handover band, at most box[k]) at number density nPerTau*tauMax. Each slot is present with
+// probability tau_macro(r)/tauMax at its guiding-center radius (real radial profile: gaps are empty, edges
+// sharp). Static attributes (radius and box from the class sampler, epicycle and vertical amplitudes/phases,
+// spin, shape, albedo) are hashes of the slot index, so the only GPU state is the azimuthal guiding center
+// Y_e (R32F, ping-pong, re-based so that the shear drift stays small for any warp, including negative).
 //
 // Per frame:
 //   1. per active class: (re-base / init the state rows when needed), update pass -> R0 rows: camera-relative
@@ -30,15 +30,14 @@
 // 15 wake density at the particles, 17 map-vs-statistics, 18 caster map, 19-22 shadow lookup tests,
 // 31 no surface noise. `skip` disables sub-passes for profiling.
 import {
-  BufferGeometry, DoubleSide, FloatType, GLSL3, InstancedBufferGeometry, LessEqualDepth, Mesh, NearestFilter,
-  NoBlending, Points, RawShaderMaterial, RedFormat, RGBAFormat, Vector2, Vector3, Vector4, WebGLRenderTarget,
-  type IUniform,
+  BufferGeometry, DoubleSide, FloatType, GLSL3, InstancedBufferGeometry, LessEqualDepth, Mesh, NearestFilter, NoBlending,
+  Points, RawShaderMaterial, RedFormat, RGBAFormat, Vector2, Vector3, Vector4, WebGLRenderTarget, type IUniform,
 } from 'three';
 import type { FrameState } from '../../core/FrameState';
 import type { PipelineContext, RenderPass } from '../Pipeline';
 import { fullscreenGeometry, fsCamera, FS_VERT } from '../fullscreen';
 import { SV_HEADER_ALL } from '../shaders/chunks';
-import { LOD_CLASSES, type RingLod } from '../../rings/RingLod';
+import { LOD_CLASSES, LOD_PIECES, type RingLod } from '../../rings/RingLod';
 import { SATURN } from '../../core/constants';
 import nearCommon from '../near/nearCommon.glsl?raw';
 import nearUpdate from '../near/nearUpdate.glsl?raw';
@@ -60,7 +59,6 @@ const PT_MAX_PX = 180;
 const MAX_QUADS = 16384;
 const modTwoPi = (x: number) => x - Math.floor(x / TWO_PI) * TWO_PI;
 const frac = (x: number) => x - Math.floor(x);
-const wrapPos = (x: number, p: number) => x - Math.floor(x / p) * p;
 
 /** Slot classification shared by the pyramid build and the list traversal. */
 const NEAR_CLASSIFY_GLSL = /* glsl */ `
@@ -77,7 +75,7 @@ int nearClassOfRow(int row) {
   }
   return -1;
 }
-// list membership of a slot: (point sprite, quad, shadow caster, 0)
+// list membership of a slot: (point sprite, quad, shadow caster, counted: drawn and >= 1 display px across)
 vec4 nearClassify(ivec2 tc) {
   if (tc.x >= uTexW || tc.y >= uTexRows) return vec4(0.0);
   vec4 r0 = texelFetch(tR0, tc, 0);
@@ -87,15 +85,22 @@ vec4 nearClassify(ivec2 tc) {
   // every present particle of the mapped classes inside the shadow tube casts (drawn or not)
   float cst = nearShadowCaster(r0.xyz, 1.4 * abs(r0.w), k) ? 1.0 : 0.0;
   if (r0.w < 0.0) return vec4(0.0, 0.0, cst, 0.0);
+  float s = max(length(r0.xyz), 1e-4);
+  float cnt = lodRho(r0.w, s) >= LOD_RHO_FULL ? 1.0 : 0.0;
+  // rasterization (fidelity only; the count above is fixed): in the handover band with probability
+  // lodCarryParticle, below half a render pixel as a disc of half a render pixel with probability (rho / 0.5)^2 x it
   uint idx = uint((tc.y - uClsRow0[k]) * uTexW + tc.x);
+  float rhoR = r0.w / (s * uPixelAngle);
+  float pr = lodCarryParticle(r0.w, k, s, r0.z) * min(1.0, 4.0 * rhoR * rhoR);
+  if (nearU(idx, uint(uClsSeed[k]), NS_LOD) >= pr) return vec4(0.0, 0.0, cst, cnt);
+  if (rhoR < 0.5) return vec4(1.0, 0.0, cst, cnt);
   float rb = r0.w * nearShape(idx, uint(uClsSeed[k])).x;
-  float s = length(r0.xyz);
-  if (s < 1.02 * rb + 1e-3) return vec4(0.0, 0.0, cst, 0.0);   // camera inside the particle
+  if (s < 1.02 * rb + 1e-3) return vec4(0.0, 0.0, cst, cnt);   // camera inside the particle
   float w = -(uWorldToCam * r0.xyz).z;
   float sinB = rb / s, cosT = w / s;
   float rpx = w > 0.0 ? sinB * inversesqrt(max(1.0 - sinB * sinB, 1e-6)) / (uPixelAngle * cosT * cosT) : 1e9;
   bool big = w < 3.0 * rb || rpx > uPtMax || cosT < 0.35;
-  return big ? vec4(0.0, 1.0, cst, 0.0) : vec4(1.0, 0.0, cst, 0.0);
+  return big ? vec4(0.0, 1.0, cst, cnt) : vec4(1.0, 0.0, cst, cnt);
 }
 `;
 
@@ -113,7 +118,16 @@ interface ClassState {
   row0: number;
   rows: number;
   seed: number;
+  /** largest (horizontal) box half-size of the class (m); each particle has its own box (RingLod sampler) */
   D: number;
+  /** 3-D reach factor: the class is active while the camera is within cBox aHi of the layer */
+  cBox: number;
+  aHi: number;
+  /** radius / box sampler (RingLod.pieceP / pieceB of the class; fixed per allocation) */
+  pieceP: Float32Array;
+  pieceB: Float32Array;
+  /** particles are generated at this tau and thinned by tau(r)/tauMax (presence) */
+  tauMax: number;
   /** box reference (local frame, m): camera position when the class was initialized */
   c0x: number;
   c0y: number;
@@ -190,6 +204,8 @@ export class NearFieldPass implements RenderPass {
   private readonly clsSeed = { value: new Int32Array(LOD_CLASSES) };
   private readonly clsSpinW = { value: new Float32Array(LOD_CLASSES) };
   private readonly texRowsU = { value: 1 };
+  /** per class: half-size of the allocated periodic particle box (m) - where instantiated particles end */
+  private readonly allocDU = { value: new Float32Array(LOD_CLASSES) };
   private readonly r0U = { value: null as any };
   /** two-stream back-scatter fractions of the particle phase function: (diffuse, beam at the current mu0) */
   private readonly betaU = { value: new Vector2(0.719, 0.55) };
@@ -200,17 +216,22 @@ export class NearFieldPass implements RenderPass {
   private readonly env2U = { value: new Vector4(0.5, 0, 0, 0) };
   private readonly satDirU = { value: new Vector3(-1, 0, 0) };
   private readonly noiseU = { value: buildNearNoise() };
+  /** render fidelity (settings.particleQuality): 0 low, 1 medium, 2 high */
+  private readonly qualityU = { value: 2 };
 
   // stats
   private frame = 0;
   private readback: { pbo: WebGLBuffer; fence: WebGLSync; wait: number } | null = null;
   private readBuf = new Float32Array(4);
-  private listCounts = [0, 0, 0];
+  /** last read-back list sizes: (opaque sprites, quads, shadow casters, blended dots) */
+  private listCounts = [0, 0, 0, 0];
 
   init(ctx: PipelineContext): void {
     this.ctx = ctx;
     this.shadow = new NearShadow();
-    const sh = { ...ctx.shared.u, ...this.shadow.uniforms };
+    // later passes (the astronaut) receive the particles' shadows from the same map
+    ctx.nearShadow = { uniforms: { ...this.shadow.uniforms, uNearAllocD: this.allocDU }, frame: -1, prepare: (r) => this.shadow.prepare(r) };
+    const sh = { ...ctx.shared.u, ...this.shadow.uniforms, uNearQuality: this.qualityU };
     const common = SV_HEADER_ALL + '\n' + nearCommon + '\n' + NEAR_SHADOW_COMMON_GLSL + '\n';
     const tables = (): Record<string, IUniform> => ({
       tR0: this.r0U,
@@ -233,10 +254,10 @@ export class NearFieldPass implements RenderPass {
         uCount: { value: 0 },
         uClass: { value: 0 },
         uSeed: { value: 1 },
-        uBoxD: { value: 1 },
-        uRad: { value: new Vector3(0.01, 0.02, 3) },
+        uRadP: { value: new Float32Array(LOD_PIECES * 4) },
+        uRadB: { value: new Float32Array(LOD_PIECES * 4) },
         uSig: { value: new Vector2(1, 1) },
-        uCamMod: { value: new Vector2() },
+        uCamOff: { value: new Vector2() },
         uKin: { value: new Vector4() },
         uShear: { value: new Vector4() },
         uTauBoxMax: { value: 1 },
@@ -259,7 +280,8 @@ export class NearFieldPass implements RenderPass {
         uCount: { value: 0 },
         uSeed: { value: 1 },
         uMode: { value: 0 },
-        uBoxD: { value: 1 },
+        uRadP: { value: new Float32Array(LOD_PIECES * 4) },
+        uRadB: { value: new Float32Array(LOD_PIECES * 4) },
         uShear: { value: new Vector4() },
       },
       depthTest: false,
@@ -293,6 +315,7 @@ export class NearFieldPass implements RenderPass {
           uNearEnv: this.envU,
           uNearEnv2: this.env2U,
           uNearSatDir: this.satDirU,
+          uNearAllocD: this.allocDU,
           tNearNoise: this.noiseU,
           uDebug: { value: 0 },
         },
@@ -327,7 +350,11 @@ export class NearFieldPass implements RenderPass {
     this.quads.frustumCulled = false;
 
     for (let k = 0; k < LOD_CLASSES; k++) {
-      this.classes.push({ k, slots: 0, row0: 0, rows: 0, seed: 1, D: 1, c0x: 0, c0y: 0, tRef: 0, tE: 0, cur: 0, needsInit: true, active: false });
+      this.classes.push({
+        k, slots: 0, row0: 0, rows: 0, seed: 1, D: 1, cBox: 1, aHi: 0.02, tauMax: 1,
+        pieceP: new Float32Array(LOD_PIECES * 4), pieceB: new Float32Array(LOD_PIECES * 4),
+        c0x: 0, c0y: 0, tRef: 0, tE: 0, cur: 0, needsInit: true, active: false,
+      });
     }
   }
 
@@ -335,27 +362,53 @@ export class NearFieldPass implements RenderPass {
   private reallocate(lod: RingLod, f: FrameState): void {
     let row = 0;
     let total = 0;
+    const anchorChanged = f.ring.anchorId !== this.anchorId;
     // largest particles first: the compacted lists follow texture order, so if a list is ever truncated
-    // (stale draw cap for a frame) only the smallest particles are affected
+    // (stale draw cap for a frame) only the smallest particles are affected; classes added or dropped as the
+    // camera height changes are the small ones at the end, so the larger ones keep their rows
+    const np = LOD_PIECES * 4;
     for (let k = LOD_CLASSES - 1; k >= 0; k--) {
       const c = this.classes[k];
-      c.slots = Math.max(0, lod.slots[k]);
+      const slots = Math.max(0, lod.slots[k]);
+      // generation tau: the integer slot count is ceil(count), so the presence threshold is scaled to keep the
+      // expected number of particles exact
+      const tauMax = slots > 0 ? Math.max((lod.tauMax[k] * slots) / lod.count[k], 1e-6) : 1;
+      const seed = hashSeed(f.ring.anchorId * 131, k + 1);   // deterministic per anchor and class
+      const pP = lod.pieceP.subarray(k * np, (k + 1) * np), pB = lod.pieceB.subarray(k * np, (k + 1) * np);
+      // a class whose allocation is unchanged keeps its particles exactly (its state rows are kept / copied)
+      let same = !anchorChanged && !c.needsInit && slots > 0 && c.slots === slots && c.row0 === row && c.D === lod.box[k] &&
+        c.tauMax === tauMax && c.seed === seed;
+      for (let i = 0; same && i < np; i++) same = c.pieceP[i] === pP[i] && c.pieceB[i] === pB[i];
+      c.slots = slots;
       c.rows = Math.ceil(c.slots / TEX_W);
       c.row0 = row;
       row += c.rows;
       total += c.slots;
+      // each particle's own periodic box (horizontal reach to the handover band): nothing is simulated where it
+      // can't be drawn
       c.D = lod.box[k];
-      c.seed = hashSeed(f.ring.anchorId * 131 + lod.allocVersion, k + 1);
-      c.needsInit = true;
+      c.cBox = lod.cAlloc;
+      c.aHi = lod.aHi[k];
+      c.pieceP.set(pP);
+      c.pieceB.set(pB);
+      c.tauMax = tauMax;
+      // the shadow map's statistical complement: where the class's instantiated particles end (cross-section
+      // weighted: the box of a particle of radius aEff)
+      this.allocDU.value[k] = slots > 0 ? Math.min(lod.boxOf(k, lod.aEff[k]), c.D) : 0;
+      c.seed = seed;
+      if (!same) c.needsInit = true;
     }
     this.totalSlots = total;
     const need = Math.max(row, 1);
     if (need > this.texRows) {
       const rows = Math.ceil((need * 1.1 + 16) / 64) * 64;
+      const oldState = this.stateRT;
       this.r0RT?.dispose();
-      for (const s of this.stateRT) s.dispose();
       this.r0RT = makeSlotRT(rows, true);
       this.stateRT = [makeSlotRT(rows, false), makeSlotRT(rows, false)];
+      // classes that keep their particles: copy their state rows into the new textures
+      for (const c of this.classes) if (!c.needsInit && c.rows > 0 && oldState.length) this.copyRows(oldState[c.cur], this.stateRT[c.cur], c.row0, c.rows);
+      for (const s of oldState) s.dispose();
       this.texRows = rows;
       this.texRowsU.value = rows;
       this.r0U.value = this.r0RT.texture;
@@ -370,6 +423,33 @@ export class NearFieldPass implements RenderPass {
     this.capStale = true;
   }
   private capStale = true;
+
+  private copyMesh: Mesh | null = null;
+  /** copy rows [row0, row0 + rows) of a slot texture into another one (same rows) */
+  private copyRows(src: WebGLRenderTarget, dst: WebGLRenderTarget, row0: number, rows: number): void {
+    if (!this.copyMesh) {
+      const m = new RawShaderMaterial({
+        glslVersion: GLSL3,
+        vertexShader: FS_VERT,
+        fragmentShader: /* glsl */ `
+          precision highp float; precision highp sampler2D;
+          uniform sampler2D tSrc; layout(location = 0) out vec4 o;
+          void main() { o = texelFetch(tSrc, ivec2(gl_FragCoord.xy), 0); }`,
+        uniforms: { tSrc: { value: null } },
+        depthTest: false,
+        depthWrite: false,
+        blending: NoBlending,
+      });
+      this.copyMesh = new Mesh(fullscreenGeometry(), m);
+      this.copyMesh.frustumCulled = false;
+    }
+    const r = this.ctx.renderer;
+    (this.copyMesh.material as RawShaderMaterial).uniforms.tSrc.value = src.texture;
+    dst.viewport.set(0, row0, TEX_W, rows);
+    r.setRenderTarget(dst);
+    r.render(this.copyMesh, fsCamera);
+    dst.viewport.set(0, 0, dst.width, dst.height);
+  }
 
   update(f: FrameState, ctx: PipelineContext): void {
     const lod = ctx.lod;
@@ -387,10 +467,15 @@ export class NearFieldPass implements RenderPass {
     const qO = ring.qShear * ring.omega;
     const slab = 1.6 * lod.H + 0.5;
     this.frame++;
+    // render fidelity only: the particle field (count, positions, sizes) is independent of it
+    const qs = f.settings.particleQuality;
+    this.qualityU.value = qs === 'low' ? 0 : qs === 'medium' ? 1 : 2;
+    this.lastCamZ = cam.z;
 
     // --- class activity, init and re-base
     for (const c of this.classes) {
-      c.active = c.slots > 0 && Math.abs(cam.z) - slab < c.D;
+      // active while the camera is within the class's 3-D reach of the layer (its box may be clipped horizontally)
+      c.active = c.slots > 0 && Math.abs(cam.z) - slab < Math.min(lod.options.rMax, c.cBox * c.aHi);
       this.clsRow0.value[c.k] = c.row0;
       this.clsRows.value[c.k] = c.active ? c.rows : 0;
       this.clsSeed.value[c.k] = c.seed;
@@ -403,40 +488,44 @@ export class NearFieldPass implements RenderPass {
         this.statePass(c, 0, 0, 0);
         c.needsInit = false;
       } else if (Math.abs(qO * (t - c.tE)) > 0.25) {
+        // (the bulk shift q Omega c0x dtE is reduced per particle, modulo its own box)
         const dtE = t - c.tE;
-        this.statePass(c, 1, qO * dtE, wrapPos(qO * c.c0x * dtE, 2 * c.D));
+        this.statePass(c, 1, qO * dtE, qO * c.c0x * dtE);
         c.tE = t;
         c.cur = 1 - c.cur;
       }
       this.clsSpinW.value[c.k] = modTwoPi((ring.omega / 8) * (t - c.tRef));
     }
 
+    // --- shadow-map geometry first: the update pass keeps every possible caster in its tube
+    // (low particle quality: statistical shadows only)
+    this.shadow.enabled = this.shadowsEnabled && !this.skip.shadow && this.qualityU.value > 0;
+    this.shadowOn = this.shadow.configure(f, lod);
+
     // --- update pass per class -> R0
     this.lap('update');
     const u = this.updMat.uniforms;
     u.uCull.value = this.cullEnabled ? Math.min(this.cullTau, lod.cullTau) : 0;
-    u.uTauBoxMax.value = Math.max(lod.tauBoxMax, 1e-6);
     u.uTauCam.value = ctx.profile.tauAtKm((ring.r0 + cam.x) / 1000);
     this.fsMesh.material = this.updMat;
     for (const c of this.classes) {
       if (!c.active || this.skip.update) continue;
       const k = c.k;
-      const D = c.D, D2 = 2 * D;
       const dtE = t - c.tE, dtRef = t - c.tRef;
       u.tState.value = this.stateRT[c.cur].texture;
       u.uRow0.value = c.row0;
       u.uCount.value = c.slots;
       u.uClass.value = k;
       u.uSeed.value = c.seed;
-      u.uBoxD.value = D;
-      (u.uRad.value as Vector3).set(lod.aLo[k], lod.aHi[k], lod.q);
+      u.uTauBoxMax.value = c.tauMax;
+      u.uRadP.value = c.pieceP;
+      u.uRadB.value = c.pieceB;
       (u.uSig.value as Vector2).set(lod.sigX(k), lod.sigZ(k));
-      const sx = cam.x - c.c0x;
-      const nCam = Math.floor(sx / D2);
-      const F = frac(qO * dtRef);
-      (u.uCamMod.value as Vector2).set(sx - nCam * D2, wrapPos(cam.y - c.c0y, D2));
+      // camera offset from the box reference and the shear terms; reduced per particle modulo its own box in
+      // the shader. F (the shear phase of the copies) is exact in double precision for any elapsed time.
+      (u.uCamOff.value as Vector2).set(cam.x - c.c0x, cam.y - c.c0y);
       (u.uKin.value as Vector4).set(modTwoPi(ring.kappa * dtRef), modTwoPi(ring.nu * dtRef), ring.omega / ring.kappa, 0);
-      (u.uShear.value as Vector4).set(qO * dtE, wrapPos(qO * c.c0x * dtE, D2), F, frac(nCam * F));
+      (u.uShear.value as Vector4).set(qO * dtE, qO * c.c0x * dtE, frac(qO * dtRef), 0);
       this.updMat.uniformsNeedUpdate = true;
       const rt = this.r0RT;
       rt.viewport.set(0, c.row0, TEX_W, c.rows);
@@ -445,9 +534,7 @@ export class NearFieldPass implements RenderPass {
     }
     this.r0RT.viewport.set(0, 0, TEX_W, this.texRows);
 
-    // --- compaction (the shadow-map geometry must be set first: it decides the caster list)
-    this.shadow.enabled = this.shadowsEnabled && !this.skip.shadow;
-    this.shadowOn = this.shadow.configure(f, lod);
+    // --- compaction (the shadow-map geometry, set before the update pass, decides the caster list)
     if (!this.shadowOn) this.shadow.prepare(r);
     this.lap('compact');
     this.l1Mat.uniformsNeedUpdate = true;
@@ -458,6 +545,7 @@ export class NearFieldPass implements RenderPass {
     if (this.shadowOn) {
       this.shMat.uniformsNeedUpdate = true;
       this.shadow.render(r, this.casters, this.listCap(2));
+      if (ctx.nearShadow) ctx.nearShadow.frame = f.frameIndex;
     }
 
     // --- two-stream back-scatter fractions of the (power-law) particle phase function, as the medium uses
@@ -471,10 +559,10 @@ export class NearFieldPass implements RenderPass {
     // --- draw into the scene target
     this.lap('points');
     r.setRenderTarget(ctx.sceneRT);
-    this.ptMat.uniforms.uDebug.value = f.settings.debugView;
-    this.qdMat.uniforms.uDebug.value = f.settings.debugView;
-    this.ptMat.uniformsNeedUpdate = true;
-    this.qdMat.uniformsNeedUpdate = true;
+    for (const m of [this.ptMat, this.qdMat]) {
+      m.uniforms.uDebug.value = f.settings.debugView;
+      m.uniformsNeedUpdate = true;
+    }
     this.ptGeom.setDrawRange(0, this.listCap(0));
     if (!this.skip.points) r.render(this.points, fsCamera);
     this.lap('quads');
@@ -584,7 +672,8 @@ export class NearFieldPass implements RenderPass {
     su.uCount.value = c.slots;
     su.uSeed.value = c.seed;
     su.uMode.value = mode;
-    su.uBoxD.value = c.D;
+    su.uRadP.value = c.pieceP;
+    su.uRadB.value = c.pieceB;
     (su.uShear.value as Vector4).set(shearX, bulk, 0, 0);
     this.stMat.uniformsNeedUpdate = true;
     const dst = mode === 0 ? this.stateRT[c.cur] : this.stateRT[1 - c.cur];
@@ -608,9 +697,7 @@ export class NearFieldPass implements RenderPass {
       gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
       gl.deleteBuffer(rb.pbo);
       this.readback = null;
-      this.listCounts[0] = this.readBuf[0];
-      this.listCounts[1] = this.readBuf[1];
-      this.listCounts[2] = this.readBuf[2];
+      for (let i = 0; i < 4; i++) this.listCounts[i] = this.readBuf[i];
       this.capStale = false;
       return;
     }
@@ -632,12 +719,44 @@ export class NearFieldPass implements RenderPass {
   // (GPU timer queries are not usable for sub-pass timing on ANGLE/Metal; profile with `skip` + fps.)
   private lap(_name: string): void {}
 
+  private lastCamZ = 0;
+  private defCache = { v: -1, z: NaN, value: 0 };
+  /** visibility-weighted count deficit from the camera's current height (cached) */
+  visibleDeficit(): number {
+    const lod = this.ctx?.lod;
+    if (!lod || lod.deficit <= 0) return 0;
+    const dc = this.defCache;
+    if (dc.v !== lod.allocVersion || !(Math.abs(this.lastCamZ - dc.z) <= 0.05 * Math.abs(dc.z) + 0.5)) {
+      dc.v = lod.allocVersion;
+      dc.z = this.lastCamZ;
+      dc.value = lod.visibleDeficit(this.lastCamZ);
+    }
+    return dc.value;
+  }
+
   stats(): Record<string, string | number> {
     const per: string[] = [];
     for (const c of this.classes) if (c.active) per.push(`${c.k}:${fmtCount(c.slots)}`);
+    const lod = this.ctx?.lod;
+    const boxes: string[] = [];
+    if (lod) for (let k = 0; k < LOD_CLASSES; k++) if (lod.slots[k] > 0 && (k % 2 === 0 || k === LOD_CLASSES - 1)) boxes.push(`${fmtSize(lod.aLo[k])}:${fmtDist(lod.box[k])}`);
+    const def = this.visibleDeficit();
     return {
-      allocated: fmtCount(this.totalSlots),
-      drawn: `${fmtCount(this.listCounts[0] + this.listCounts[1])} (${fmtCount(this.listCounts[1])} large)`,
+      // particles >= 1 display px across in view (not statistically occluded): all drawn, whatever the render
+      // scale; rasterized: sprites + quads incl. the handover band (below half a render pixel, coverage-exact
+      // discs with probability (rho / 0.5)^2: the render scale only changes how they are rasterized)
+      drawn: `${fmtCount(this.listCounts[3])} ≥1 px (${fmtCount(this.listCounts[0] + this.listCounts[1])} rasterized, ${fmtCount(this.listCounts[1])} large)`,
+      count: def > 1e-3
+        ? `DEFICIT: ~${(def * 100).toFixed(def < 0.1 ? 1 : 0)}% of the visible particles ≥1 px missing (slot cap: boxes clipped at ${fmtDist(lod!.capRadius)})`
+        : lod && lod.deficit > 1e-3
+          ? `complete: every visible particle ≥1 px across (boxes clipped at ${fmtDist(lod.capRadius)}, beyond what the layer lets you see)`
+          : 'complete: every particle ≥1 px across',
+      // dense rings: the allocation is fitted to the camera height (re-fitted outside the band); the slot cap may
+      // have cut the zoom-in headroom (re-fitted when zooming in beyond it)
+      allocated: `${fmtCount(this.totalSlots)} slots` + (lod?.heightBand
+        ? ` (for heights ${fmtDist(lod.heightBand[0])}–${fmtDist(lod.heightBand[1])}, zoom-in headroom ${lod.marginEff.toFixed(2)}×)`
+        : ''),
+      boxes: boxes.join(' '),
       shadowCasters: fmtCount(this.listCounts[2]),
       classes: per.join(' '),
     };
@@ -669,4 +788,10 @@ function fmtCount(n: number): string {
   if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
   if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
   return String(Math.round(n));
+}
+function fmtSize(a: number): string {
+  return a < 0.01 ? `${(a * 1000).toFixed(a < 0.002 ? 1 : 0)}mm` : a < 1 ? `${(a * 100).toFixed(0)}cm` : `${a.toFixed(1)}m`;
+}
+function fmtDist(d: number): string {
+  return !Number.isFinite(d) ? '∞' : d < 1000 ? `${d.toFixed(d < 10 ? 1 : 0)}m` : `${(d / 1000).toFixed(1)}km`;
 }

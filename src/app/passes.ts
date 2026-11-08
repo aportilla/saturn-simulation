@@ -223,6 +223,13 @@ export async function loadPasses(opts: PassLoadOptions = {}): Promise<LoadedPass
     if (near) passes.near = new GuardedPass(near, 'near field', 'NearFieldPass');
   }
 
+  // camera-pinned astronaut (no fallback: the scene is complete without it)
+  if (!opts.stubs) {
+    const m = await tryImport('astronaut', () => import('../render/passes/AstronautPass'));
+    const ast = construct('astronaut', m.mod?.AstronautPass);
+    if (ast) passes.overlay = new GuardedPass(ast, 'astronaut', 'AstronautPass');
+  }
+
   // ring layer
   let rings: RenderPass | null = null;
   if (!opts.stubs) {
@@ -240,7 +247,7 @@ export async function loadPasses(opts: PassLoadOptions = {}): Promise<LoadedPass
   const postG = realPost ? new GuardedPass(realPost, 'post', 'PostPass', fb) : fb;
   passes.post = postG;
 
-  for (const g of [passes.far, passes.near, passes.rings, passes.post]) if (g) guards.push(g as GuardedPass);
+  for (const g of [passes.far, passes.near, passes.overlay, passes.rings, passes.post]) if (g) guards.push(g as GuardedPass);
   return {
     passes,
     guards,

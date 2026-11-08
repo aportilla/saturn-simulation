@@ -1,0 +1,15 @@
+{
+  "until": "window.__svReady===true",
+  "shots": [
+    { "name": "a-ring-30m", "url": "?preset=a-ring-30m&t=2026-11-07T20:00:00Z&hud=0&labels=0&paused=1&astronaut=1", "wait": 3500 },
+    { "name": "a-ring-inside", "url": "?preset=a-ring-inside&t=2026-11-07T20:00:00Z&hud=0&labels=0&paused=1&astronaut=1", "wait": 3500 },
+    { "name": "b-ring-inside", "url": "?preset=b-ring-inside&t=2026-11-07T20:00:00Z&hud=0&labels=0&paused=1&astronaut=1", "wait": 3500 },
+    { "name": "shadow", "url": "?preset=shadow&t=2026-11-07T20:00:00Z&hud=0&labels=0&paused=1&astronaut=1", "wait": 3500 },
+    { "name": "enceladus", "url": "?preset=enceladus&t=2026-11-07T20:00:00Z&hud=0&labels=0&paused=1&astronaut=1", "wait": 3500 },
+    { "name": "overview", "url": "?preset=overview&t=2026-11-07T20:00:00Z&hud=0&labels=0&paused=1&astronaut=1", "wait": 3500 },
+    { "name": "fov25", "url": "?preset=a-ring-30m&t=2026-11-07T20:00:00Z&hud=0&labels=0&paused=1&astronaut=1&fov=25", "wait": 3500 },
+    { "name": "fov100", "url": "?preset=a-ring-30m&t=2026-11-07T20:00:00Z&hud=0&labels=0&paused=1&astronaut=1&fov=100", "wait": 3500 },
+    { "name": "keyV-hidden", "url": "?preset=a-ring-1km&t=2026-11-07T20:00:00Z&hud=0&labels=0&paused=1&astronaut=1", "eval": "window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyV', key: 'v' }))", "wait": 1500 },
+    { "name": "keyV-shown", "url": "?preset=a-ring-1km&t=2026-11-07T20:00:00Z&hud=0&labels=0&paused=1&astronaut=1", "eval": "window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyV', key: 'v' }))", "wait": 1500 }
+  ]
+}

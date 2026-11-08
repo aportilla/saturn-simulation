@@ -12,24 +12,53 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
 ## Commands
 - `npm run dev` → http://127.0.0.1:5173 (often already running; check with `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5173/`)
 - `npm run typecheck` (tsc --noEmit) and `npm run build` (typecheck + vite build) — keep both clean
+- **Regression suite** (real GPU, starts its own private Vite server unless `--base` answers; ~5.5 min):
+  `npm test` = `test:smoke` (every preset: console/page/GL errors, pass fallbacks, NaN/negative pixels) +
+  `test:physics` (ephemeris, J2–J6 frequencies, particle kinematics vs the exact Hill solution) +
+  `test:counts` (drawn particles vs the analytic expectation, HUD "complete") + `test:seam` (near field +
+  medium vs medium alone, incl. the old arc repro) + `test:exposure` (the astronaut doesn't change the auto
+  exposure). `npm run test:fps` = informational fps table per preset × quality. Details, tolerances, measured
+  values and the shared helpers: `scripts/test/README.md`.
 - Screenshots on the real GPU (headless Chrome, ANGLE/Metal); console errors and page errors are printed:
   - one page: `node scripts/shot.mjs "<url>" <out.png> --until "window.__svReady===true" --wait 3000 [--w --h --dpr --eval "<js>"]`
-  - batch: `node scripts/shots.mjs <spec.json> <outDir> [--w --h] [--uncapped]` (spec format in the file header;
-    shots with the same URL reuse the page, so `eval` can change settings between shots)
+  - batch: `node scripts/shots.mjs <spec.json> <outDir> [--w --h] [--uncapped] [--base URL] [--keep-storage]`
+    (spec format in the file header; relative URLs work — a private server is started if needed, e.g.
+    `scripts/test/specs/*.json`; same-URL shots reuse the page, so `eval` can change settings between shots;
+    localStorage is cleared before every page load, so pin settings in the URL)
+  - image utilities: `node scripts/img.mjs profile|mean|crop …` (PNG brightness profiles, region means, crops)
+  - exposure debugging: `node scripts/meter-debug.mjs "?preset=…&t=…"` (auto-exposure meter intermediates)
   - put screenshots in the session scratchpad, not the repo; view PNGs with the Read tool
 - Useful URLs: `/?preset=<place>` (ids in `src/app/presets.ts`: overview, rings-above, edge-on, a-ring-inside,
   a-ring-30m, a-ring-1km, b-ring-inside, c-ring-inside, cassini-division, shadow, under-rings, encke-gap,
   keeler-gap, f-ring, enceladus, titan, mimas, iapetus, cloud-tops) plus `t=<ISO>` (fix the time for
-  reproducible shots), `hud=0`, `labels=0`, `paused=1`, `warp=`, `fps=0` (uncapped), `scale=`, `debug=<n>`,
-  feature toggles (`wakes=0`, `nearField=0`, …). Full list: ARCHITECTURE.md → "The app".
+  reproducible shots), `hud=0`, `labels=0`, `paused=1`, `warp=`, `fps=0` (uncapped), `scale=` (render scale),
+  `quality=high|medium|low` (particle render fidelity), `debug=<n>`, feature toggles (`wakes=0`, `nearField=0`,
+  `astronaut=0` (the camera-pinned astronaut, key V), …). Full list: ARCHITECTURE.md → "The app".
 - Sandbox pages for one subsystem in isolation: `sandbox/{far,rings,near,moons,ringplot,pipeline,app}.html`
   (`ringplot.html` plots the ring optical-depth profile against the raw occultations).
+
+## Tools and tests live in the repo (standing rule)
+Session scratchpads are deleted after the session, so anything worth running again must be committed:
+- **Browser tests / regression checks** → `scripts/test/` (shared helpers in `scripts/test/lib.mjs`), registered
+  as `npm run test:*` in `package.json`, listed in `scripts/test/README.md`; regression checks also join
+  `npm test`. **General utilities** (screenshots, image comparison, inspection) → `scripts/`.
+  **Data build/verification** → `scripts/data/<topic>/`.
+- **Check `scripts/test/README.md` before writing a new tool** — extend an existing one where possible; its
+  "Adding a tool" section has the template, the `lib.mjs` helpers to reuse and how to register a tool.
+- When you write a script to measure or verify something that could regress or be useful again (a
+  photometry/seam/count check, a perf table, a bug repro, a physics validation), finish it as a reusable tool:
+  CLI arguments instead of hard-coded paths/URLs, an output-dir argument (default under the OS temp dir), a
+  usage header comment, documented expected values/tolerances. Then add it to `scripts/test/README.md` and keep
+  this file's commands in sync. Only true one-off experiments may stay in a scratchpad.
+- **Subagents follow the same rule** — say so in their brief, and fold their tools into the repo when they report.
+- Run the relevant `npm run test:*` (at least `test:smoke`) after rendering or physics changes, and report the
+  results.
 
 ## Runtime hooks (from `eval` in the screenshot tools)
 `window.__sv = { app, frame, pipeline, clock, world, renderer, camera, anchor, presets, goto(name,{instant}),
 setTime(iso), setWarp(n), info(), toggleCoorbit(), toggleBallistic(), flyTo(name) }`; `window.__svReady` turns
 true 8 frames after loading. `__sv.pipeline.stats()` gives per-pass numbers (particles allocated/drawn, ring
-mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,rings,post}.inner` — set
+mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,overlay,rings,post}.inner` — set
 `.enabled = false` to measure a pass's cost. Read HDR radiance with
 `__sv.renderer.readRenderTargetPixels(__sv.pipeline.ctx.hdrRT, x, y, 1, 1, buf)`.
 
@@ -40,6 +69,7 @@ mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,rin
 | ring optical depth, zones (sizes q/aMin/aMax, thickness H, Σ, albedo, wakes, dust), features | `src/rings/ringRegions.ts`, `src/rings/RingProfile.ts`; data `public/data/rings/` |
 | LOD contract (which particles are drawn vs. carried by the medium), self-gravity wakes | `src/rings/RingLod.ts` + `shaders/ringLod.glsl`, `src/rings/WakeField.ts` + `shaders/wakes.glsl` (CPU/GLSL mirrors) |
 | individual ring particles (near field) | `src/render/passes/NearFieldPass.ts`, `src/render/near/*` |
+| astronaut companion (camera-pinned, 1.9 m, for scale; lit like the particles) | `src/render/passes/AstronautPass.ts`, `src/render/astronaut/*` |
 | ring medium at all scales, outer rings, spokes | `src/render/passes/RingLayerPass.ts`, `src/render/rings/*` |
 | Saturn, moons, stars, Sun | `src/render/passes/FarFieldPass.ts`, `src/render/far/*` |
 | exposure, glare, tone mapping | `src/render/PostPass.ts` |
@@ -61,8 +91,11 @@ mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,rin
   an eye (PostPass), it doesn't fake light.
 - **Particle counts are physical, never a quality knob**: every particle ≥ 1 display pixel across is drawn at its
   true position, with sizes/counts from the zone's size distribution and the local optical depth; only render
-  fidelity (shading, shape, shadows, resolution) may be reduced for performance. Sub-pixel material is carried by
-  the continuous medium with exactly the remaining optical depth.
+  fidelity (shading, shape, shadows, resolution) may be reduced for performance. "Pixel" means a display
+  (canvas) pixel — `FrameState.canvasPixelAngle`, not the internal render target — so render scale and
+  `particleQuality` never change counts. Sub-pixel material is carried by the continuous medium with exactly
+  the remaining optical depth. If the 12M-slot memory cap ever binds (B ring seen from above), the HUD reports
+  the deficit (`near.count` in `pipeline.stats()`); never hide it.
 - **One contract, two renderers**: the near field (particles) and the ring layer (medium) must share the LOD
   functions (`ringLod.glsl`) and the particle phase function (`ringParticlePhase` power law in
   `lighting.glsl`); the CPU mirrors (`RingLod.ts`, `WakeField.ts`, `render/rings/phase.ts`, `far/Ringshine.ts`)
@@ -79,8 +112,8 @@ mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,rin
   `src/render/far/textures.ts`).
 - Integer render targets must be allocated before they are sampled, or three.js binds a float placeholder and
   the draw is dropped with `GL_INVALID_OPERATION` (see `NearShadow.prepare`).
-- Performance: measure with `scripts/shots.mjs --uncapped` and `?fps=0`, **one fresh page load per
-  measurement** (several navigations in one tab leave old WebGL contexts alive and roughly halve the fps); GPU
+- Performance: measure with `npm run test:fps` (or `scripts/shots.mjs --uncapped` and `?fps=0`), **one fresh
+  page load per measurement** (several navigations in one tab leave old WebGL contexts alive and roughly halve the fps); GPU
   timer queries are unreliable on ANGLE/Metal. Another agent's browser on the same GPU also skews numbers.
 - Vite reloads the page when a GLSL/TS file changes, so screenshots taken while files are being edited can catch
   the loading screen.

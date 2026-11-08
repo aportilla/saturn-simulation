@@ -3,7 +3,7 @@
 // Frame flow (docs/ARCHITECTURE.md): SimClock.tick -> World.update -> camera rig (camPos/camQuat/fovY +
 // RingAnchor.fill(frame.ring)) -> updateCameraDerived -> Pipeline.render -> HUD / labels.
 import { Quaternion, Vector3, WebGLRenderer } from 'three';
-import { createFrameState, updateCameraDerived, type FrameState, type RenderSettings } from '../core/FrameState';
+import { createFrameState, PARTICLE_QUALITIES, updateCameraDerived, type FrameState, type RenderSettings } from '../core/FrameState';
 import { World } from '../core/World';
 import { SimClock, tdbFromIso } from '../core/time';
 import { hasSunTable, loadSunTable } from '../core/ephemeris';
@@ -41,6 +41,8 @@ export interface AppOptions {
 const EST_TRANSITION_S = 6;
 /** internal render resolution budget (pixels) at render scale 1 */
 const PIXEL_BUDGET = 2.4e6;
+/** tolerance (ms) of the frame-rate cap against requestAnimationFrame jitter */
+const FRAME_SLACK_MS = 4;
 const nextFrame = () => new Promise<void>((r) => requestAnimationFrame(() => r()));
 
 export class App {
@@ -143,7 +145,7 @@ export class App {
     const gl = this.canvas.getContext('webgl2', { antialias: false, alpha: false, depth: true, stencil: false, powerPreference: 'high-performance', preserveDrawingBuffer: true });
     if (!gl) throw new Error('WebGL2 is not available in this browser.');
     this.renderer = new WebGLRenderer({ canvas: this.canvas, context: gl, antialias: false, alpha: false, powerPreference: 'high-performance', preserveDrawingBuffer: true });
-    this.renderer.setPixelRatio(this.pixelRatio());
+    this.renderer.setPixelRatio(this.displayRatio());
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
     this.canvas.addEventListener('webglcontextlost', (e) => {
       e.preventDefault();
@@ -153,28 +155,36 @@ export class App {
     this.input.attach(this.canvas);
   }
 
-  private pixelRatio(): number {
-    // At render scale 1 the internal resolution is capped at ~2.4 MP (1080p class): the ring-layer march and
-    // the particle fill cost scale with pixel count, and a full-screen Retina window would otherwise be
-    // ~3.7x that. Render scale (settings, ?scale=) multiplies this, up to native / supersampled resolution.
+  /**
+   * Canvas (display) pixel ratio: devicePixelRatio, capped so the drawing buffer stays within ~2.4 MP
+   * (1080p class) — a full-screen Retina window would otherwise be ~3.7x that.
+   */
+  private displayRatio(): number {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const css = Math.max(1, window.innerWidth * window.innerHeight);
-    const auto = Math.max(0.5, Math.min(dpr, Math.sqrt(PIXEL_BUDGET / css)));
-    return auto * this.settings.render.renderScale;
+    return Math.max(0.5, Math.min(dpr, Math.sqrt(PIXEL_BUDGET / css)));
   }
 
+  /**
+   * Internal render resolution = canvas resolution x render scale. The ring-layer march and the particle
+   * fill scale with it; the final tone-mapping pass upsamples the HDR image bilinearly to the full-resolution
+   * canvas (much smoother than letting the compositor stretch a small canvas).
+   */
   private targetSize(): { w: number; h: number } {
-    const pr = this.pixelRatio();
-    return { w: Math.max(1, Math.floor(window.innerWidth * pr)), h: Math.max(1, Math.floor(window.innerHeight * pr)) };
+    const pr = this.displayRatio() * this.settings.render.renderScale;
+    return { w: Math.max(1, Math.round(window.innerWidth * pr)), h: Math.max(1, Math.round(window.innerHeight * pr)) };
   }
 
   resize(): void {
-    this.renderer.setPixelRatio(this.pixelRatio());
+    this.renderer.setPixelRatio(this.displayRatio());
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
-    const w = this.renderer.domElement.width, hh = this.renderer.domElement.height;
+    const { w, h: hh } = this.targetSize();
     this.frame.width = w;
     this.frame.height = hh;
     this.frame.aspect = w / hh;
+    // display canvas height: the near-field count contract is in display pixels, so the render scale changes
+    // the fidelity of the particles, never which ones are drawn
+    this.frame.canvasHeight = this.renderer.domElement.height || hh;
     this.pipeline.setSize(w, hh);
   }
 
@@ -185,10 +195,11 @@ export class App {
     for (const [k, v] of Object.entries(o)) {
       if (k === 'fovDeg') this.settings.fovDeg = Math.min(100, Math.max(20, v as number));
       else if (k === 'hud') this.settings.hud = v as boolean;
+      else if (k === 'maxFps') this.settings.maxFps = v as number;
       else r[k] = v;
     }
-    this.settings.render.particleDetail = Math.min(2, Math.max(0.25, this.settings.render.particleDetail));
-    this.settings.render.renderScale = Math.min(2, Math.max(0.5, this.settings.render.renderScale));
+    if (!PARTICLE_QUALITIES.includes(this.settings.render.particleQuality)) this.settings.render.particleQuality = 'high';
+    this.settings.render.renderScale = Math.min(2, Math.max(0.25, this.settings.render.renderScale));
   }
 
   private applyUrlTime(): void {
@@ -452,7 +463,7 @@ export class App {
     }
   }
 
-  private applySetting(k: keyof RenderSettings | 'fovDeg' | 'hud' | 'all'): void {
+  private applySetting(k: keyof RenderSettings | 'fovDeg' | 'hud' | 'maxFps' | 'all'): void {
     if (k === 'renderScale' || k === 'all') this.resize();
     if (k === 'labels' || k === 'all') this.labels.visible = this.settings.render.labels;
     if (k === 'exposureMode' || k === 'all') this.loaded.post()?.snapExposure?.();
@@ -499,6 +510,14 @@ export class App {
         }
         break;
       case 'KeyH': this.setHud(!this.settings.hud); break;
+      case 'KeyV': {
+        const r = this.settings.render;
+        r.astronaut = !r.astronaut;
+        this.applySetting('astronaut');
+        this.settingsPanel.sync();
+        this.toast.show(r.astronaut ? 'Astronaut shown (1.9 m tall, for scale) — V hides it' : 'Astronaut hidden — V brings it back');
+        break;
+      }
       case 'KeyM': this.togglePanel('places'); break;
       case 'KeyO': this.togglePanel('settings'); break;
       case 'KeyI': this.toggleExplainer(); break;
@@ -534,6 +553,10 @@ export class App {
   // ---------------------------------------------------------------- frame loop
   private loop = (now: number): void => {
     requestAnimationFrame(this.loop);
+    // frame-rate cap: skip display refreshes until a full frame interval has passed (the slack keeps the
+    // cadence exact on 60/120 Hz displays despite rAF jitter: 30 fps = every 2nd / 4th refresh)
+    const cap = this.settings.maxFps;
+    if (cap > 0 && now - this.last < 1000 / cap - FRAME_SLACK_MS) return;
     const dtReal = Math.min(Math.max((now - this.last) / 1000, 0), 0.25);
     this.last = now;
     this.tick(dtReal);

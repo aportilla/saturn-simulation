@@ -14,9 +14,11 @@ uniform float uRlDust;  // settings.dustRings (0/1)
 
 float rlPhi(float x) { return 0.5 * (1.0 + erfApprox(x * 0.70710678)); }
 // mean of a unit-peak Gaussian (sigma) over a box window of width w centred at offset x
+// (differences of the approximate CDF can come out slightly negative far from the line: clamped, or the
+// strands produced tiny negative radiances there)
 float rlGaussBox(float x, float sigma, float w) {
   if (w < 0.25 * sigma) return exp(-0.5 * x * x / (sigma * sigma));
-  return 2.50662827 * sigma / w * (rlPhi((x + 0.5 * w) / sigma) - rlPhi((x - 0.5 * w) / sigma));
+  return 2.50662827 * sigma / w * max(rlPhi((x + 0.5 * w) / sigma) - rlPhi((x - 0.5 * w) / sigma), 0.0);
 }
 // mean opacity <1 - exp(-tau(x)/m)> of a Gaussian line (peak tauP, sigma) over a box window w at offset x.
 // Equivalent width of a Gaussian line: EW = sigma sqrt(2 pi) g(tauP/m), g(y) ~ 0.798 sqrt(ln(1 + 1.571 y^2))
@@ -25,9 +27,9 @@ float rlGaussOpacity(float x, float sigma, float w, float tauP, float m) {
   float y = tauP / m;
   float g = 0.798 * sqrt(log(1.0 + 1.571 * y * y));
   float ew = 2.50662827 * sigma * g;
-  float frac = rlPhi((x + 0.5 * w) / sigma) - rlPhi((x - 0.5 * w) / sigma);
+  float frac = max(rlPhi((x + 0.5 * w) / sigma) - rlPhi((x - 0.5 * w) / sigma), 0.0);
   float boxed = min(1.0, ew * frac / max(w, 1e-3));
-  return mix(point, boxed, smoothstep(0.5 * sigma, 2.0 * sigma, w));
+  return clamp(mix(point, boxed, smoothstep(0.5 * sigma, 2.0 * sigma, w)), 0.0, 1.0);
 }
 
 // periodic 1-D value noise on the circle: n cells around 2 pi

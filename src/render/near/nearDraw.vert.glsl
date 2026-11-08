@@ -1,6 +1,9 @@
 // ===== near-field draw: vertex stage (points for small/medium particles, quads for large ones) ======
-// Each vertex fetches its particle through the compacted list (HistoPyramid). Per drawn particle: projected
-// footprint, body orientation, ellipsoid axes, albedo, and the lighting environment at the particle center:
+// Particles smaller than half a render pixel are flat discs of half a render pixel, rasterized with
+// probability (rho / 0.5)^2 (expected coverage = true coverage; at render scale 1 that only concerns the
+// 0.4-0.5 display-px handover band: every particle >= 1 display px is drawn at its true size). Each vertex
+// fetches its particle through the compacted list (HistoPyramid). Per drawn particle: projected footprint, body
+// orientation, ellipsoid axes, albedo, and the lighting environment at the particle center:
 //   sunlight  x Saturn/moon occultation x layer transmission: inside the shadow-map tube the map's
 //             discrete visibility x the statistically unresolved part, elsewhere the whole column; the
 //             statistical column is scaled by the self-gravity-wake density along the sun path (as the
@@ -14,8 +17,9 @@ uniform vec2 uNearBeta;   // two-stream back-scatter fractions of the particle p
 uniform vec4 uNearEnv;    // per frame: (Saturn sun visibility, Saturnshine irradiance, Saturn ang. radius, per-particle moons)
 uniform vec4 uNearEnv2;   // per frame: (fraction of the layer column above the camera, -, -, -)
 uniform vec3 uNearSatDir; // per frame: direction to Saturn's center (SEF)
+uniform float uNearAllocD[LOD_CLASSES];   // half-size of each class's allocated particle box (m; >= the LOD window)
 
-flat out vec4 vC;         // center (camera-relative SEF, m), 1 = tiny (flat disc) else 0
+flat out vec4 vC;         // center (camera-relative SEF, m), 1 = tiny (flat disc of half a render pixel) else 0
 flat out vec4 vQ;         // body -> world orientation
 flat out vec4 vAx;        // ellipsoid semi-axes (m), w = sprite size (px)
 flat out vec4 vAlb;       // albedo rgb, w = surface texture seed
@@ -51,8 +55,10 @@ void main() {
   float cosT = clamp(w / s, -1.0, 1.0);
   float rpx = (w > 0.0) ? sinB / sqrt(max(1.0 - sinB * sinB, 1e-6)) / (uPixelAngle * cosT * cosT) : 1e9;
 
-  float rho = a / (s * uPixelAngle);                  // equivalent-sphere radius (px), as in lodDrawProb
-  bool tiny = rho < uLodRhoMin && !quad;
+  // smaller than half a render pixel: flat disc of half a render pixel (the classifier rasterizes it with
+  // probability (rho / 0.5)^2 x the handover fraction, so its expected coverage is its true one)
+  float rho = a / (s * uPixelAngle);                  // equivalent-sphere radius (render px)
+  bool tiny = rho < 0.5 && !quad;
   vC = vec4(c, tiny ? 1.0 : 0.0);
   vQ = nearOrientation(idx, seed, a, uClsSpinW[k]);
   vTiny = vec4(0.0, 0.0, 0.0, w);
@@ -88,7 +94,9 @@ void main() {
     wsum += wk;
     float qs = sg > 0.0 ? qu : 1.0 - qu;
     if (uShInfo.y > 0.5 && float(kk) >= uShInfo.z) {
-      float D = uLodBox[kk];
+      // the map holds every present particle of this class out to the edge of its allocated box (not just
+      // the LOD window): only the column beyond that edge is statistical
+      float D = uNearAllocD[kk];
       float tx = abs(sdir.x) > 1e-6 ? (sign(sdir.x) * D - pl2.x) / sdir.x : 1e9;
       float ty = abs(sdir.y) > 1e-6 ? (sign(sdir.y) * D - pl2.y) / sdir.y : 1e9;
       qs = lodGaussQ(sg * (zl + max(min(tx, ty), 0.0) * dzdl), sig);
@@ -167,9 +175,8 @@ void main() {
   vSS = vec4(dS, mapW);
 
   if (tiny) {
-    // sub-pixel: flat disc of radius rhoMin with the disc-averaged radiance of the particle
-    // (drawn with probability (rho/rhoMin)^2 by the LOD, so the expected flux is exact); shadows from the
-    // caster map as a sharp point sample at the center (the particle itself excluded)
+    // sub-render-pixel: flat disc with the disc-averaged radiance of the particle; shadows from the caster map
+    // as a sharp point sample at the center (the particle itself excluded)
     float T = needSh > 0.5 ? mix(vT.x, vT.y * nearShadowVisibilityPoint(c, c), mapW) : vT.x;
     // diffuse light seen on the visible hemisphere, weighted like the medium (back-scatter fraction beta)
     float cb = (2.0 * uNearBeta.x - 1.0) * sg * vdir.z;
@@ -181,8 +188,7 @@ void main() {
   if (!quad) {
     gl_Position = uProj * vec4(v, 1.0);
     gl_Position.z = 0.0;   // depth is written per fragment
-    float r = tiny ? uLodRhoMin : rpx;
-    float sz = 2.0 * r + 2.0;
+    float sz = 2.0 * (tiny ? 0.5 : rpx) + 2.0;
     gl_PointSize = sz;
     vAx = vec4(ax, sz);
   } else {

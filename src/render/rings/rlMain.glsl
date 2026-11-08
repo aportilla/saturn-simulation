@@ -92,7 +92,9 @@ void rlSlabSegment(vec3 rd, float sd, out float sA, out float sB, out float sBns
       float fpH = sMid * uPixelAngle * (uRlUseLow > 0.5 ? 2.0 : 1.0);
       // handover over 5 -> 2.5 px per wake spacing: completes before the march's contrast fade begins
       float wW = uRlWakeLevels > 0 ? smoothstep(2.5, 5.0, uRlLambda / max(fpH, 1e-6)) : 0.0;
-      float wL = sMid < uRlLodRange ? 1.0 : 0.0;
+      // near-field particle range: blend march -> sheet over the last quarter of the range (the sheet
+      // carries sigma_unres there too, see main(), so the LOD contract holds across the band)
+      float wL = uRlLodRange > 0.0 ? 1.0 - smoothstep(0.75 * uRlLodRange, uRlLodRange, sMid) : 0.0;
       wM = max(wW, wL);
     }
   }
@@ -133,6 +135,11 @@ void main() {
   float zc = uRingCamLocal.z;
   float tP = abs(rd.z) > 1e-12 ? -zc / rd.z : -1.0;
   bool hitP = tP > 0.0 && tP < sd;
+  // a scene object inside the particle layer (a near-field particle) is seen through the part of the layer
+  // between it and the camera, not all-or-nothing at the midplane (that made particles in front of the
+  // midplane unattenuated and the sheet regime with particles ~2-3 % darker than the march at grazing view)
+  float zObj = zc + rd.z * sd;
+  bool objIn = tP > 0.0 && sd < 1e29 && abs(zObj) < ringSlabHalfThickness(uRlHSlab);
   float sA, sB, sBns, wM;
   bool inside;
   rlSlabSegment(rd, sd, sA, sB, sBns, wM, inside);
@@ -141,8 +148,8 @@ void main() {
   vec3 Lp = vec3(0.0);
   float Tp = 1.0;
   float tauHit = 0.0, steps = 0.0, fpHit = 0.0, rHit = 0.0, thHit = 0.0;
-  float tOrder = hitP ? tP : (wM > 0.0 ? sA : 1e30);
-  if (hitP && wM < 1.0) {
+  float tOrder = hitP ? tP : (objIn ? sd : (wM > 0.0 ? sA : 1e30));
+  if ((hitP || objIn) && wM < 1.0) {
     vec3 p = rd * tP;
     vec3 l = ringLocalFromRel(p);
     float dr = ringDrFromLocal(l);
@@ -155,9 +162,31 @@ void main() {
     vec3 La;
     float Ta;
     if (r < 1.4e8) {
-      rlMainSheet(rd, p, dr, theta, fp, La, Ta, tauHit);
-    } else {
+      // LOD contract: where near-field particles are drawn the sheet carries only the optical depth they do
+      // not, 1 - sum_k tauFrac_k carry_k (the column share: carry is constant across the thin slab crossing,
+      // so this equals the march's integral of sigma_unres). carry decreases with distance and is < 0.5 % of
+      // tau at uRlLodRange, so stopping at 1.2x the range is invisible.
+      float unres = 1.0;
+      if (uRlLodRange > 0.0 && tP < 1.2 * uRlLodRange) {
+        float carried = 0.0;
+        for (int k = 0; k < LOD_CLASSES; k++) carried += uLodTauFrac[k] * lodCarry(uLodAEff[k], k, tP, -zc);
+        unres = clamp(1.0 - carried, 0.0, 1.0);
+      }
+      rlMainSheet(rd, p, dr, theta, fp, unres, La, Ta, tauHit);
+      if (objIn) {
+        // share of the layer's column between the camera's side and the object (same vertical model as the
+        // particles: anchor thickness), transmission and emission of that part
+        float q = rlExt(zObj, max(uLodH, 0.1), sd).z;
+        float fr = clamp(zc > 0.0 ? q : 1.0 - q, 0.0, 1.0);
+        float Tf = pow(max(Ta, 1e-6), fr);
+        La *= 1.0 - Ta > 1e-4 ? (1.0 - Tf) / (1.0 - Ta) : fr;
+        Ta = Tf;
+      }
+    } else if (hitP) {
       rlGRings(rd, p, r, theta, fp, La, Ta);
+    } else {
+      La = vec3(0.0);
+      Ta = 1.0;
     }
     Lp = La;
     Tp = Ta;

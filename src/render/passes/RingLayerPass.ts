@@ -311,16 +311,20 @@ export class RingLayerPass implements RenderPass {
     const nearZ = Math.abs(f.ring.camLocal.z);
     const useClip = this.wake.configure(f, lambda, f.ring.omega, wakesOn && nearZ < 1e5);
     u.uRlWakeLevels.value = useClip ? this.wake.levelCount : 0;
-    let lodRange = 0;
-    if (ctx.lod.active) for (let k = 0; k < ctx.lod.box.length; k++) lodRange = Math.max(lodRange, ctx.lod.box[k]);
+    // march (subtracting the near field's optical depth) where the near field carries >= 0.5% of the layer's
+    // tau; beyond that the drawn particles (rare boulders >= 1 px out to ~10-30 km) are few enough for the sheet
+    const lodRange = ctx.lod.active ? ctx.lod.carryRange(0.005) : 0;
     u.uRlLodRange.value = lodRange;
     u.uRlNearOn.value = nearZ < 2e5 ? 1 : 0;
     this.lastLevels = this.wake.levelCount;
     const inside = nearZ < ringSlabHalf(u.uRlHSlab.value as number);
     const marching = nearZ < 2e5 && (inside || useClip || lodRange > 0);
     // well above the layer the slab is crossed in a few steps -> full resolution keeps the wake detail;
-    // close to / inside the layer (long, many-step rays) march at half resolution
-    this.lowActive = this.halfRes && marching && nearZ < 300;
+    // close to / inside the layer (long, many-step rays) march at half resolution -- unless the frame itself
+    // is already rendered at reduced scale (0.5 = a quarter of the display pixels): a further 2x2 reduction
+    // turned the wakes into blocks of 4x4 display px for no saving over the full-scale configuration
+    const renderScale = f.pixelAngle > 0 ? f.canvasPixelAngle / f.pixelAngle : 1;
+    this.lowActive = this.halfRes && marching && nearZ < 300 && renderScale > 0.7;
     u.uRlUseLow.value = this.lowActive ? 1 : 0;
     this.lastMode = inside ? 'inside' : marching ? 'near' : 'far';
 

@@ -100,7 +100,8 @@ startSandbox({
       `${new Date((f.t + 946727930.816) * 1000).toISOString()}  warp ${f.timeWarp}`,
       `r0 ${(r.r0 / 1e3).toFixed(1)} km  cam (${r.camLocal.x.toFixed(1)}, ${r.camLocal.y.toFixed(1)}, ${r.camLocal.z.toFixed(2)}) m`,
       `tau ${lod.tau.toFixed(3)}  tauBoxMax ${lod.tauBoxMax.toFixed(3)}  H ${lod.H} m  q ${lod.q.toFixed(2)}  a ${lod.aMin}-${lod.aMax} m`,
-      `boxes ${Array.from(lod.box).map((b, k) => (lod.slots[k] > 0 ? `${k}:${b.toFixed(0)}` : '')).filter(Boolean).join(' ')}`,
+      `boxes ${Array.from(lod.box).map((b, k) => (lod.slots[k] > 0 ? `${k}:${b.toFixed(0)}` : '')).filter(Boolean).join(' ')}  ` +
+        `display px ${(f.canvasPixelAngle * 1e3).toFixed(3)} mrad  deficit ${(lod.deficit * 100).toFixed(1)}%`,
       `wakes: lambda ${c.wakes.lambda.toFixed(1)} m  strength ${c.wakes.strength.toFixed(2)}  pitch ${c.wakes.pitchDeg.toFixed(1)} deg`,
       `sun elev ${(Math.asin(f.sunDir.z) * 180 / Math.PI).toFixed(2)} deg  local dir (${f.sunDir.dot(r.eR).toFixed(3)}, ${f.sunDir.dot(r.ePhi).toFixed(3)}, ${f.sunDir.z.toFixed(3)})  ` +
         `orbit phase from noon ${(((Math.atan2(r.eR.y, r.eR.x) - Math.atan2(f.sunDir.y, f.sunDir.x)) * 180 / Math.PI + 540) % 360 - 180).toFixed(1)} deg`,

@@ -54,6 +54,7 @@ const HELP: [string, [string, string][]][] = [
     ['C', 'co-orbit here ⇄ orbit Saturn'],
     ['Esc', 'cancel a fly-to / close panels'],
     ['H', 'hide / show the HUD'],
+    ['V', 'hide / show the astronaut (1.9 m, for scale)'],
     ['I', 'show the explainer for this place'],
     ['O', 'settings'],
     ['?', 'this help'],

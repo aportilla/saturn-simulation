@@ -35,7 +35,7 @@ import {
   WebGLRenderTarget, BufferGeometry, LessEqualDepth, type IUniform, type WebGLRenderer,
 } from 'three';
 import { fsCamera } from '../fullscreen';
-import { LOD_A0 } from '../../rings/RingLod';
+import { LOD_A0, LOD_CLASSES } from '../../rings/RingLod';
 import type { RingLod } from '../../rings/RingLod';
 import type { FrameState } from '../../core/FrameState';
 
@@ -246,8 +246,8 @@ export class NearShadow {
     const ev = this.ev.set(-s.x * sz, -s.y * sz, 1 - sz * sz).normalize(); // z - s s_z
     const texel = Math.max((2 * SHADOW_U) / SHADOW_W, (2 * V) / SHADOW_H);
     // first class whose smallest particles span MIN_CASTER_TEXELS texels in radius
-    let k0 = 10;
-    for (let k = 0; k < 10; k++) {
+    let k0 = LOD_CLASSES;
+    for (let k = 0; k < LOD_CLASSES; k++) {
       if (lod.slots[k] > 0 && LOD_A0 * 2 ** k >= MIN_CASTER_TEXELS * texel) { k0 = k; break; }
     }
     this.firstClass = k0;

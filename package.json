@@ -9,7 +9,16 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
-    "shot": "node scripts/shot.mjs"
+    "shot": "node scripts/shot.mjs",
+    "shots": "node scripts/shots.mjs",
+    "img": "node scripts/img.mjs",
+    "test": "node scripts/test/run.mjs smoke physics counts seam exposure",
+    "test:smoke": "node scripts/test/smoke.mjs",
+    "test:physics": "node scripts/test/physics.mjs",
+    "test:counts": "node scripts/test/counts.mjs",
+    "test:seam": "node scripts/test/seam.mjs",
+    "test:fps": "node scripts/test/fps.mjs",
+    "test:exposure": "node scripts/test/exposure.mjs"
   },
   "dependencies": {
     "three": "^0.187.0"

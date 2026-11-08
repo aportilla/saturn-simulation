@@ -295,7 +295,12 @@ vec3 rlTSSource(RlTS s, vec3 w, float beta, float t, float towardFace) {
   vec3 dn = (1.0 - beta) * fd + beta * fu;
   return w * max(mix(dn, up, towardFace), vec3(0.0));
 }
-// emergent multiply-scattered I/F, viewer on the beam face
+// Emergent multiply-scattered I/F (formal solution of the two-stream source along the view direction).
+// beta here weights the source for the EMERGENT direction: by reciprocity, the share of the hemispheric
+// diffuse field scattered into a direction of cosine mu is beta0(mu) (the beam back-scatter fraction), not
+// the hemispheric average beta. beta0 -> 1/2 for grazing directions, so the up- and down-going sources meet
+// continuously at the horizontal (the near-field march uses the same weights).
+// Viewer on the beam face:
 vec3 rlTSEmergeRefl(RlTS s, vec3 w, float beta, float mu) {
   mu = max(mu, 1e-4);
   float im = 1.0 / mu;
@@ -329,6 +334,10 @@ float rlTransW(RlS s, float m, float Wf) {
 // from the column as they cross wake crests). We = Ws = Wv = 1 is the classical homogeneous layer.
 //   refl:  w P/4 We (1 - exp(-k tau)) / (k mu),   k = Ws/muB + Wv/mu - b min(Ws/muB, Wv/mu)
 //   trans: w P/4 We (exp(-Ws tau/muB) - exp(-Wv tau/mu)) / (mu (Wv/mu - Ws/muB))
+// Multiple scattering: the diffuse field is that of the mean layer (it spreads sideways between wakes and
+// gaps over ~H, comparable to the wake width), emitted with density We and seen through Wv:
+//   ms = We int S(t) exp(-Wv t / mu) dt / mu = (We / Wv) Emerge(mu / Wv)
+// -- the same model the near-field march integrates step by step (both wake regimes), so the two agree.
 vec3 rlLayerIFW(RlS s, float mu, float muB, float cosA, bool refl, float We, float Ws, float Wv) {
   mu = max(mu, 1e-4);
   muB = max(muB, 1e-3);
@@ -336,7 +345,10 @@ vec3 rlLayerIFW(RlS s, float mu, float muB, float cosA, bool refl, float We, flo
   vec3 w = s.alb;
   float beta = rlBeta(s.dust);
   float b0 = rlBeta0(muB, s.dust);
-  RlTS ts = rlTwoStream(rlTauM(s, 0.5) * We, w, beta, b0, muB);
+  RlTS ts = rlTwoStream(rlTauM(s, 0.5), w, beta, b0, muB);
+  float bv = rlBeta0(mu, s.dust);            // emergent-direction source weight (see rlTSEmergeRefl)
+  float wv = max(Wv, 1e-3);
+  float kms = We / wv;
   vec3 ss;
   vec3 ms;
   if (refl) {
@@ -345,13 +357,13 @@ vec3 rlLayerIFW(RlS s, float mu, float muB, float cosA, bool refl, float We, flo
     float k = as + av - bsh * min(as, av);
     float Tk = exp(-k * rlTauM(s, 1.0 / k));
     ss = w * (0.25 * P * We) * (1.0 - Tk) / (k * mu);
-    ms = rlTSEmergeRefl(ts, w, beta, mu);
+    ms = kms * rlTSEmergeRefl(ts, w, bv, mu / wv);
   } else {
     float Tb = rlTransW(s, muB, Ws), Tm = rlTransW(s, mu, Wv);
     float d = Wv / mu - Ws / muB;
     float f = abs(d) * mu < 0.02 * Wv ? rlTauM(s, muB / max(Ws, 1e-3)) * Tb / mu : (Tb - Tm) / (d * mu);
     ss = w * (0.25 * P * We) * max(f, 0.0);
-    ms = rlTSEmergeTrans(ts, w, beta, mu);
+    ms = kms * rlTSEmergeTrans(ts, w, bv, mu / wv);
   }
   return (ss * uRlSSScale + ms * uRlMSScale) * s.cover;
 }

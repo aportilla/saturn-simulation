@@ -198,6 +198,7 @@ export class FarFieldPass implements RenderPass {
     this.u.uStarTex.value = this.stars.rt.texture;
     this.ringshine = new RingshineTable(ctx.shared.u, ctx.profile);
     this.u.uRingshine.value = this.ringshine.rt.texture;
+    ctx.ringshineTable = this.ringshine.rt.texture;   // Saturn's ringshine-lit night side for other passes
     this.fs = new FullscreenPass({
       fragmentShader: FRAG,
       uniforms: { ...ctx.shared.u, ...this.u },

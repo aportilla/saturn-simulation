@@ -1,7 +1,8 @@
 // ===== near-field draw: fragment stage ======================================================
-// Sub-pixel particles: flat disc of radius rhoMin with the disc-averaged radiance (computed per particle).
-// Resolved particles: exact ray / triaxial-ellipsoid intersection in the spinning body frame, lumpy
-// aggregate surface (gradient-noise normal perturbation + albedo patchiness, octaves by on-screen size),
+// Sub-render-pixel particles: flat disc of half a render pixel with the disc-averaged radiance (per particle).
+// Resolved particles: exact ray / triaxial-ellipsoid intersection in the spinning body frame (spheres below
+// high quality), lumpy aggregate surface at high quality (gradient-noise normal perturbation + albedo
+// patchiness, octaves by on-screen size),
 // Lambert shading rescaled to the power-law particle phase function (ringParticleLambertFactor), shadows of
 // the nearby particles from their analytic outlines (NearShadow.ts: edges smoothed over the physical
 // penumbra or one pixel, whichever is larger), two-stream multiply-scattered ring light, exact depth.
@@ -25,8 +26,9 @@ layout(location = 0) out vec4 outColor;
 
 void main() {
   if (vC.w > 0.5) {
+    // sub-render-pixel particle: flat disc of half a render pixel (rasterized with probability (rho/0.5)^2)
     vec2 pc = (gl_PointCoord - 0.5) * vAx.w;
-    if (dot(pc, pc) > uLodRhoMin * uLodRhoMin) discard;
+    if (dot(pc, pc) > 0.25) discard;
     outColor = vec4(vTiny.rgb, length(vC.xyz));
     if (uDebug == 15) { float W = wakeDensity(ringLocalFromRel(vC.xyz).xy); outColor.rgb = W > 1.0 ? vec3(1.0, 0.1, 0.1) : vec3(0.1, 0.2, 1.0); }
     gl_FragDepth = logDepth01(vTiny.w);
@@ -56,7 +58,7 @@ void main() {
   // only evaluated where they can be seen
   vec4 n1 = vec4(0.0), n2 = vec4(0.0), n3 = vec4(0.0);
   float spx = vAx.w;
-  if (uDebug != 31) {
+  if (uDebug != 31 && uNearQuality > 1.5) {
     vec3 so = vec3(float(ts & 1023u), float((ts >> 10u) & 1023u), float((ts >> 20u) & 1023u)) * (16.0 / 1024.0);
     if (spx > 7.0) n1 = nearNoiseT(sp * 2.0 + so);
     if (spx > 16.0) n2 = nearNoiseT(sp * 5.0 + so.yzx + 3.7);

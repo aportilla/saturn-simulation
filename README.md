@@ -21,10 +21,16 @@ npm run typecheck
 Needs a WebGL2 browser with float render targets (`EXT_color_buffer_float`; `EXT_float_blend` recommended) and a
 reasonable GPU. Developed on Chrome / Apple M-series. Default time is **now**, real time.
 
-Performance (Apple M5 Max, 1920×1080): ~80 fps inside or just above the A ring, ~57 fps inside the B ring (the
-heaviest view), 200–340 fps for Saturn and the moons. The internal resolution is capped at ~2.4 MP by default
-(so Retina screens aren't rendered at 4× the pixels); raise **Settings → Render scale** for native sharpness, or
-lower it / **Particle detail** on slower GPUs.
+**Defaults are tuned for a quiet machine:** frame rate capped at **30 fps** and **render scale 0.5×** (the
+scene is rendered at half the display resolution — 960×540 for a 1080p window — and upsampled smoothly). For a sharper image raise **Settings (`O`) → Render scale** (1× = display resolution, capped at
+~2.4 MP so Retina screens aren't rendered at 4× the pixels) and **Frame rate** (30 / 60 / Max). The number of
+ring particles is never a setting: every particle at least one display pixel across is drawn, at its true
+position and size (millimetre grains right next to you, 10 m boulders out to ~20 km). **Particle quality**
+(High / Medium / Low) only changes how finely they are rendered — lumpy spinning ellipsoids with shadows cast
+by their neighbours, smooth spheres with shadows, or smooth spheres with statistical shadows. For reference, at
+render scale 1, High particle quality and uncapped on an Apple M5 Max at 1920×1080: ~77 fps inside the A ring,
+~50 fps inside the B ring (the heaviest view), 200–340 fps for Saturn and the moons (at the default render scale
+0.5: 106–124 fps in and above the A ring, 70 fps in the B ring). Settings persist in the browser.
 
 `data-raw/` (git-ignored, ~1.3 GB) holds the original archive downloads and is only needed to rebuild
 `public/data/` with `scripts/data/**`; it can be deleted.
@@ -38,11 +44,11 @@ lower it / **Particle detail** on slower GPUs.
 | **Co-orbit mode** (in the rings) | drag or arrows to look · `Q` `E` roll · `W` `A` `S` `D` fly · `R`/`Space` up · `F`/`Ctrl` down · wheel or `[` `]` speed (1 mm/s – 100 km/s; `Shift` ×10, `Alt` ×0.1) |
 | | `B` ballistic: let go and orbit freely like a ring particle (exact Hill-frame solution) · `C` switch orbit ⇄ co-orbit |
 | **Time** | `P` pause · `K` / `L` slower / faster (1× … 10⁶×) · `J` reverse · `N` now |
-| **Other** | `O` settings · `I` "what you're seeing" · `H` hide HUD · `?` help · `Esc` cancel a fly-to |
+| **Other** | `O` settings · `I` "what you're seeing" · `H` hide HUD · `V` hide / show the astronaut · `?` help · `Esc` cancel a fly-to |
 
-URL parameters: `preset=<place>`, `t=<ISO time|now>`, `warp=<n>`, `paused=1`, `fov=<deg>`, `detail=<0.25–2>`,
-`scale=<render scale>`, `ev=<EV offset>`, `exposure=auto|manual`, `bloom=`, `wakes=0`, `dustRings=0`, `stars=0`,
-`labels=0`, `nearField=0`, `hud=0`. Example: `/?preset=a-ring-30m&warp=1000`.
+URL parameters: `preset=<place>`, `t=<ISO time|now>`, `warp=<n>`, `paused=1`, `fov=<deg>`, `quality=high|medium|low`,
+`scale=<0.25–2>`, `fps=<30|60|0 (uncapped)>`, `ev=<EV offset>`, `exposure=auto|manual`, `bloom=`, `wakes=0`, `dustRings=0`, `stars=0`,
+`labels=0`, `nearField=0`, `astronaut=0`, `hud=0`. Example: `/?preset=a-ring-30m&warp=1000`.
 
 The HUD shows live physics for where you are: optical depth, surface density, layer thickness, particle size
 range and counts per m², spacing, shear, epicyclic and vertical periods, Toomre wavelength, mean free path,
@@ -67,6 +73,13 @@ with the exact column density. Each follows the exact linearised orbit in the co
 drift −qΩx (Keplerian shear), epicycles at κ with the 2:1 shape, vertical oscillation at ν — in closed form, so it
 is exact at any time warp, including in reverse. Self-gravity wakes (Toomre wavelength ≈ 40 m in the A ring,
 trailing at ~20°) are transient sheared clumps.
+
+**An astronaut for scale.** A spacesuited companion, 1.9 m tall, floats a few metres in front of you, lower
+right, wherever you go (`V` hides it). It is lit exactly like the ring particles around it — sunlight through
+the layer, the shadows of nearby boulders, the glow of the rings, Saturnshine — so it is a twilight figure inside
+the B ring, mostly hidden by the particles drifting between you, and goes dark in Saturn's shadow. Its gold visor
+mirrors the Sun and Saturn. It sways slowly in wall-clock time, so it stays calm at any time warp. The camera's
+exposure ignores it — the scene looks exactly as it would without it, so in full sunlight the white suit may clip.
 
 **The ring medium.** Particles too small or too far to draw are carried by a continuous medium with *exactly*
 the remaining optical depth (a shared level-of-detail contract), so the two blend without seams. The medium is
@@ -102,8 +115,8 @@ is in view.
 src/core      constants, time, ephemeris, frames, co-orbiting ring anchor, frame state
 src/rings     ring zone table, radial profile, level-of-detail contract, wake field
 src/moons     moon ephemerides and rotation          src/sky   star catalogue
-src/render    pipeline (far → near → ring layer → post), shared GLSL, passes:
-              far/ (Saturn, moons, stars) · near/ (particles) · rings/ (ring medium) · PostPass (camera)
+src/render    pipeline (far → near → astronaut → ring layer → post), shared GLSL, passes:
+              far/ (Saturn, moons, stars) · near/ (particles) · astronaut/ · rings/ (ring medium) · PostPass (camera)
 src/app, src/camera, src/ui    application, camera rig and controllers, HUD
 public/data   ring optical depth, ephemerides, stars, moon maps (built by scripts/data/**)
 sandbox/      per-subsystem test pages (ringplot.html plots the ring profile against the raw occultations)

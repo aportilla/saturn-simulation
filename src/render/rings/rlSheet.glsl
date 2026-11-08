@@ -97,7 +97,7 @@ float rlToomre(float r, RlS S) {
 
 // main-ring sheet radiance at the plane hit. p: camera-relative hit; dr: precise radius offset from r0;
 // theta: SEF azimuth; fp: radial footprint (m). Returns radiance L and transmission T.
-void rlMainSheet(vec3 rd, vec3 p, float dr, float theta, float fp, out vec3 L, out float T, out float tauOut) {
+void rlMainSheet(vec3 rd, vec3 p, float dr, float theta, float fp, float unresFrac, out vec3 L, out float T, out float tauOut) {
   L = vec3(0.0);
   T = 1.0;
   tauOut = 0.0;
@@ -109,7 +109,7 @@ void rlMainSheet(vec3 rd, vec3 p, float dr, float theta, float fp, out vec3 L, o
   float xF = uRlIdx0F + drs / uRingDr0;
   float kF = floor(xF);
   float tauRef = rlTauM(S, 0.918);
-  rlScaleTau(S, rlFineFactor(uRlIdx0I + kF, xF - kF, fp, tauRef, S.wake));
+  rlScaleTau(S, rlFineFactor(uRlIdx0I + kF, xF - kF, fp, tauRef, S.wake) * unresFrac);
   tauRef = rlTauM(S, 0.918);
   float spoke = rlSpokeTau(r, theta);
   tauOut = tauRef;

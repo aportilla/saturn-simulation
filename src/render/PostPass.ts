@@ -5,6 +5,8 @@
 //      adapted smoothly in log space (time constant 0.5 s). Range wide enough that the starfield becomes
 //      visible when nothing sunlit is in view. When lit material fills most of the frame (inside the rings,
 //      cloud tops) the meter blends to the 90th percentile of the lit pixels, letting glints clip <= 32x.
+//      Camera-pinned overlays (the astronaut, ctx.meterMask) are metered as the scene they hide (mirrored from
+//      beside them), so the scene keeps the exposure it has without them.
 //   2. glare: an energy-conserving veiling-glare PSF — a fraction eta (0.6 %) of every pixel's light is
 //      spread with a power-law-like kernel (~theta^-2.8, sum of Gaussians from a 7-level pyramid; core kept
 //      sharp), so the Sun gets a bright core and a wide faint halo while ordinary scenes are barely affected.
@@ -40,17 +42,27 @@ precision highp float; precision highp sampler2D;
 uniform sampler2D tSrc;
 uniform vec2 uSrcSize;
 uniform vec3 uSunPx;     // projected solar disk: centre (px, full resolution), exclusion radius (px; <0: off)
+uniform sampler2D tMask; // camera-pinned overlay (astronaut) pixels: r > 0.5
+uniform vec3 uMaskX;     // overlay screen columns [x0, x1] (render px), z = 1: mask live this frame
 layout(location = 0) out vec4 o;
 void main() {
   // max luminance (clamped) of the 2x2 source block; the solar disk and the wings of its sub-pixel PSF
-  // (known analytically: a disk around the projected Sun) and any pixel brighter than SUN_EXCLUDE are excluded
+  // (known analytically: a disk around the projected Sun) and any pixel brighter than SUN_EXCLUDE are excluded.
+  // Overlay pixels are metered as the scene they hide: the pixel mirrored across the nearer side of the
+  // overlay's screen box (same row, outside the box, so unmasked), which keeps the background's statistics.
   ivec2 p = ivec2(gl_FragCoord.xy) * 2;
   if (uSunPx.z > 0.0 && distance(vec2(p) + 1.0, uSunPx.xy) < uSunPx.z) { o = vec4(0.0, 0.0, 0.0, 1.0); return; }
   ivec2 mx = ivec2(uSrcSize) - 1;
   float m = 0.0;
   bool sun = false;
   for (int j = 0; j < 2; j++) for (int i = 0; i < 2; i++) {
-    vec3 c = texelFetch(tSrc, min(p + ivec2(i, j), mx), 0).rgb;
+    ivec2 q = min(p + ivec2(i, j), mx);
+    if (uMaskX.z > 0.5 && texelFetch(tMask, q, 0).r > 0.5) {
+      float x = float(q.x), xl = 2.0 * uMaskX.x - x, xr = 2.0 * uMaskX.y - x;
+      bool left = xl >= 0.0 && (xr > float(mx.x) || x - uMaskX.x <= uMaskX.y - x);
+      q.x = clamp(int(left ? xl : xr), 0, mx.x);
+    }
+    vec3 c = texelFetch(tSrc, q, 0).rgb;
     float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
     if (!(l < ${SUN_EXCLUDE}.0)) sun = true;   // solar disk (or NaN)
     else m = max(m, min(l, 30.0));
@@ -125,10 +137,13 @@ void main() {
       hist[clamp(int(floor((log2(l) + 14.0) * 2.0)), 0, 39)] += 1.0;
     }
   }
-  float acc = 0.0, p = 0.0;
+  // the percentile interpolated within its half-stop bin (bin b spans log2 L in [b/2 - 14, (b+1)/2 - 14)): the
+  // meter then changes continuously as the scene does, instead of in half-stop steps
+  float acc = 0.0, p = 0.0, target = ${GEO_PERCENTILE.toFixed(2)} * n;
   for (int b = 0; b < 40; b++) {
+    float below = acc;
     acc += hist[b];
-    if (acc >= ${GEO_PERCENTILE.toFixed(2)} * n) { p = exp2(float(b) * 0.5 - 13.75); break; }
+    if (acc >= target) { p = exp2((float(b) + clamp((target - below) / max(hist[b], 1.0), 0.0, 1.0)) * 0.5 - 14.0); break; }
   }
   o = vec4(n > 0.0 ? p : 0.0, n / 4096.0, 0.0, 1.0);
 }`;
@@ -304,7 +319,10 @@ export class PostPass implements RenderPass {
     gl.getExtension('OES_texture_float_linear');
     this.lum2 = new FullscreenPass({
       fragmentShader: LUM2_FRAG,
-      uniforms: { tSrc: { value: null }, uSrcSize: { value: new Vector2() }, uSunPx: { value: new Vector3(0, 0, -1) } },
+      uniforms: {
+        tSrc: { value: null }, uSrcSize: { value: new Vector2() }, uSunPx: { value: new Vector3(0, 0, -1) },
+        tMask: { value: null }, uMaskX: { value: new Vector3(0, 0, 0) },
+      },
     });
     this.cell = new FullscreenPass({ fragmentShader: CELL_FRAG, uniforms: { tSrc: { value: null }, uSrcSize: { value: new Vector2() } } });
     this.avg4 = new FullscreenPass({ fragmentShader: AVG4_FRAG, uniforms: { tSrc: { value: null } } });
@@ -373,6 +391,12 @@ export class PostPass implements RenderPass {
       const ny = this.sunCam.y / -this.sunCam.z / th;
       sp.set((nx * 0.5 + 0.5) * ctx.width, (ny * 0.5 + 0.5) * ctx.height, f.sunAngularRadius / f.pixelAngle + 4.5);
     } else sp.z = -1;
+    // camera-pinned overlays (the astronaut) are metered as the scene behind them: the scene keeps its exposure
+    // (glare and tone mapping still include them). Only a mask written this frame counts.
+    const mm = ctx.meterMask;
+    const maskOn = !!mm && mm.frame === f.frameIndex;
+    l2.tMask.value = maskOn ? mm!.texture : null;
+    (l2.uMaskX.value as Vector3).set(maskOn ? mm!.x0 : 0, maskOn ? mm!.x1 : 0, maskOn ? 1 : 0);
     this.lum2.render(r, this.lum2RT);
     const cu = this.cell.material.uniforms;
     cu.tSrc.value = this.lum2RT.texture;

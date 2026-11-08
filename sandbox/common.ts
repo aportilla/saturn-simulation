@@ -5,7 +5,7 @@
 //   warp=1                             time warp (sim seconds per real second)
 //   fov=60                             vertical field of view (deg)
 //   scale=1                            render scale
-//   detail=1                           particle detail (near-field budget multiplier)
+//   quality=high|medium|low            near-field particle render fidelity (never the particle count)
 //   ev=0                               exposure compensation (log2); exposure=manual -> manual exposure
 //   cam=orbit&target=saturn|<moon name>&dist=<m>&az=<deg>&el=<deg>
 //       orbit camera looking at the target; position = target + dist*(cos el cos az, cos el sin az, sin el) (SEF)
@@ -24,6 +24,7 @@ import { SimClock, tdbFromIso } from '../src/core/time';
 import { RingAnchor } from '../src/core/RingAnchor';
 import { Pipeline, type PipelinePasses } from '../src/render/Pipeline';
 import { DEG } from '../src/core/constants';
+import { parseQuality } from '../src/app/settings';
 import type { MoonProvider } from '../src/moons/types';
 
 export interface SandboxOptions {
@@ -71,7 +72,7 @@ export async function startSandbox(opts: SandboxOptions): Promise<void> {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2) * scale);
 
   const frame = createFrameState();
-  frame.settings.particleDetail = num('detail', 1);
+  frame.settings.particleQuality = parseQuality(params.get('quality')) ?? 'high';
   frame.settings.exposureEV = num('ev', 0);
   if (params.get('exposure') === 'manual') frame.settings.exposureMode = 'manual';
   frame.settings.debugView = num('debug', 0);
@@ -110,6 +111,8 @@ export async function startSandbox(opts: SandboxOptions): Promise<void> {
     renderer.setSize(window.innerWidth, window.innerHeight, false);
     frame.width = w;
     frame.height = h;
+    // display resolution (render scale 1): the near-field count contract is in display pixels
+    frame.canvasHeight = Math.max(1, Math.round(window.innerHeight * Math.min(window.devicePixelRatio, 2)));
     frame.aspect = w / h;
     pipeline.setSize(w, h);
   };

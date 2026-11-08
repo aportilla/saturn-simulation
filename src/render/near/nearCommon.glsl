@@ -27,16 +27,34 @@ uint nearHash(uint idx, uint seed, uint stream) {
 float nearU(uint idx, uint seed, uint stream) {
   return (float(nearHash(idx, seed, stream) >> 8u) + 0.5) * (1.0 / 16777216.0);
 }
-// Radius from dN/da ~ a^-q on [aLo, aHi] by inverse CDF.
-float nearRadius(float u, float aLo, float aHi, float q) {
-  float p = 1.0 - q;
-  if (abs(p) < 1e-3) return aLo * pow(aHi / aLo, u);
-  return pow(mix(pow(aLo, p), pow(aHi, p), u), 1.0 / p);
+uniform float uNearQuality;   // render fidelity: 0 low, 1 medium (spheres), 2 high (lumpy ellipsoids)
+
+// Radius a and own box half-size D (m) of a slot of a size class (src/rings/RingLod.ts buildPieces). Each
+// particle lives in a shearing-periodic box of half-size D(a) (its horizontal reach to the handover band), so
+// the slots sample n(a) D(a)^2: piecewise power laws, piece i covering [x0, x1] with slot density ~ a^(p-q) and
+// box D1 (a/x1)^(p/2). u (uniform in (0,1)) picks the piece by its cumulative share, then the inverse CDF.
+#define NEAR_PIECES 6
+uniform vec4 uRadP[NEAR_PIECES];  // (x1, 1/E (0: log-uniform), (x0/x1)^E (log-uniform: ln(x0/x1)), cum. share), E = p-q+1
+uniform vec4 uRadB[NEAR_PIECES];  // (D1 = box half-size at x1 (m), p/2, x0, -)
+void nearRadiusBox(float u, out float a, out float D) {
+  int i = 0;
+  float u0 = 0.0;
+  for (int j = 0; j < NEAR_PIECES - 1; j++) {
+    if (u < uRadP[j].w) break;
+    u0 = uRadP[j].w;
+    i = j + 1;
+  }
+  vec4 P = uRadP[i];
+  float t = clamp((u - u0) / max(P.w - u0, 1e-30), 0.0, 1.0);
+  float s = P.y != 0.0 ? pow(mix(P.z, 1.0, t), P.y) : exp((1.0 - t) * P.z);   // a / x1
+  a = P.x * s;
+  D = max(uRadB[i].x * pow(s, uRadB[i].y), 0.05);
 }
 // Triaxial ellipsoid semi-axes (units of the equivalent radius a). The axes are scaled so that the
 // orientation-averaged projected area (= surface area / 4, Cauchy) equals pi a^2: an ensemble then has
-// exactly the optical depth of spheres of radius a (the LOD / medium contract).
+// exactly the optical depth of spheres of radius a (the LOD / medium contract). Below high quality: spheres.
 vec3 nearShape(uint idx, uint seed) {
+  if (uNearQuality < 1.5) return vec3(1.0);
   float b = 1.0 - 0.30 * nearU(idx, seed, NS_SHB);
   float c = b * (1.0 - 0.25 * nearU(idx, seed, NS_SHC));
   const float P = 1.6075; // Knud Thomsen surface-area approximation

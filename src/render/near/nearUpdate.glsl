@@ -7,9 +7,18 @@
 //   y  = y_g(t) - 2 (Omega/kappa) A sin(th),   y_g(t) = Y_e - q Omega x_g (t - t_e)   (Y_e: state texture)
 //   z  = B cos(nu (t - tRef) + psi)
 // plus the self-gravity wake displacement evaluated at the epicyclic position (x, y).
-// The box is shearing-periodic: copy n of a particle sits at x_g + 2Dn and drifts relative to copy 0 at
-// -q Omega 2Dn; the copy shown is the one inside the box around the camera. Copies switch exactly at
-// the box edge, where the LOD window is zero, so the box following the camera is invisible.
+// Each particle lives in its own shearing-periodic box of half-size D(a) around the camera: the horizontal
+// distance beyond which it is below the display-pixel handover band from any camera height the allocation
+// serves (src/rings/RingLod.ts), so it is never simulated where it could not be drawn. Copy n of a particle
+// sits at x_g + 2Dn and drifts relative to copy 0 at -q Omega 2Dn; the copy shown is the one inside the box
+// around the camera. Copies switch exactly at the box edge, where the particle is too small to be drawn, so the
+// box is invisible.
+//
+// Count contract: every particle >= 1 display pixel across is drawn (lodCarryParticle = 1); in the handover
+// band (0.4-0.5 display px) the near field carries the fraction lodCarryParticle of its optical depth (the
+// classifier rasterizes such particles with that probability, and particles smaller than half a render pixel
+// as discs of half a render pixel with probability (rho / 0.5)^2 x lodCarryParticle: expected coverage = true
+// coverage). The medium leaves out exactly the class mean of it (lodCarry, sv_ringLod).
 
 uniform sampler2D tState;   // R: Y_e (guiding-center y relative to the box reference, m)
 uniform int uTexW;
@@ -17,12 +26,11 @@ uniform int uRow0;
 uniform int uCount;
 uniform int uClass;
 uniform int uSeed;
-uniform float uBoxD;        // box half-size D (m)
-uniform vec3 uRad;          // (aLo, aHi, power-law q)
+// (uRadP / uRadB: the class's radius / box sampler, nearCommon.glsl)
 uniform vec2 uSig;          // (sigma_x epicycle, sigma_z vertical) (m)
-uniform vec2 uCamMod;       // (camLocal - c0) mod 2D, components in [0, 2D)
+uniform vec2 uCamOff;       // camera position - box reference c0 (local frame, m)
 uniform vec4 uKin;          // (kappa phase, nu phase, Omega/kappa, 0)
-uniform vec4 uShear;        // (q Omega (t - t_e), bulk drift mod 2D (m), F = frac(q Omega (t - tRef)), G = frac(n_cam F))
+uniform vec4 uShear;        // (q Omega (t - t_e), q Omega c0x (t - t_e) (m), F = frac(q Omega (t - tRef)), 0)
 uniform float uTauBoxMax;
 uniform float uTauCam;      // macroscopic tau at the camera's radius
 uniform float uCull;        // > 0: statistical occlusion culling beyond this line-of-sight optical depth
@@ -34,33 +42,51 @@ void main() {
   int i = (tc.y - uRow0) * uTexW + tc.x;
   if (i >= uCount) { o = vec4(0.0); return; }
   uint idx = uint(i), seed = uint(uSeed);
-  float D = uBoxD, D2 = 2.0 * D;
+  float a, D;
+  nearRadiusBox(nearU(idx, seed, NS_RAD), a, D);
+  float D2 = 2.0 * D;
 
   // --- epicyclic position relative to the camera (box copy containing the camera)
   float xg = (2.0 * nearU(idx, seed, NS_XG) - 1.0) * D;
   float A = min(uSig.x * sqrt(-2.0 * log(nearU(idx, seed, NS_EA))), 0.7 * D);
   float th = uKin.x + TWO_PI * nearU(idx, seed, NS_EP);
   float ct = cos(th), st = sin(th);
-  float xr = xg + A * ct - uCamMod.x;
+  float nCam = floor(uCamOff.x / D2);
+  float camX = uCamOff.x - D2 * nCam, camY = uCamOff.y - D2 * floor(uCamOff.y / D2);
+  float xr = xg + A * ct - camX;
   float nl = floor((xr + D) / D2);
   float qx = xr - D2 * nl;
-  float Y = texelFetch(tState, tc, 0).r - uShear.x * xg - uShear.y - 2.0 * uKin.z * A * st;
-  Y -= D2 * fract(uShear.w - nl * uShear.z);
-  float yr = Y - uCamMod.y;
+  float Y = texelFetch(tState, tc, 0).r - uShear.x * xg - (uShear.y - D2 * floor(uShear.y / D2)) - 2.0 * uKin.z * A * st;
+  Y -= D2 * fract(fract(nCam * uShear.z) - nl * uShear.z);
+  float yr = Y - camY;
   float qy = yr - D2 * floor((yr + D) / D2);
+
+  // --- vertical oscillation
+  float B = uSig.y * sqrt(-2.0 * log(nearU(idx, seed, NS_VA)));
+  float z = B * cos(uKin.y + TWO_PI * nearU(idx, seed, NS_VP));
+  float rb = 1.2 * a; // conservative bounding radius (ellipsoid major semi-axis <= ~1.15 a)
+
+  // --- early out (most slots): a particle that is neither possibly in view and large enough to be drawn nor
+  // a possible shadow caster is not needed this frame. Margin: the largest self-gravity wake displacement
+  // (two generations of at most half a wavelength each, wavelength <= tile / 6).
+  float mw = uWakeOn > 0.5 ? uWakeTile / 6.0 : 0.0;
+  vec3 p0 = qx * uRingER + qy * uRingEPhi + vec3(0.0, 0.0, z - uRingCamLocal.z);
+  if (!nearShadowCaster(p0, rb + mw, uClass)) {
+    float r = rb + mw;
+    vec3 v = uWorldToCam * p0;
+    float w = -v.z;
+    float tx = uTanHalfFov * uAspect, ty = uTanHalfFov;
+    bool outside = w < -r || abs(v.x) > w * tx + r * sqrt(1.0 + tx * tx) || abs(v.y) > w * ty + r * sqrt(1.0 + ty * ty);
+    if (outside || lodCarryParticle(a, uClass, max(length(p0) - mw, 1e-4), p0.z) <= 0.0) { o = vec4(p0, 0.0); return; }
+  }
 
   // --- presence: thin by the macroscopic optical depth at the guiding-center radius (empty gaps)
   vec3 lgc = vec3(uRingCamLocal.x + qx - A * ct, uRingCamLocal.y + qy, 0.0);
   RingSample rs = ringSampleIdx(ringIdxFromLocal(lgc), 0.0);
   float tauM = rs.tau * (1.0 - rs.dust);
   if (nearU(idx, seed, NS_PRES) * uTauBoxMax >= tauM) { o = vec4(0.0); return; }
-  float a = nearRadius(nearU(idx, seed, NS_RAD), uRad.x, uRad.y, uRad.z);
 
-  // --- vertical oscillation
-  float B = uSig.y * sqrt(-2.0 * log(nearU(idx, seed, NS_VA)));
-  float z = B * cos(uKin.y + TWO_PI * nearU(idx, seed, NS_VP));
-
-  // --- self-gravity wakes, faded out at the box edge (where the LOD window is ~0)
+  // --- self-gravity wakes, faded out at the particle's box edge (where it is too small to be drawn)
   vec2 ql = vec2(uRingCamLocal.x + qx, uRingCamLocal.y + qy);
   float fw = 1.0 - smoothstep(0.85 * D, D, max(abs(qx), abs(qy)));
   vec2 dw = fw > 0.0 ? wakeDisplacement(ql) * fw : vec2(0.0);
@@ -69,9 +95,9 @@ void main() {
   vec3 p = pl.x * uRingER + pl.y * uRingEPhi + vec3(0.0, 0.0, pl.z);  // camera-relative, SEF axes
   float s = length(pl);
 
-  // --- LOD (shared contract) with a temporally stable per-particle threshold
-  bool drawn = nearU(idx, seed, NS_LOD) < lodDrawProb(a, uClass, s);
-  float rb = 1.2 * a; // conservative bounding radius (ellipsoid major semi-axis <= ~1.15 a)
+  // --- count contract (display pixels): every particle >= 1 px across (and the handover band below it) in
+  // view and not statistically occluded is drawn; the classifier decides how it is rasterized
+  bool drawn = lodCarryParticle(a, uClass, s, pl.z) > 0.0;
   if (drawn) {
     // view frustum (sphere test)
     vec3 v = uWorldToCam * p;
