@@ -15,8 +15,8 @@
 // Reads ctx.sceneRT (rgb radiance, a = distance), writes ctx.hdrRT = scene * T + L.
 // Shaders: src/render/rings/*.glsl. CPU helpers: src/render/rings/*.ts.
 //
-// Per frame: (0) every STAT_EVERY frames (and on re-anchoring) the live wake field is probed: the mass
-// correction of the shared wakeDensity, the sheet's two-column summary and the path statistics of its
+// Per frame: (0) every STAT_EVERY frames (and on re-anchoring) the live wake field is probed: the window mean of
+// the shared wakeDensity (a check: ~1), the sheet's two-column summary and the path statistics of its
 // transmission model, (1) wake-density clipmap levels that went stale are refreshed (usually none), (2) the
 // vertical-structure LUT (shared sv_ringLod contract) is regenerated, (3) near / inside the layer the
 // slab is ray-marched at half resolution, (4) the full-resolution pass composites everything; pixels
@@ -60,10 +60,12 @@ void main() {
   outColor = vec4(st * H, su * H, ringLayerTauBeyond(u * H, 1.0, H, 1.0), 0.0);
 }`;
 
-// Wake statistics probe: the shared wakeDensityRaw on a STAT_N x STAT_N grid spanning one wake tile.
-// Read back every STAT_EVERY frames (and on re-anchoring) for wakeDensity's mass correction and to give the
-// far-field sheet the statistics of the field the near-field march and particles use (two-column summary,
-// see rlSheet.glsl).
+// Wake statistics probe: the shared wakeDensity on a STAT_N x STAT_N grid spanning one wake tile.
+// Read back every STAT_EVERY frames (and on re-anchoring) to give the far-field sheet the statistics of the field the
+// near-field march and particles use (two-column summary, see rlSheet.glsl) and as a check of wakeDensity's mass: its
+// window mean (stats `wakeMean`) is 1 within the window's sampling noise (~+-2 % over one tile). wakeDensity inverts
+// the particles' map (sv_wakes), so no correction is applied (the former single-branch inverse lacked ~10 % of the
+// mass, restored by a measured factor uWakeMassK ~ 1.24 on the dense part; removed Nov 2026).
 const STAT_N = 64, STAT_EVERY = 60;
 const STAT_FRAG = /* glsl */ `
 ${SV_HEADER_ALL}
@@ -71,9 +73,8 @@ uniform vec4 uP;
 layout(location = 0) out vec4 outColor;
 void main() {
   vec2 xy = uP.xy + (gl_FragCoord.xy + vec2(0.37, 0.71)) * uP.z;
-  outColor = vec4(wakeDensityRaw(xy), 0.0, 0.0, 1.0);
+  outColor = vec4(wakeDensity(xy), 0.0, 0.0, 1.0);
 }`;
-const WAKE_M0X = 3, WAKE_M0Y = 6; // lattice mode of sv_wakes (wave normal k = (M0X + S*M0Y, M0Y))
 
 // Path statistics probe (with the wake statistics): for KER_N x KER_N points over one wake tile and each across-crest
 // run chi = KER_X[i] (horizontal run across the crests over one layer thickness H, in wake spacings), the wake density
@@ -363,16 +364,15 @@ export class RingLayerPass implements RenderPass {
     const wakesOn = (ctx.wakes.uniforms.uWakeOn.value as number) > 0.5 && f.settings.wakes;
     const nearZ = Math.abs(f.ring.camLocal.z);
 
-    // ---- statistics of the live wake field (GPU probe, every STAT_EVERY frames and on re-anchoring), measured
-    // before the clipmap is configured: the mass correction of the shared wakeDensity (used by the clipmap, the
-    // near field and the astronaut) and the far-field sheet's two-column summary (seamless march -> sheet handover)
+    // ---- statistics of the live wake field (GPU probe, every STAT_EVERY frames and on re-anchoring): the far-field
+    // sheet's two-column summary (seamless march -> sheet handover) and the window mean of wakeDensity (a check)
     const wf = ctx.wakes;
-    const gen = wf.uniforms.uWakeGen.value as Vector4[];
     let nx = 0, ny = 0;
-    for (let g = 0; g < gen.length; g++) {
-      const kx = WAKE_M0X + gen[g].y * WAKE_M0Y, ky = WAKE_M0Y, kn = Math.hypot(kx, ky);
-      nx += gen[g].x * (kx / kn);
-      ny += gen[g].x * (ky / kn);
+    for (let g = 0; g < 2; g++) {
+      const a = wf.genAmplitude(g);
+      wf.genNormal(g, this.tmpN);
+      nx += a * this.tmpN.x;
+      ny += a * this.tmpN.y;
     }
     const nn = Math.hypot(nx, ny);
     if (nn > 1e-6) (u.uRlWakeNrm.value as Vector2).set(nx / nn, ny / nn);
@@ -388,7 +388,6 @@ export class RingLayerPass implements RenderPass {
       this.statAnchor = f.ring.anchorId;
       this.measureWakeStats(ctx, wakeRef);
     }
-    if (!live) wf.uniforms.uWakeMassK.value = 1;
     // rms height of the layer's column in units of H (the sv_ringLod Gaussian mixture: sum w s^2 / sum w)
     {
       const lod = ctx.lod;
@@ -397,7 +396,7 @@ export class RingLayerPass implements RenderPass {
       if (lod.tauSub > 0) { w2 += lod.tauSub * lod.sigZFracSub ** 2; wt += lod.tauSub; }
       u.uRlKerSig.value = wt > 0 ? Math.sqrt(w2 / wt) : 0.3;
     }
-    const useClip = this.wake.configure(f, lambda, f.ring.omega, wakesOn && nearZ < 1e5, wf.uniforms.uWakeMassK.value as number);
+    const useClip = this.wake.configure(f, lambda, f.ring.omega, wakesOn && nearZ < 1e5);
     u.uRlWakeLevels.value = useClip ? this.wake.levelCount : 0;
     // march (subtracting the near field's optical depth) where the near field carries >= 0.5% of the layer's
     // tau; beyond that the drawn particles (rare boulders >= 1 px out to ~10-30 km) are few enough for the sheet
@@ -422,34 +421,31 @@ export class RingLayerPass implements RenderPass {
     else ws.set(0, 1, 1, 0);
   }
   private statAnchor = -1;
-  private massK = 1;
+  /** window mean of wakeDensity at the last probe (a check of its mass: ~1) */
+  private wakeMean = 1;
+  private readonly tmpN = new Vector2();
 
   /**
-   * Measure the live wake field (GPU probe of wakeDensityRaw over one wake tile + read-back): the mass correction k
-   * of the shared wakeDensity (uWakeMassK: <Wraw + (k - 1) max(Wraw - 1, 0)> = 1, see sv_wakes) and, of the corrected
-   * field, the two-column summary fB, Wb, Wg of the sheet.
+   * Measure the live wake field (GPU probe of wakeDensity over one wake tile + read-back): its window mean (check) and
+   * the two-column summary fB, Wb, Wg of the sheet.
    */
   private measureWakeStats(ctx: PipelineContext, wakeRef: number): void {
     this.statFs.render(ctx.renderer, this.statRT);
     ctx.renderer.readRenderTargetPixels(this.statRT, 0, 0, STAT_N, STAT_N, this.statBuf);
     const buf = this.statBuf, n = STAT_N * STAT_N;
-    let s = 0, ex = 0, m = 0;
+    let s = 0, m = 0;
     for (let i = 0; i < n; i++) {
       const w = buf[i * 4];
       if (!Number.isFinite(w)) continue;
       s += w;
-      ex += Math.max(w - 1, 0);
       m++;
     }
     if (m === 0) return;
-    const k = ex > 1e-4 * m ? Math.min(2, Math.max(1, 1 + (m - s) / ex)) : 1;
-    ctx.wakes.uniforms.uWakeMassK.value = k;
-    this.massK = k;
+    this.wakeMean = s / m;
     let sb = 0, nb = 0, sg = 0, ng = 0;
     for (let i = 0; i < n; i++) {
-      const w0 = buf[i * 4];
-      if (!Number.isFinite(w0)) continue;
-      const w = w0 + (k - 1) * Math.max(w0 - 1, 0);
+      const w = buf[i * 4];
+      if (!Number.isFinite(w)) continue;
       if (w > 1) { sb += w; nb++; } else { sg += w; ng++; }
     }
     if (nb === 0 || ng === 0) return;
@@ -461,7 +457,7 @@ export class RingLayerPass implements RenderPass {
     this.wakeStat.set(fB, Wb, Wg, wakeRef);
     (this.u.uRlWakeStat.value as Vector4).copy(this.wakeStat);
 
-    // path statistics through the layer (with the corrected density: uWakeMassK is set above)
+    // path statistics through the layer
     this.kerFs.render(ctx.renderer, this.kerRT);
     const kb = this.kerBuf, NX = KER_X.length, W = KER_N * NX;
     ctx.renderer.readRenderTargetPixels(this.kerRT, 0, 0, W, KER_N, kb);
@@ -495,7 +491,7 @@ export class RingLayerPass implements RenderPass {
   stats(): Record<string, string | number> {
     return {
       mode: this.lastMode,
-      wakeMassK: this.massK.toFixed(3),
+      wakeMean: this.wakeMean.toFixed(3),
       wakeLev: this.lastLevels,
       wakeD0: this.wake && this.wake.levelCount > 0 ? this.wake.d0.toFixed(2) : '-',
       lambda: (this.u?.uRlLambda.value as number)?.toFixed(1) ?? '',

@@ -21,7 +21,8 @@
     "test:exposure": "node scripts/test/exposure.mjs",
     "test:edges": "node scripts/test/edges.mjs",
     "test:moonflux": "node scripts/test/moonflux.mjs",
-    "test:particles": "node scripts/test/particles.mjs"
+    "test:particles": "node scripts/test/particles.mjs",
+    "test:wakecost": "node scripts/test/wakecost.mjs"
   },
   "dependencies": {
     "three": "^0.187.0"

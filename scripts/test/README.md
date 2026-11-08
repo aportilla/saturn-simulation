@@ -17,6 +17,7 @@ follow [Adding a tool](#adding-a-tool) so the next session can run it too.
 | `npm run test:edges` | gap edges perturbed by moonlets and the B-ring edge modes (streamline map): gaps empty, rendered edges = model, near field follows | ~50 s |
 | `npm run test:moonflux` | point-source flux of unresolved moons = resolved brightness (measured shapes + ellipsoid control) | ~10 s |
 | `npm run test:particles` | resolved-particle photometry and shape contract: GLSL vs CPU mirrors, factor LUT, relief area / photometry | ~20 s |
+| `npm run test:wakecost` | GPU cost of the shared wake functions (`wakeDensity`, `wakeDisplacement`) per call, in-page micro-benchmark (informational) | ~10 s |
 | `node scripts/shot.mjs …` / `node scripts/shots.mjs …` | screenshots (one / batch spec) | — |
 | `node scripts/img.mjs profile\|mean\|crop\|rotate …` | PNG brightness profiles, region ratios, contrast-stretched zooms, rotate/scale | — |
 
@@ -246,6 +247,17 @@ code.
 4. **anisotropy** (informational): mean cross-section / πa² of the principal-axis rotators vs view elevation (spin
    axes near the orbit normal for large particles): 0.987 edge-on … 1.026 from above for a ≥ 0.6 m (NR_ISO 0.8;
    0.92 … 1.14 with the full shape spread).
+
+### wakecost — `scripts/test/wakecost.mjs` (`--preset id`, `--size N`, `--k K`, `--reps R`, `--trials T`, `--async D`)
+In-page micro-benchmark of the shared self-gravity-wake functions on the real app state (the place's wake set and
+generation clock): a fullscreen pass evaluates `wakeDensity` / `wakeDisplacement` K times per pixel at scattered points
+over a size² float target, R times per trial, synchronised by a 1-pixel read-back; median of T trials minus the same
+pass with a trivial expression → GPU throughput per call. The passes blend additively: an opaque full-screen pass
+repeated R times is shaded only once on the tile-based GPU (hidden-surface removal), which made the time scale with
+neither R nor K. `--async D` overrides the asynchrony depth (WakeField `shapeOverride`). Informational, no limits: for a
+before/after comparison extract the old revision (`git archive <rev> -o x.tar`, untar, symlink `node_modules`), copy
+this script into it and run both trees alternately (other GPU users skew single runs). Measured 2026-11-08 at
+`a-ring-1km`, 1024² × 16 × 16: see docs/ring-physics.md §10.11 (cost). ~10 s.
 
 ## Tools
 

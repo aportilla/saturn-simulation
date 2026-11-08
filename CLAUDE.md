@@ -22,8 +22,11 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
   empty, rendered edges = streamline model, near field follows) + `test:moonflux` (unresolved-moon point flux =
   resolved brightness, measured shapes) + `test:particles` (resolved-particle regolith law / factor LUT / relief:
   GLSL vs CPU mirrors, projected-area and photometry contracts; prints new constants when the relief changes).
-  `npm run test:fps` = informational fps table per preset × quality. Details, tolerances, measured values and the
-  shared helpers: `scripts/test/README.md`.
+  `npm run test:fps` = informational fps table per preset × quality; `npm run test:wakecost` = GPU cost per call of
+  the shared wake functions (in-page micro-benchmark for before/after comparisons). Details, tolerances, measured
+  values and the shared helpers: `scripts/test/README.md`.
+- Wake model calibration (offline, Python): `scripts/data/nbody/` — `procedural.py --verify` (port == WakeField.ts /
+  wakes.glsl, bit-exact), `check-inverse` (wakeDensity vs the particles' exact density), `calibrate.py`; README there.
 - Screenshots on the real GPU (headless Chrome, ANGLE/Metal); console errors and page errors are printed:
   - one page: `node scripts/shot.mjs "<url>" <out.png> --until "window.__svReady===true" --wait 3000 [--w --h --dpr --eval "<js>"]`
   - batch: `node scripts/shots.mjs <spec.json> <outDir> [--w --h] [--uncapped] [--base URL] [--keep-storage]`
@@ -73,7 +76,7 @@ mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,ove
 |---|---|
 | time, frames, Sun, Saturn rotation, constants, co-orbiting (Hill) frame | `src/core/*` (`ephemeris.ts`, `RingAnchor.ts`, `constants.ts`, `FrameState.ts`) |
 | ring optical depth, zones (sizes q/aMin/aMax, thickness H, Σ, albedo, wakes, dust), features | `src/rings/ringRegions.ts`, `src/rings/RingProfile.ts`; data `public/data/rings/` |
-| LOD contract (which particles are drawn vs. carried by the medium), self-gravity wakes | `src/rings/RingLod.ts` + `shaders/ringLod.glsl`, `src/rings/WakeField.ts` + `shaders/wakes.glsl` (CPU/GLSL mirrors) |
+| LOD contract (which particles are drawn vs. carried by the medium), self-gravity wakes | `src/rings/RingLod.ts` + `shaders/ringLod.glsl`, `src/rings/WakeField.ts` + `shaders/wakes.glsl` (CPU/GLSL mirrors; wake sets per zone `wakeB` in `ringRegions.ts`; Python port + N-body calibration `scripts/data/nbody/procedural.py`, keep `--verify` passing) |
 | 2-D ring structure (streamline map: moonlet gap edges, normal modes of eccentric edges; hooks for relief and 2-D τ modulation) — every main-ring τ lookup goes through it | `src/rings/RingStructure.ts` + `src/rings/streamlines.ts` + `src/rings/ringModes.ts` (CPU) + `shaders/ringStructure.glsl`; table `public/data/rings/moonlet_response.*` from `scripts/data/rings/moonlet_response.mjs` |
 | individual ring particles (near field) | `src/render/passes/NearFieldPass.ts`, `src/render/near/*` |
 | particle shape, spin, relief, regolith photometry (+ CPU mirrors) | `src/render/near/nearCommon.glsl` (`nearShape`, `nearOrientation`, `nearRelief`, `nearRegolithFactor`), `nearDraw.frag.glsl`, `NearRegolith.ts`, `NearRelief.ts`, `NearNoise.ts`; `ringRegolithIF` in `src/render/shaders/lighting.glsl` |
