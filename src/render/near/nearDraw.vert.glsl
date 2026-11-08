@@ -129,14 +129,14 @@ void main() {
   // statistical sun path scaled by the self-gravity-wake density along the slanted path (sampled where it
   // crosses the bulk of the column, as the ring-layer medium does): wake gaps let sunlight through, which
   // dominates the brightness of the unlit face
-  // (two samples exactly as the medium: a single sample has more variance and, through the convexity of
-  // exp(-tau W / mu0), would make the particles systematically brighter than the medium)
+  // (the stratified nodes of sv_ringLod ringSunNodeRise, exactly as the medium: a noisier estimate has more
+  // variance and, through the convexity of exp(-tau W / mu0), would make the particles systematically brighter)
   float Ws = 1.0;
   if (uWakeOn > 0.5) {
-    float szw = 0.22 * H;
     vec2 sh2 = sh / max(abs(uSunDir.z), 0.02);
-    float h1 = max(0.6 * szw, -sg * zl + 0.3 * szw), h2 = max(1.8 * szw, -sg * zl + 1.2 * szw);
-    Ws = 0.5 * (wakeDensity(lp.xy + sh2 * h1) + wakeDensity(lp.xy + sh2 * h2));
+    float qsun = (sg > 0.0 ? fUp : wsum - fUp) / wsum, acc = 0.0;
+    for (int j = 0; j < LOD_SUN_NODES; j++) acc += wakeDensity(lp.xy + sh2 * (ringSunNodeRise(j, qsun, sg * zl / H) * H));
+    Ws = acc / float(LOD_SUN_NODES);
   }
   vec2 tauSun = vec2(sg > 0.0 ? tUp : tDn, tau * fPart) * (Ws / mu0);  // slant: (whole column, part the map can't resolve)
   float mapW = nearShadowCoverage(c);

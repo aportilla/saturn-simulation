@@ -145,4 +145,31 @@ float ringLayerSegmentTau(float z1, float z2, float d, float tau, float H) {
   return ringLayerColumn(z1, z2, tau, H) * L / abs(dz);
 }
 
+// ---- stratified quadrature along a slanted beam through the layer (mirror: RingLod.columnCentroidTable)
+// uLodColC[j] = C(j / LOD_COLQ_N), C(Q) = Int_0^Q h(Q') dQ' (units of H), h(Q): height toward the beam beyond which
+// the fraction Q of the column lies.
+#define LOD_COLQ_N 64
+#define LOD_SUN_NODES 6
+uniform float uLodColC[LOD_COLQ_N + 1];
+float lodColC(float Q) {
+  float x = clamp(Q, 0.0, 1.0) * float(LOD_COLQ_N);
+  int i = min(int(x), LOD_COLQ_N - 1);
+  return mix(uLodColC[i], uLodColC[i + 1], x - float(i));
+}
+// Centroid height (units of H, toward the beam) of the column slice between column fractions qa < qb beyond it.
+float ringColumnCentroid(float qa, float qb) { return (lodColC(qb) - lodColC(qa)) / max(qb - qa, 1e-6); }
+// Rise (units of H, >= 0) above a point of node j of the LOD_SUN_NODES-point stratified quadrature of a quantity
+// averaged over the column the sun's rays cross on their way to the point: the centroid of the j-th of
+// LOD_SUN_NODES equal slices of that column. qs: column fraction on the sun's side of the point; hp: the point's
+// height toward the sun (units of H). The self-gravity-wake density along the sun path is the mean of
+// wakeDensity at the nodes (offset horizontally by the sun direction per unit rise): every pass must use these
+// same nodes (medium march, near-field particles, astronaut), and enough of them -- the estimate's variance
+// leaks into the mean through the convexity of exp(-tau Ws / mu0). Measured in the A ring at 8 deg sun elevation
+// (I/F vs 24 nodes): 2 fixed nodes (the former scheme) +15-26 %; stratified nodes on the point field (particles):
+// 4: +5-7 %, 6: +2.5-3.6 %, 8: +1.3-2.1 %, 12: +0.5-0.9 %; on the medium's clipmap (prefiltered): 6: < 1 %.
+float ringSunNodeRise(int j, float qs, float hp) {
+  float n = float(LOD_SUN_NODES);
+  return max(ringColumnCentroid(qs * float(j) / n, qs * float(j + 1) / n) - hp, 0.0);
+}
+
 #endif

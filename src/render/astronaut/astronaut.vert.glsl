@@ -123,12 +123,12 @@ void main() {
       wsum += uLodTauSub;
     }
     if (wsum <= 0.0) { float sig = max(0.3 * H, 0.02); fUp = lodGaussQ(zl, sig); fPart = sg > 0.0 ? fUp : 1.0 - fUp; wsum = 1.0; }
-    // self-gravity wakes along the sun path (the two samples the medium and the particles use)
+    // self-gravity wakes along the sun path (the stratified nodes the medium and the particles use)
     float Ws = 1.0;
     if (uWakeOn > 0.5) {
-      float szw = 0.22 * H;
-      float h1 = max(0.6 * szw, -sg * zl + 0.3 * szw), h2 = max(1.8 * szw, -sg * zl + 1.2 * szw);
-      Ws = 0.5 * (wakeDensity(lp.xy + sh2 * h1) + wakeDensity(lp.xy + sh2 * h2));
+      float qsun = (sg > 0.0 ? fUp : wsum - fUp) / wsum, acc = 0.0;
+      for (int j = 0; j < LOD_SUN_NODES; j++) acc += wakeDensity(lp.xy + sh2 * (ringSunNodeRise(j, qsun, sg * zl / H) * H));
+      Ws = acc / float(LOD_SUN_NODES);
     }
     tSun = exp(-vec2(sg > 0.0 ? fUp : wsum - fUp, fPart) * (rc.tau * Ws / mu0));
     // two-stream diffuse field of the layer at the body's depth below the lit face (outside the layer: the

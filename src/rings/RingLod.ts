@@ -119,6 +119,40 @@ function erfApprox(x: number): number {
 }
 /** P(Z > z) for a centred Gaussian of std sig */
 const gaussQ = (z: number, sig: number) => 0.5 * (1 - erfApprox(z / (Math.SQRT2 * sig)));
+/** entries - 1 of the column-centroid table (sv_ringLod LOD_COLQ_N) */
+export const LOD_COLQ_N = 64;
+/**
+ * Column-centroid table of a vertical profile given as a Gaussian mixture comps = [w0, s0, w1, s1, ...] (s: std-dev
+ * in units of H): out[j] = C(j / LOD_COLQ_N), C(Q) = Int_0^Q h(Q') dQ', h(Q) = height (units of H, toward a beam)
+ * beyond which the fraction Q of the column lies. For a Gaussian mixture C(Q) is the first moment of the column
+ * beyond h(Q): Sum_k w_k s_k phi(h / s_k) / Sum_k w_k. Mirror of the GLSL ringColumnCentroid's data.
+ */
+export function columnCentroidTable(comps: ArrayLike<number>, out: Float32Array): void {
+  let wt = 0, smax = 0;
+  for (let i = 0; i < comps.length; i += 2) { wt += comps[i]; smax = Math.max(smax, comps[i + 1]); }
+  const beyond = (h: number) => { let f = 0; for (let i = 0; i < comps.length; i += 2) f += comps[i] * gaussQ(h, comps[i + 1]); return f / wt; };
+  out[0] = 0;
+  out[LOD_COLQ_N] = 0;
+  for (let j = 1; j < LOD_COLQ_N; j++) {
+    const Q = j / LOD_COLQ_N;
+    let lo = -8 * smax, hi = 8 * smax;
+    for (let it = 0; it < 60; it++) { const m = 0.5 * (lo + hi); if (beyond(m) > Q) lo = m; else hi = m; }
+    const h = 0.5 * (lo + hi);
+    let c = 0;
+    for (let i = 0; i < comps.length; i += 2) { const s = comps[i + 1]; c += (comps[i] * s * Math.exp(-0.5 * (h / s) ** 2)) / 2.50662827; }
+    out[j] = c / wt;
+  }
+}
+/** CPU mirror of the GLSL ringColumnCentroid: centroid height (units of H) of the column slice between fractions qa < qb */
+export function columnCentroid(table: Float32Array, qa: number, qb: number): number {
+  const C = (Q: number) => {
+    const x = Math.min(1, Math.max(0, Q)) * LOD_COLQ_N;
+    const i = Math.min(Math.floor(x), LOD_COLQ_N - 1);
+    return table[i] + (table[i + 1] - table[i]) * (x - i);
+  };
+  return (C(qb) - C(qa)) / Math.max(qb - qa, 1e-6);
+}
+
 /** normalized vertical density of the layer's optical depth at height z (1/m) */
 function gaussPdfMix(l: RingLod, z: number): number {
   let g = 0, w = 0;
@@ -176,6 +210,9 @@ export class RingLod {
   /** share of tau in particles below the smallest class (never drawn) and its vertical std-dev / H */
   tauSub = 0;
   sigZFracSub = 0.4;
+  /** column-centroid table of the total vertical profile (uLodColC; see columnCentroidTable) */
+  readonly colC = new Float32Array(LOD_COLQ_N + 1);
+  private colComps: number[] = [];
   tau = 0;
   tauBoxMax = 0;
   H = 10;
@@ -207,7 +244,21 @@ export class RingLod {
     uLodSigZSub: { value: 0.4 },
     uLodARange: { value: new Float32Array(LOD_CLASSES * 2) },
     uLodQ: { value: 3 },
+    uLodColC: { value: this.colC },
   };
+
+  /** Rebuild colC when the vertical profile changed (same mixture as ringLayerTauBeyond, in units of H). */
+  private updateColumnTable(): void {
+    const H = Math.max(this.H, 1e-3);
+    const c: number[] = [];
+    for (let k = 0; k < LOD_CLASSES; k++) if (this.tauFrac[k] > 0) c.push(this.tauFrac[k], Math.max(this.sigZFrac[k] * H, 0.02) / H);
+    if (this.tauSub > 0) c.push(this.tauSub, Math.max(this.sigZFracSub * H, 0.02) / H);
+    if (c.length === 0) c.push(1, Math.max(0.3 * H, 0.02) / H);
+    const p = this.colComps;
+    if (p.length === c.length && c.every((x, i) => Math.abs(x - p[i]) < 1e-6)) return;
+    this.colComps = c;
+    columnCentroidTable(c, this.colC);
+  }
 
   /** Vertical std-dev of class k as a fraction of the full layer thickness H (small particles ride higher). */
   static sigZFracForRadius(a: number): number {
@@ -423,6 +474,7 @@ export class RingLod {
       this.tauSub = 0;
       this.sigZFracSub = RingLod.sigZFracForRadius(LOD_A0);
     }
+    this.updateColumnTable();
 
     // keep the allocation (same particles) unless the size bins, the max tau over a class's box or the display
     // pixel angle (beyond the zoom headroom) changed

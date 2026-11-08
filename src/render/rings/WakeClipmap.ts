@@ -46,6 +46,8 @@ interface LevelState {
   d: number;
   t: number;
   anchorId: number;
+  /** wakeDensity's mass correction (uWakeMassK) the level was rendered with */
+  massK: number;
   valid: boolean;
 }
 
@@ -65,6 +67,7 @@ export class WakeClipmap {
   private todo: number[] = [];
   private wantT = 0;
   private wantAnchor = 0;
+  private wantMassK = 1;
   private readonly cmp = (a: number, b: number): number => {
     const ia = this.st[a].valid && this.st[a].anchorId === this.wantAnchor ? 1 : 0;
     const ib = this.st[b].valid && this.st[b].anchorId === this.wantAnchor ? 1 : 0;
@@ -74,7 +77,7 @@ export class WakeClipmap {
   constructor(ctx: PipelineContext) {
     for (let i = 0; i < WAKE_CLIP_MAX_LEVELS; i++) {
       this.levels.push(new Vector4(0, 0, 1, 0));
-      this.st.push({ cx: 0, cy: 0, d: 0, t: -1e30, anchorId: -1, valid: false });
+      this.st.push({ cx: 0, cy: 0, d: 0, t: -1e30, anchorId: -1, massK: 1, valid: false });
       this.want.push({ cx: 0, cy: 0, d: 1 });
     }
     this.rt = new WebGLRenderTarget(WAKE_CLIP_N, WAKE_CLIP_N * WAKE_CLIP_MAX_LEVELS, {
@@ -96,9 +99,10 @@ export class WakeClipmap {
 
   /**
    * Choose the level layout for this frame and decide which levels to refresh. Returns false if no level
-   * is needed (wakes off, camera far from the ring plane).
+   * is needed (wakes off, camera far from the ring plane). massK: the current uWakeMassK (levels rendered with a
+   * different mass correction are refreshed).
    */
-  configure(f: FrameState, lambda: number, omega: number, enabled: boolean): boolean {
+  configure(f: FrameState, lambda: number, omega: number, enabled: boolean, massK = 1): boolean {
     this.todo.length = 0;
     if (!enabled) {
       this.levelCount = 0;
@@ -132,13 +136,14 @@ export class WakeClipmap {
     this.levelCount = n;
     this.wantT = f.t;
     this.wantAnchor = f.ring.anchorId;
+    this.wantMassK = massK;
     // pattern evolution: shear S = q Omega age changes the displacement by ~dS * L; refresh when the
     // accumulated orbital phase since the last render exceeds ~0.003 rad
     const tStale = 0.003 / Math.max(omega, 1e-9);
     for (let k = 0; k < n; k++) {
       const s = this.st[k], w = this.want[k];
       const cover = 0.5 * WAKE_CLIP_N * w.d;
-      const dirty = !s.valid || s.anchorId !== this.wantAnchor || s.d !== w.d ||
+      const dirty = !s.valid || s.anchorId !== this.wantAnchor || s.d !== w.d || Math.abs(s.massK - massK) > 2e-3 ||
         Math.abs(s.cx - w.cx) > cover / 16 || Math.abs(s.cy - w.cy) > cover / 16 || Math.abs(f.t - s.t) > tStale;
       if (dirty) this.todo.push(k);
     }
@@ -168,7 +173,7 @@ export class WakeClipmap {
       this.rt.scissorTest = true;
       this.fs.render(renderer, this.rt);
       const s = this.st[k];
-      s.cx = w.cx; s.cy = w.cy; s.d = w.d; s.t = this.wantT; s.anchorId = this.wantAnchor; s.valid = true;
+      s.cx = w.cx; s.cy = w.cy; s.d = w.d; s.t = this.wantT; s.anchorId = this.wantAnchor; s.massK = this.wantMassK; s.valid = true;
       this.levels[k].set(s.cx, s.cy, s.d, 1);
       this.rendered++;
     }

@@ -46,11 +46,74 @@ float rlSpokeTau(float r, float theta) {
 // handover is seamless): two column types measured from the live shared wakeDensity — dense wakes (area
 // fraction fB, density factor Wb) and gaps (Wg), fB Wb + (1 - fB) Wg = 1. A ray scatters in one column;
 // its sunward and viewing paths stay in that column while their horizontal run across the crests is
-// short and average over the pattern once it exceeds ~half a wake spacing:
-//   W_path = mix(W_col, 1, smoothstep(0, 0.5, Heff |dir . n| / (|dir_z| lambda))),  Heff = 0.45 H.
+// short and average over the pattern once it exceeds ~half a wake spacing (reflection):
+//   W_path = mix(W_col, 1, smoothstep(0, 0.5, Heff |dir . n| / (|dir_z| lambda))),  Heff = uRlWakeHeff * H.
+// The transmission through the whole layer uses the measured path statistics instead (rlTransWakes below).
 // Looking along the wakes keeps the paths in the gaps (more transparent, darker in reflection); looking
 // across them averages (classical) — the origin of the A ring's azimuthal asymmetry and of its
 // viewing-direction-dependent transparency (Colwell et al. 2006; Hedman et al. 2007).
+// The TRANSMISSION of a path through the whole layer needs more than the class means: per column class (of the
+// point where the path crosses the mid-plane) the density averaged along the path has a spread that, through the
+// convexity of exp, raises the mean transmission (most light gets through the emptiest gaps), and the class means
+// decorrelate only slowly (a path running 1 wake spacing across the crests over the layer's thickness still keeps
+// ~70 % of the class contrast: the column is concentrated within ~0.25 H). Both are measured from the live field
+// as functions of chi = H |dir . n| / (|dir_z| lambda) (RingLayerPass path-statistics probe at chi = uRlKerX: uRlKerT
+// = class mean and variance of the path density, uRlKerF = its class minimum), and the path density of each class
+// is taken as a Gamma distribution above that floor F: <exp(-a X)> = exp(-a F) (1 + a v / (m - F))^(-(m - F)^2 / v)
+// (bounded by the emptiest paths, exp(-a F), at large a). Against explicit paths through the field this is exact
+// to a few % (the class means alone underestimated the transmission across the wakes by up to 2x).
+uniform float uRlKerX[RL_KER_NX];
+uniform vec4 uRlKerT[RL_KER_NX];
+uniform vec2 uRlKerF[RL_KER_NX];
+uniform float uRlKerSig;    // rms height of the layer's column (units of H): the path kernel's across-crest std is chi lambda uRlKerSig
+// interpolation weight of chi between table entries i and i + 1
+int rlKerIndex(float chi, out float f) {
+  int i = 0;
+  for (int j = 1; j < RL_KER_NX - 1; j++) if (chi >= uRlKerX[j]) i = j;
+  f = clamp((chi - uRlKerX[i]) / (uRlKerX[i + 1] - uRlKerX[i]), 0.0, 1.0);
+  return i;
+}
+// <exp(-a X)> for X = F + a Gamma variable of mean m - F and variance v
+float rlGammaMGF(float a, float m, float v, float F) {
+  float e = m - F;
+  if (e < 1e-4 || v < 1e-8) return exp(-a * m);
+  float th = v / e;
+  float x = a * th;
+  float l1p = x < 0.01 ? x * (1.0 - x * (0.5 - x / 3.0)) : log(1.0 + x);
+  return exp(-a * F - (e / th) * l1p);
+}
+// mean transmission of the prefiltered layer along a path of direction cosine m whose column density factor has
+// mean Wm, variance Wv and floor F; Wv = 0 gives rlTransW
+float rlTransG(RlS s, float m, float Wm, float Wv, float F) {
+  float mm = max(m, 1e-6) / max(Wm, 1e-3);
+  return rlGammaMGF(rlTauM(s, mm) / max(m, 1e-6), Wm, Wv, F);
+}
+// path statistics at chi scaled to the local wake strength ws (density 1 + (W - 1) ws, variance x ws^2) and
+// normalized by the columns' mean density mW: p = (dense m, v, gap m, v), floors fl = (dense, gap)
+void rlWakePathScaled(float chi, float ws, float mW, out vec4 p, out vec2 fl) {
+  float f;
+  int i = rlKerIndex(chi, f);
+  vec4 ps = mix(uRlKerT[i], uRlKerT[i + 1], f);
+  vec2 pf = mix(uRlKerF[i], uRlKerF[i + 1], f);
+  float k2 = ws * ws / (mW * mW);
+  p = vec4(max((1.0 + (ps.x - 1.0) * ws) / mW, 0.02), ps.y * k2, max((1.0 + (ps.z - 1.0) * ws) / mW, 0.02), ps.w * k2);
+  fl = min(max((1.0 + (pf - 1.0) * ws) / mW, vec2(0.0)), p.xz);
+}
+// mean transmission of the two wake columns along a path through the whole layer (direction cosine m)
+float rlTransWakes(RlS s, float m, float chi, float fB, float ws, float mW) {
+  vec4 p;
+  vec2 fl;
+  rlWakePathScaled(chi, ws, mW, p, fl);
+  return fB * rlTransG(s, m, p.x, p.y, fl.x) + (1.0 - fB) * rlTransG(s, m, p.z, p.w, fl.y);
+}
+// the same for a path of known mean-layer optical depth a (the march's statistical column)
+float rlTransWakesTau(float a, float chi, float fB, float ws, float mW) {
+  vec4 p;
+  vec2 fl;
+  rlWakePathScaled(chi, ws, mW, p, fl);
+  return fB * rlGammaMGF(a, p.x, p.y, fl.x) + (1.0 - fB) * rlGammaMGF(a, p.z, p.w, fl.y);
+}
+
 float rlToomre(float r, RlS S) {
   float sig = S.D * 450.0 * S.H;              // surface density (PARTICLE_DENSITY * D * H)
   float rr = r / max(uRingR0, 1.0);
@@ -97,9 +160,11 @@ void rlMainSheet(vec3 rd, vec3 p, float dr, float theta, float fp, float unresFr
   float ws = uRlWakeStat.w > 0.0 ? clamp(S.wake / uRlWakeStat.w, 0.0, 2.0) * uRlWakeScale : 0.0;
   float fB = uRlWakeStat.x;
   vec3 IFsun;
-  if (ws * fB > 1e-3) {
-    float Wb = max(1.0 + (uRlWakeStat.y - 1.0) * ws, 0.02);
-    float Wg = max(1.0 + (uRlWakeStat.z - 1.0) * ws, 0.02);
+  bool cols = ws * fB > 1e-3;
+  float Wb = 1.0, Wg = 1.0, Wvb = 1.0, Wvg = 1.0, Wsb = 1.0, Wsg = 1.0;
+  if (cols) {
+    Wb = max(1.0 + (uRlWakeStat.y - 1.0) * ws, 0.02);
+    Wg = max(1.0 + (uRlWakeStat.z - 1.0) * ws, 0.02);
     float mW = fB * Wb + (1.0 - fB) * Wg;
     Wb /= mW;
     Wg /= mW;
@@ -108,10 +173,10 @@ void rlMainSheet(vec3 rd, vec3 p, float dr, float theta, float fp, float unresFr
     vec2 hk = lit ? uRlWakeHeff.xy : uRlWakeHeff.zw;       // decorrelation heights (view, sun) / H
     float cv = smoothstep(0.0, 0.5, hk.x * S.H * abs(dot(V, nW)) / (mu * lam));
     float cs = smoothstep(0.0, 0.5, hk.y * S.H * abs(dot(uSunDir, nW)) / (mu0 * lam));
-    float Wvb = mix(Wb, 1.0, cv), Wsb = mix(Wb, 1.0, cs);
-    float Wvg = mix(Wg, 1.0, cv), Wsg = mix(Wg, 1.0, cs);
+    Wvb = mix(Wb, 1.0, cv); Wsb = mix(Wb, 1.0, cs);
+    Wvg = mix(Wg, 1.0, cv); Wsg = mix(Wg, 1.0, cs);
     IFsun = fB * rlLayerIFW(S, mu, mu0, cosA, lit, Wb, Wsb, Wvb) + (1.0 - fB) * rlLayerIFW(S, mu, mu0, cosA, lit, Wg, Wsg, Wvg);
-    T = mix(1.0, fB * rlTransW(S, mu, Wvb) + (1.0 - fB) * rlTransW(S, mu, Wvg), S.cover);
+    T = mix(1.0, rlTransWakes(S, mu, S.H * abs(dot(V, nW)) / (mu * lam), fB, ws, mW), S.cover);
   } else {
     IFsun = rlLayerIF(S, mu, mu0, cosA, lit);
     T = mix(1.0, rlTrans(S, mu), S.cover);
@@ -131,7 +196,15 @@ void rlMainSheet(vec3 rd, vec3 p, float dr, float theta, float fp, float unresFr
     vec3 bSame = hdir * cos(thC) + vec3(0.0, 0.0, vSide * muB);
     vec3 bOther = hdir * cos(thC) - vec3(0.0, 0.0, vSide * muB);
     float k = 0.5 * Es / max(uSunE, 1e-9);
-    IF += k * (rlLayerIF(S, mu, muB, dot(bSame, V), true) + rlLayerIF(S, mu, muB, dot(bOther, V), false));
+    float cS = dot(bSame, V), cO = dot(bOther, V);
+    if (cols) {
+      // the same two wake columns as the direct sunlight (as the march, whose beams take the column's sun-path
+      // density): on the unlit face, lit by Saturn, a homogeneous layer was 5-7 % brighter than the columns
+      IF += k * (fB * (rlLayerIFW(S, mu, muB, cS, true, Wb, Wsb, Wvb) + rlLayerIFW(S, mu, muB, cO, false, Wb, Wsb, Wvb))
+        + (1.0 - fB) * (rlLayerIFW(S, mu, muB, cS, true, Wg, Wsg, Wvg) + rlLayerIFW(S, mu, muB, cO, false, Wg, Wsg, Wvg)));
+    } else {
+      IF += k * (rlLayerIF(S, mu, muB, cS, true) + rlLayerIF(S, mu, muB, cO, false));
+    }
   }
 
   // ---- spokes: a thin dust layer over the ring (dark in back-scatter, bright in forward scatter)
