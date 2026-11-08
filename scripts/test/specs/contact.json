@@ -1,0 +1,15 @@
+{
+  "until": "window.__svReady===true",
+  "shots": [
+    { "name": "a-inside-fov35", "url": "?preset=a-ring-inside&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1&fov=35", "wait": 4000 },
+    { "name": "a-inside-fov35-nocontact", "url": "?preset=a-ring-inside&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1&fov=35", "eval": "(window.__sv.pipeline.passes.near.inner ?? window.__sv.pipeline.passes.near).contact.enabled = false", "wait": 2000 },
+    { "name": "b-inside-fov35", "url": "?preset=b-ring-inside&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1&fov=35", "wait": 4000 },
+    { "name": "b-inside-fov35-nocontact", "url": "?preset=b-ring-inside&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1&fov=35", "eval": "(window.__sv.pipeline.passes.near.inner ?? window.__sv.pipeline.passes.near).contact.enabled = false", "wait": 2000 },
+    { "name": "b-ring-inside", "url": "?preset=b-ring-inside&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1", "wait": 4000 },
+    { "name": "b-ring-inside-nocontact", "url": "?preset=b-ring-inside&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1", "eval": "(window.__sv.pipeline.passes.near.inner ?? window.__sv.pipeline.passes.near).contact.enabled = false", "wait": 2000 },
+    { "name": "a-ring-inside", "url": "?preset=a-ring-inside&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1", "wait": 4000 },
+    { "name": "a-ring-inside-nocontact", "url": "?preset=a-ring-inside&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1", "eval": "(window.__sv.pipeline.passes.near.inner ?? window.__sv.pipeline.passes.near).contact.enabled = false", "wait": 2000 },
+    { "name": "a-ring-30m", "url": "?preset=a-ring-30m&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1", "wait": 4000 },
+    { "name": "a-ring-30m-nocontact", "url": "?preset=a-ring-30m&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1", "eval": "(window.__sv.pipeline.passes.near.inner ?? window.__sv.pipeline.passes.near).contact.enabled = false", "wait": 2000 }
+  ]
+}

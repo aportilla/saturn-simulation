@@ -278,6 +278,38 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   the medium uses; a 2048×1024 sun-aligned shadow map resolves particle-on-particle shadows near the camera (the
   statistical transmission keeps only what the map cannot resolve). `scripts/test/particles.mjs` checks the GLSL
   against the CPU mirrors and the LUT / relief contracts.
+* **Near-field frame and contact contract** (`NearFieldPass`, `near/NearContact.ts`). Steps: (1) the update pass
+  writes every particle's analytic position (exact Hill-frame orbit + wake + streamline displacement) and flag into
+  R0 (RGBA32F per slot: camera-relative xyz, w = +a drawn / −a present but not drawn / 0 absent); (1b) **contact
+  resolution** pushes the visibly resolved particles out of each other's overlaps and writes their positions back
+  into R0; (2) HistoPyramid compaction of R0 into the point / quad / caster lists; (3) the sun shadow map (shared
+  as `ctx.nearShadow`); (4) the draw. Everything after 1b sees the same positions. The contract of 1b:
+  - *who*: present particles (drawn or not) weighted by smooth fades — resolved (3 → 6 render px radius: an overlap
+    is typically ~0.3 of the smaller radius deep, about a pixel at 3 px), not statistically occluded (slab
+    line-of-sight τ 4 → 5 with a conservative path τ, as the update pass's cull), near the view frustum (dilated by
+    two contact distances, the reach of a push; within R0's out-of-view coverage rb + mw), and not around the camera
+    (a body containing the camera is not drawn — the camera is a ghost — so it must not push its neighbours out of
+    an empty hollow; fading over d/ρ 1 → 1.15). A pair is corrected with the smaller weight, so every correction
+    fades in continuously.
+  - *contact distance*: the sum of the drawn base shapes' radial extents along the centre line,
+    ρ = a / √(nᵀM′n), M′ = R diag(1/shape²) Rᵀ (`nearShape` / `nearOrientation`: ellipsoids at high quality,
+    spheres otherwise); the high-quality relief (±~0.1 a) interlocks with the neighbour's.
+  - *solver*: per round (3) a hash grid (one level per size class, 16-entry buckets built in one stencil-routed
+    point pass: deterministic, no atomics), an 8-neighbour list per particle (smallest normalized surface gaps),
+    then 4 Jacobi iterations with constraint averaging (12 in all): mass-weighted shares (∝ a³) within a size
+    class, the smaller particle yields entirely across classes; a small particle lying entirely inside a larger
+    one is hidden and left alone (ejecting it would cascade).
+  - *bounds*: |x − x_analytic| ≤ 4 D_i (D_i = the particle's largest initial pair correction, raised by contacts
+    that appear later only up to 0.5 a): no particle moves farther than overlaps require. Presence is never
+    changed; drawn flags are kept, except that a present particle moved into the view frustum becomes drawn
+    (count contract); the medium is untouched (it is statistical).
+  - *time*: no per-particle state — a deterministic function of the frame's analytic positions (bit-identical
+    frames when paused; time warp, reverse time and re-anchoring need nothing).
+  - *photometry*: particles that no longer interpenetrate block more light than independently placed ones of the
+    same τ (the hard-particle / filling-factor effect, which the medium's Poisson statistics leave out), so near the
+    camera the near field is slightly brighter than the medium it hands over to: +0.3 … +3.6 % per strip 30 m above
+    the A ring (`test:seam` a-ring-30m).
+  `npm run test:contact` checks it against an independent CPU pair search (measured values: scripts/test/README.md).
 
 ## The ring model (physics)
 * **Radial profile** (`src/rings/RingProfile.ts`): 0.25 km grid, 66,000–139,500 km. Optical depth from
@@ -290,7 +322,9 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   a few metres). Vertical Gaussian, std = `sigZFrac(a)·H` (small particles ride higher).
   Kinematics in the Hill frame (exact linear solution): guiding center x_g, y_g(t) = y_g0 − qΩx_g t;
   epicycle x = x_g + A cos(κt+φ), y = … − 2A(Ω/κ) sin(κt+φ); vertical z = B cos(νt+ψ);
-  plus wake displacement `wakeDisplacement(guidingCenter)`.
+  plus wake displacement `wakeDisplacement(guidingCenter)`. These orbits are independent, so neighbours would
+  interpenetrate (B-ring mid-plane volume filling ~0.3–0.4); the visibly resolved ones are then moved apart per
+  frame (`NearContact`, the near-field contact contract above) — geometry only, no collisional dynamics.
 * **Count contract** (`RingLod`, `sv_ringLod`): every particle whose apparent diameter is ≥ 1 *display*
   pixel (ρ = a/(s·displayPixelAngle) ≥ 0.5 px; `FrameState.canvasPixelAngle`) is drawn individually at its true
   position and size — no thinning, no user-controlled count reduction; the render scale changes how particles

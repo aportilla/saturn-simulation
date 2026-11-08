@@ -12,7 +12,7 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
 ## Commands
 - `npm run dev` → http://127.0.0.1:5173 (often already running; check with `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5173/`)
 - `npm run typecheck` (tsc --noEmit) and `npm run build` (typecheck + vite build) — keep both clean
-- **Regression suite** (real GPU, starts its own private Vite server unless `--base` answers; ~10 min):
+- **Regression suite** (real GPU, starts its own private Vite server unless `--base` answers; ~11 min):
   `npm test` = `test:smoke` (every preset: console/page/GL errors, pass fallbacks, NaN/negative pixels) +
   `test:physics` (ephemeris, J2–J6 frequencies, particle kinematics vs the exact Hill solution) +
   `test:counts` (drawn particles vs the analytic expectation, HUD "complete") + `test:seam` (near field +
@@ -26,8 +26,11 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
   GPU τ vs the CPU model, near-field presence follows the modulation, moonlet bodies) +
   `test:relief` (the rings' vertical relief: bending-wave / corrugation model checks, GPU height field and slopes vs
   the CPU mirror, ray/height-field hits, the S/2009 S1 equinox shadow length, near field and station keeping on the
-  local mid-plane). `npm run test:fps` = informational fps table per preset × quality. Details, tolerances,
-  measured values and the shared helpers: `scripts/test/README.md`.
+  local mid-plane) +
+  `test:contact` (near-field contact resolution: overlaps before / after vs an independent CPU pair search,
+  displacement bound, R0 write-back and drawn flags, frame-to-frame smoothness, warp ±1000; `--cost` adds the
+  step's GPU time and a whole-frame off / on A/B). `npm run test:fps` = informational fps table per preset ×
+  quality. Details, tolerances, measured values and the shared helpers: `scripts/test/README.md`.
 - **Bibliography**: `npm run check:refs` (no GPU, ~1 s; also first in `npm test`) — every author–year citation in
   README.md, docs/ring-physics.md and docs/data-sources.md needs an entry in `src/app/references.ts` (the in-app
   Sources panel, key G) and every entry must be cited; `-- --online` re-verifies DOIs / arXiv ids. A new citation in
@@ -92,6 +95,7 @@ mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,bod
 | propeller moonlets (named giants, belts: positions, partial gaps / lobes / wakes, relief; moonlet bodies) | `src/rings/propellers.ts` + `shaders/ringPropellers.glsl` (chunk `sv_ringPropellers`), `src/render/passes/PropellerMoonletPass.ts` + `src/render/propellers/*`; presets `propeller-bleriot`, `propeller-belt`; Cassini views `scripts/test/specs/propellers.json` |
 | vertical relief: one height field z0 (bending waves, 1983 corrugation, B-ring-edge region A / S/2009 S1, moonlet ζ, propellers) that every renderer takes heights relative to | `src/rings/relief.ts` (model + CPU mirror, owned by `RingStructure`), `shaders/ringRelief.glsl` (sources, behind `ringStructure.glsl`'s `rsReliefWaves` / `rsReliefSites`), `shaders/ringReliefShade.glsl` (sheet hit, shadows, normals); numbers `scripts/data/rings/relief_check.mjs`; ring-physics.md §13 |
 | individual ring particles (near field) | `src/render/passes/NearFieldPass.ts`, `src/render/near/*` |
+| particle contacts (resolved particles pushed out of each other's overlaps: hash grid + Jacobi, written back into R0 after the update pass) | `src/render/near/NearContact.ts` (run from `NearFieldPass.render`); check `npm run test:contact` |
 | particle shape, spin, relief, regolith photometry (+ CPU mirrors) | `src/render/near/nearCommon.glsl` (`nearShape`, `nearOrientation`, `nearRelief`, `nearRegolithFactor`), `nearDraw.frag.glsl`, `NearRegolith.ts`, `NearRelief.ts`, `NearNoise.ts`; `ringRegolithIF` in `src/render/shaders/lighting.glsl` |
 | astronaut companion (camera-pinned, 1.9 m, for scale; lit like the particles) | `src/render/passes/AstronautPass.ts`, `src/render/astronaut/*` |
 | ring medium at all scales, outer rings, spokes | `src/render/passes/RingLayerPass.ts`, `src/render/rings/*` |
@@ -129,6 +133,11 @@ mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,bod
   (`near/NearRegolith.ts` mirrors `ringRegolithIF` and builds the LUT); their shapes keep ⟨projected area⟩ = πa²
   (κ, `NR_K0..3`) and the relief photometry table `RELIEF_PHOT` (`near/NearRelief.ts`) — after changing the relief
   or the shading, run `npm run test:particles` and paste the constants it prints.
+- **Contacts are stateless and bounded**: `NearContact` is a deterministic function of the frame's analytic
+  positions (no per-particle state, so time warp / reverse / pause need nothing), moves a particle by at most what
+  its overlaps require, never changes presence and sets a drawn flag only where the displacement moved a present
+  particle into view (count contract). It rewrites R0 right after the update pass: anything that reads particle
+  positions (draw lists, shadow casters, `ctx.nearShadow`) must run after it. The medium is not touched.
 - Changing a default in `src/app/settings.ts` / `FrameState.defaultSettings()` needs a bump of the localStorage
   key in `settings.ts`, or users keep their old saved values.
 
@@ -143,7 +152,11 @@ mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,bod
   the draw is dropped with `GL_INVALID_OPERATION` (see `NearShadow.prepare`).
 - Performance: measure with `npm run test:fps` (or `scripts/shots.mjs --uncapped` and `?fps=0`), **one fresh
   page load per measurement** (several navigations in one tab leave old WebGL contexts alive and roughly halve the fps); GPU
-  timer queries are unreliable on ANGLE/Metal. Another agent's browser on the same GPU also skews numbers.
+  timer queries are unreliable on ANGLE/Metal. Another agent's browser on the same GPU also skews numbers. To time
+  GPU work inside a page, fence with a synchronous 1-pixel `readPixels` (Chrome's `gl.finish()` does not wait) and
+  take the min over trials (`costInPage` / `frameCostInPage` in `scripts/test/contact.mjs`).
+- On ANGLE/Metal a stencil `blitFramebuffer` silently leaves the following stencil-tested draws without any output
+  (no GL error): draw stencil patterns in place instead (`NearContact`'s grid routing).
 - Vite reloads the page when a GLSL/TS file changes, so screenshots taken while files are being edited can catch
   the loading screen.
 - `data-raw/` is git-ignored and not needed at runtime (only by `scripts/data/**`); `public/data/` is committed.

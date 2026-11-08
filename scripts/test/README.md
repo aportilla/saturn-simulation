@@ -7,7 +7,7 @@ follow [Adding a tool](#adding-a-tool) so the next session can run it too.
 
 | command | what it checks | runtime* |
 |---|---|---|
-| `npm test` | refs + smoke + physics + counts + seam (incl. handover) + exposure + edges + moonflux + particles + propellers + relief + sources against one private dev server; summary table | ~10 min |
+| `npm test` | refs + smoke + physics + counts + seam (incl. handover) + exposure + edges + moonflux + particles + propellers + relief + contact + sources against one private dev server; summary table | ~11 min |
 | `npm run check:refs` | bibliography ↔ docs sync, no browser: every author–year citation in README / ring-physics.md / data-sources.md has an entry in `src/app/references.ts`, every entry is cited; `-- --online` re-verifies DOIs / arXiv ids | ~1 s (online ~1 min) |
 | `npm run test:sources` | the Sources panel (key G) and every place's Sources line in the explainer: keys, focus, filtering, links | ~20 s |
 | `npm run test:smoke` | every place loads and renders cleanly (errors, fallbacks, NaN / negative pixels) | ~1.5 min |
@@ -21,6 +21,7 @@ follow [Adding a tool](#adding-a-tool) so the next session can run it too.
 | `npm run test:particles` | resolved-particle photometry and shape contract: GLSL vs CPU mirrors, factor LUT, relief area / photometry | ~20 s |
 | `npm run test:propellers` | propeller moonlets and the sub-km τ texture: named positions vs Tiscareno 2010 Table 1, texture statistics, footprint prefilter, GPU τ vs the CPU model, near-field presence and its cost gate, moonlet bodies | ~1 min |
 | `npm run test:relief` | the rings' vertical relief (one height field z0): model checks, GPU heights / slopes vs the CPU mirror, ray / height-field hits, equinox shadow length, near field and station keeping on the local mid-plane | ~1 min |
+| `npm run test:contact` | near-field contact resolution: overlaps before / after (independent CPU pair search), displacement bound, R0 write-back and drawn flags, frame-to-frame smoothness, warp; `--cost`: GPU time | ~40 s (`--cost` +2–3 min) |
 | `node scripts/shot.mjs …` / `node scripts/shots.mjs …` | screenshots (one / batch spec) | — |
 | `node scripts/img.mjs profile\|mean\|crop\|rotate …` | PNG brightness profiles, region ratios, contrast-stretched zooms, rotate/scale | — |
 
@@ -115,7 +116,7 @@ run caught tiny negative radiances from the F-ring line profiles, since fixed).
    |---|---|---|---|---|
    | `arc-repro` | 0.42–1.0 | 1.000 … 1.015 | 0.006 (0.06) | the user-reported arc: 2 km above the unlit A ring, yaw 60, pitch −22 |
    | `a-ring-1km` | 0.25–1.0 | 0.899 … 0.985 | 0.024 (0.06) | preset; particles 2–10 % darker than the medium (see below) |
-   | `a-ring-30m` | 0.35–0.78, 6 strips | 0.913 … 1.022 | 0.095 (0.10) | few large particles per strip → realization noise ±5 %; grazing far strip ~9 % particle deficit (below) |
+   | `a-ring-30m` | 0.35–0.78, 6 strips | 0.922 … 1.035 | 0.107 (0.11) | few large particles per strip → realization noise ±5 %; grazing far strip ~8 % particle deficit (below); contact brightening (below) |
    | `lit-500m` | 0.0–0.55 | 0.887 … 0.945 | 0.021 (0.06) | 500 m below the lit A ring looking up; particles 5–11 % darker than the medium |
    | `under-rings` | 0.0–0.45 | 0.959 … 1.011 | 0.016 (0.09) | unlit face from below (the former +5–8 % particle excess is gone, limit kept) |
 
@@ -126,7 +127,11 @@ run caught tiny negative radiances from the F-ring line profiles, since fixed).
    excess vanished, and what remains on the lit face (particles darker than the medium) is mostly the clipmap
    prefilter excess of the medium's explicit field (handover, known residual 1); in the grazing far strip of
    `a-ring-30m` the medium barely changed (its visible top layer has short sun paths) while the boulders darkened
-   ~22 %.
+   ~22 %. **Contact brightening** (`a-ring-30m`, the only view with resolved particles in its strips): since the
+   near-field contact step the resolved particles no longer interpenetrate, so they block more light than the
+   medium's independently placed (Poisson) particles of the same τ (the hard-particle / filling-factor effect the
+   medium does not model): near + medium with contact on / off in the same realizations ×1.003, 1.016, 1.008, 1.007,
+   1.023, 1.036 (far → near strip); before it the view measured 0.920 … 1.027, step 0.093 (limit 0.10, now 0.11).
 2. **flux**: particle-only flux (ring layer pass disabled) in the near strips of `a-ring-30m` at render scale
    0.5 vs 1, 4 realizations: sub-pixel particles are rasterized differently at the two scales but the expected
    flux must not change — ratio 1 ± 0.08 (measured 0.983).
@@ -333,6 +338,54 @@ heights relative to. The model part imports the TypeScript sources in Node (type
 Screenshots of every view in `<out>`; numbers per view in `results.json` (incl. the worst pixel). ~1 min.
 Model numbers in full: `node scripts/data/rings/relief_check.mjs`.
 
+### contact — `scripts/test/contact.mjs` (`--views b-inside,a-inside,a-30m,b-preset`, `--no-temporal`, `--cost [--cost-views …] [--reps 3] [--trials 12]`)
+The contact step of the near field (`src/render/near/NearContact.ts`, contract in ARCHITECTURE.md → "Near-field frame
+and contact contract"). Views (paused, `t=2026-11-08T12:00:00Z`, render scale 1, astronaut off): `b-inside` =
+b-ring-inside at fov 35 (cassini-compare b-inside), `a-inside` = a-ring-inside at fov 35, `a-30m` = a-ring-30m,
+`b-preset` = b-ring-inside at its fov 60 (other particle boxes than at fov 35: the camera lies inside a 1.8 m boulder;
+no temporal part). Per view the contact list (analytic positions, R0 slots, weights, contact shapes), the result, the
+bound D_i and R0 are read back and evaluated on the CPU in the page:
+1. **overlaps**: all pairs closer than their contact distance (the shader's ρ_i + ρ_j along the centre line), by a CPU
+   multi-level grid search over the list, at the analytic and at the resolved positions. *Resolved pair* = both at
+   weight 1 (≥ 6 render px radius, not occluded); *hidden* = the smaller one entirely inside the larger (left alone by
+   design); *visible beyond tolerance* = a visible overlap deeper than max(2 % of the contact distance, 1 render px);
+   *crowded* = a particle with ≥ 3 initial resolved overlaps (clusters / wake cores whose analytic packing is too dense
+   to resolve locally). Limits: residual / visible-before ≤ 0.2 (B) / 0.12 (A); uncrowded residual / resolved
+   particles ≤ 0.012.
+2. **bound**: max |x − x_analytic| / (clampK D_i) ≤ 1.0001 (float32: 4 ulps of the coordinates); D_i(GPU) ≥ D_i(CPU,
+   first iteration) for ≥ 99.8 % of the particles with overlaps (the GPU search missed nothing that matters); hash
+   bucket overflow (CPU simulation of the grid) ≤ 0.1 % of the list.
+3. **write-back**: R0 at every list slot = the resolved position; present particles unchanged; drawn (R0 w > 0)
+   with contact on − off = exactly the particles moved into view, ≤ 0.1 %; the HUD's ≥ 1 px count changes ≤ 0.1 %;
+   bodies around the camera (not drawn) have contact weight 0 (b-preset: 1 such body).
+4. **temporal**: the same paused frame twice is bit-identical; one frame later (t + 1/30 s) "pops" (displacement
+   change > max(5 × the analytic motion, 1 render px)) / matched particles ≤ 2e-4 (B) / 1e-4 (A); +1 s and +10 s
+   reported; warp ±1000 running: no NaN, residual ratio ≤ 1.5 × the paused limit.
+5. **cost** (`--cost`, informational): the step alone, re-run on the captured frame between synchronous 1-px
+   read-backs (min over trials; stages cumulative), and whole frames (`pipeline.render`) with the step off / on
+   interleaved; plus an fps A/B (noisiest). b-default / a-default = the presets at the default render scale 0.5.
+
+Measured 2026-11-08 (deterministic, identical in every run):
+
+| view | list | resolved | visible overlaps beyond tol. before → after (crowded) | deepest (× contact distance) | max displacement | moved into view | frame + 1/30 s pops (max px) |
+|---|---|---|---|---|---|---|---|
+| b-inside | 48.9k | 13.3k | 3672 → 469 (378): 0.128 | 0.938 → 0.639 | 6.5 a (bound 1.0000) | 37 | 1 (3.1 px) |
+| a-inside | 11.9k | 3.2k | 829 → 79 (55): 0.095 | 0.881 → 0.736 | 3.6 a | 5 | 0 (0.38 px) |
+| a-30m | 4.1k | 0.84k | 336 → 17 (16): 0.051 | 0.862 → 0.561 | 2.9 a | 3 | 0 (0.00 px) |
+| b-preset | 29.5k | 7.7k | 2344 → 310 (240): 0.132 | 0.945 → 0.765 | 5.4 a | 22 | — |
+
+All overlapping resolved pairs (incl. shallow ones within the tolerance and hidden ones): b-inside 5568 → 3719 (hidden
+1423 → 1015), a-inside 1205 → 698, a-30m 402 → 203. GPU-missed 0, bucket overflow 0 (max bucket fill 5–8 of 16).
+Temporal, + 1 s / + 10 s: b-inside 46 / 84 pops (max 18.7 / 55 px: clusters that re-pack as the shear moves them),
+a-inside 3 / 5, a-30m 0 / 0; warp +1000 / −1000 residual ratios 0.12 / 0.13 (B), 0.06 / 0.10 (A), 0.04 / 0.05 (30 m).
+Cost on a GPU shared with other agents (min over trials; ranges over 4 runs show the contention), ms — the step
+alone: b-default (9k list) 2.5–4.5, a-default (1.8k) 1.2–1.4, b-inside (49k) 7.9–11 (one run 18), a-inside (12k)
+2.0–4.1, `b-fov12` (55k: the B ring through a 12° fov at render scale 1, the largest contact set) 8.4; its fixed part
+(list compaction 0.3–1.5, materialization ≤ 0.3) dominates small lists. Whole frame with the step off → on (2 runs):
+b-default +1.9 / +3.9 (28 → 32 ms), a-default +2.3 / +2.4 (10.3 → 12.6 ms), b-inside +7.5 / +10.6, a-inside
++7.0 / +3.9, b-fov12 +7.5. Uncapped fps off → on (last run): b-default 43.2 → 40.0 (+1.9 ms), a-default 117.9 →
+107.3 (+0.8 ms), b-inside +5.7 ms, a-inside +2.6 ms, b-fov12 +6.7 ms; earlier runs were noise-dominated (±20 ms).
+
 ## Tools
 
 - `scripts/check-refs.mjs [--online] [--only id,…] [--verbose] [--out DIR]` (`npm run check:refs`, part of `npm test`
@@ -389,6 +442,9 @@ Model numbers in full: `node scripts/data/rings/relief_check.mjs`.
   A ring 30 m and 1 km above (presets), 3 / 20 / 100 km oblique and 60 / 300 km straight down at 129,000 km
   (inside a propeller belt), the B ring 200 km down, and from under the rings — for before/after comparisons of
   the medium's fine structure.
+  `scripts/test/specs/contact.json`: the contact step's A/B at render scale 1 — the cassini-compare A/B-ring
+  close-ups (fov 35), the b-ring-inside / a-ring-inside presets and 30 m above the A ring, each with the step on and
+  then off in the same page (`*-nocontact`, so only the contact step differs).
 - `scripts/img.mjs profile <x0> <x1> <y0> <y1> <step> a.png b.png …` — vertical brightness + texture profile of
   a column strip in several screenshots side by side (find seams); `mean a.png b.png "x0,y0,x1,y1" …` — region
   means and ratio; `crop out.png x0 y0 w h scale gain a.png b.png …` — stacked, upscaled, contrast-stretched
