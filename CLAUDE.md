@@ -32,7 +32,7 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
   step's GPU time and a whole-frame off / on A/B). `npm run test:fps` = informational fps table per preset ×
   quality. Details, tolerances, measured values and the shared helpers: `scripts/test/README.md`.
 - **Bibliography**: `npm run check:refs` (no GPU, ~1 s; also first in `npm test`) — every author–year citation in
-  README.md, docs/ring-physics.md and docs/data-sources.md needs an entry in `src/app/references.ts` (the in-app
+  README.md and docs/{ring-physics,data-sources,ARCHITECTURE}.md needs an entry in `src/app/references.ts` (the in-app
   Sources panel, key G) and every entry must be cited; `-- --online` re-verifies DOIs / arXiv ids. A new citation in
   the docs needs an entry there (verified against Crossref etc., never invented). `npm run test:sources` (also in
   `npm test`) = the panel and the per-place Sources lines (`src/app/placeSources.ts`) in the browser.

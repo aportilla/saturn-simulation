@@ -175,8 +175,9 @@ Full provenance, formats and accuracy: [`docs/data-sources.md`](docs/data-source
 ## Sources in the app
 
 Press **`G`** (or **Sources** in the help, `?`) for the bibliography: every paper, data set, catalogue and code the
-simulation's numbers come from — about 140 entries, grouped by topic (ring structure, optical depth, particle sizes,
-photometry, wakes, N-body, gap edges and moonlets, eccentric edges, moons, ephemerides, Saturn, …), searchable and
+simulation's numbers come from — about 150 entries, grouped by topic (ring structure, optical depth, particle sizes,
+photometry, wakes, N-body, gap edges and moonlets, eccentric edges, propellers, bending waves, moons, ephemerides,
+Saturn, …), searchable and
 filterable by topic and type. Each entry gives the full citation, what in the simulator uses it, the licence of data
 products, and links (DOI, arXiv, ADS, archive pages) that open in a new tab. The explainer of every place (`I`) ends
 with a **Sources** line of the 3–8 references behind what that view shows; a click opens the entry in the panel
@@ -185,8 +186,8 @@ with a **Sources** line of the 3–8 references behind what that view shows; a c
 The list is [`src/app/references.ts`](src/app/references.ts) (per-place choices: `src/app/placeSources.ts`). Every
 entry's metadata were checked against Crossref / DataCite, arXiv or the archive's own record; the two that could not
 be (a 1991 thesis and a second-hand conference abstract) are marked unverified with the reason. `npm run check:refs`
-keeps it in sync with the docs (every author–year citation in this README, `docs/ring-physics.md` and
-`docs/data-sources.md` must resolve to an entry, and every entry must be cited somewhere); `-- --online` re-verifies
+keeps it in sync with the docs (every author–year citation in this README, `docs/ring-physics.md`,
+`docs/data-sources.md` and `docs/ARCHITECTURE.md` must resolve to an entry, and every entry must be cited somewhere); `-- --online` re-verifies
 every DOI and arXiv id against the registries.
 
 ## Known limitations
