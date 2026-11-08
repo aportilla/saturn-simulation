@@ -297,7 +297,8 @@ alone: b-default (9k list) 2.5–4.5, a-default (1.8k) 1.2–1.4, b-inside (49k)
 2.0–4.1, `b-fov12` (55k: the B ring through a 12° fov at render scale 1, the largest contact set) 8.4; its fixed part
 (list compaction 0.3–1.5, materialization ≤ 0.3) dominates small lists. Whole frame with the step off → on (2 runs):
 b-default +1.9 / +3.9 (28 → 32 ms), a-default +2.3 / +2.4 (10.3 → 12.6 ms), b-inside +7.5 / +10.6, a-inside
-+7.0 / +3.9, b-fov12 +7.5. The fps A/B was noise-dominated (±20 ms).
++7.0 / +3.9, b-fov12 +7.5. Uncapped fps off → on (last run): b-default 43.2 → 40.0 (+1.9 ms), a-default 117.9 →
+107.3 (+0.8 ms), b-inside +5.7 ms, a-inside +2.6 ms, b-fov12 +6.7 ms; earlier runs were noise-dominated (±20 ms).
 
 ## Tools
 
