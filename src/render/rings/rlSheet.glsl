@@ -121,9 +121,17 @@ float rlToomre(float r, RlS S) {
   return max(39.478 * 6.674e-11 * sig * r * r * r / RL_GM, 2.0);
 }
 
-// main-ring sheet radiance at the plane hit. p: camera-relative hit; dr: precise radius offset from r0;
-// theta: SEF azimuth; fp: radial footprint (m). Returns radiance L and transmission T.
-void rlMainSheet(vec3 rd, vec3 p, float dr, float theta, float fp, float unresFrac, out vec3 L, out float T, out float tauOut) {
+// diagnostics of the last sheet evaluation (ring-layer debug views 24 / 25): (mid-plane height z0 [m], relief sun
+// visibility, solar incidence cosine on the lit face of the local layer, |slope|)
+vec4 gRlRelief = vec4(0.0, 1.0, 0.0, 0.0);
+
+// main-ring sheet radiance at the hit with the displaced mid-plane (sv_ringReliefShade ringReliefHit). p:
+// camera-relative hit; dr: precise radius offset from r0; theta: SEF azimuth; fp: radial footprint (m); st: the
+// structure state at the hit (streamline map + relief: .zeta, .slope). Returns radiance L and transmission T.
+// Relief: the layer is shaded in its own tilted frame -- normal n from the slope, viewing cosine |V.n|, solar incidence
+// on each face (extended solar disk: the terminator of a tilt is soft), the relief's shadows (horizon toward the Sun),
+// transmission of the background through the tilted layer exp(-tau / |V.n|).
+void rlMainSheet(vec3 rd, vec3 p, float dr, float theta, float fp, float unresFrac, RingStream st, out vec3 L, out float T, out float tauOut) {
   L = vec3(0.0);
   T = 1.0;
   tauOut = 0.0;
@@ -131,7 +139,7 @@ void rlMainSheet(vec3 rd, vec3 p, float dr, float theta, float fp, float unresFr
   // 2-D ring structure (sv_ringStructure): the profile at the Lagrangian (streamline) radius, tau x J x M; the
   // footprint in Lagrangian units (crowded streamlines put more material into the same footprint)
   vec3 lh = ringLocalFromRel(p);
-  RingStream st = ringStream(dr, atan(lh.y, uRingR0 + lh.x), fp);
+  float dthh = atan(lh.y, uRingR0 + lh.x);
   float drs = dr + st.da;
   float fpL = fp * st.J;
   float xF = uRlIdx0F + drs / uRingDr0;
@@ -142,19 +150,31 @@ void rlMainSheet(vec3 rd, vec3 p, float dr, float theta, float fp, float unresFr
   tauRef = rlTauM(S, 0.918);
   float spoke = rlSpokeTau(r, theta);
   tauOut = tauRef;
+  gRlRelief = vec4(st.zeta, 1.0, 0.0, length(st.slope));
   if (tauRef <= 1e-7 && spoke <= 0.0) return;
 
   vec3 V = -rd;                              // toward the viewer
-  float mu = max(abs(rd.z), 1e-4);
-  float mu0 = max(uRlMu0, 1e-3);
-  float vSide = sign(V.z);                   // +1: viewer north of the plane
-  bool lit = vSide == uRlSunSign;
-  float cosA = dot(uSunDir, V);
-  float vis = rlSunVis(p);
   vec3 eR = vec3(cos(theta), sin(theta), 0.0);
   vec3 eP = vec3(-sin(theta), cos(theta), 0.0);
-  // (vertical relief, e.g. Daphnis' vertical edge waves: ringStreamRelief exposes zeta; rendering it geometrically
-  // -- heights and shadows -- is the relief work package's)
+  // ---- the local layer (relief): normal, viewing cosine, the viewer's face, solar incidence on both faces
+  bool rel = st.slope.x != 0.0 || st.slope.y != 0.0 || st.zeta != 0.0;
+  vec3 nL = rel ? ringReliefNormal(st.slope, eR, eP) : vec3(0.0, 0.0, 1.0);
+  float vn = dot(V, nL);
+  float mu = max(abs(vn), 1e-4);
+  float vSide = vn >= 0.0 ? 1.0 : -1.0;      // +1: viewer on the normal's side of the local layer
+  vec2 muS = ringReliefSunMu(nL);            // (face the normal points to, the other face)
+  float mu0F = vSide > 0.0 ? muS.x : muS.y;  // the face toward the viewer (reflection)
+  float mu0B = vSide > 0.0 ? muS.y : muS.x;  // the far face (transmission)
+  // the main beam: the face that receives more light (with the two-column wakes); the other (only near the
+  // terminator of a tilt) as a homogeneous layer
+  bool lit = mu0F >= mu0B;
+  float mu0 = max(lit ? mu0F : mu0B, 1e-6);
+  float mu0o = lit ? mu0B : mu0F;
+  float cosA = dot(uSunDir, V);
+  // (relief shadows fall on flat ring too: evaluated wherever relief exists)
+  float relVis = uRrOn > 0.5 || uRsOn > 0.5 ? ringReliefSunVis(drs, dthh, st.zeta, tauRef, fp) : 1.0;
+  float vis = rlSunVis(p) * relVis;
+  gRlRelief = vec4(st.zeta, relVis, mu0, length(st.slope));
 
   // ---- direct sunlight, with unresolved wakes as a two-column mixture
   float ws = uRlWakeStat.w > 0.0 ? clamp(S.wake / uRlWakeStat.w, 0.0, 2.0) * uRlWakeScale : 0.0;
@@ -181,20 +201,23 @@ void rlMainSheet(vec3 rd, vec3 p, float dr, float theta, float fp, float unresFr
     IFsun = rlLayerIF(S, mu, mu0, cosA, lit);
     T = mix(1.0, rlTrans(S, mu), S.cover);
   }
+  // near the terminator of a tilted patch the solar disk straddles the local horizon: the part below lights the other
+  // face (homogeneous layer)
+  if (mu0o > 1e-7) IFsun += rlLayerIF(S, mu, mu0o, cosA, !lit);
   vec3 IF = IFsun * vis;
 
   // ---- Saturnshine: each face is lit by the half of Saturn's disk on its side (a beam from the
-  // half-disk centroid, elevation 4/(3 pi) of Saturn's angular radius)
+  // half-disk centroid, elevation 4/(3 pi) of Saturn's angular radius), relative to the local layer
   vec3 dS;
   float Es = saturnshine(p, dS);
   if (Es > 0.0) {
     float dist = length(uSaturnCenter - p);
     float thS = asin(clamp(uSaturnRadii.x / dist, 0.0, 1.0));
     float thC = 0.4244 * thS;
-    vec3 hdir = normalize(vec3(dS.xy, 0.0) + vec3(1e-9, 0.0, 0.0));
+    vec3 hdir = normalize(dS - nL * dot(dS, nL) + vec3(1e-9, 0.0, 0.0));
     float muB = sin(thC);
-    vec3 bSame = hdir * cos(thC) + vec3(0.0, 0.0, vSide * muB);
-    vec3 bOther = hdir * cos(thC) - vec3(0.0, 0.0, vSide * muB);
+    vec3 bSame = hdir * cos(thC) + nL * (vSide * muB);
+    vec3 bOther = hdir * cos(thC) - nL * (vSide * muB);
     float k = 0.5 * Es / max(uSunE, 1e-9);
     float cS = dot(bSame, V), cO = dot(bOther, V);
     if (cols) {

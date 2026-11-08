@@ -20,7 +20,8 @@
 //   6. no NaN / negative pixels in sceneRT / hdrRT (normal render), no console / GL errors, passes ok;
 //   7. near-crest: 30 m above material the map has moved ~2.8 km into the unperturbed gap: near-field particles are
 //      drawn (>= 1000 >= 1 px; the boxes are Lagrangian) and vanish with straight edges (edgeWaveScale 0: the camera
-//      is then over the gap), and near field + medium / medium alone in the lower half is 0.8 .. 1.25 -- checked
+//      is then over the gap), and near field + medium / medium alone in the lower half (near field: mean of 4 particle
+//      realizations, the anchor id re-seeds them; a single one scatters by ~+-0.2) is 0.8 .. 1.25 -- checked
 //      once nearDraw.vert.glsl lights particles through sv_ringStructure (ringSampleLocal), informational before.
 // The sub-km fine-structure noise is switched off for checks 1-5 (uRlFineAmp = 0), the near field too (sheet only).
 // usage: node scripts/test/edges.mjs [--base URL] [--out DIR] [--t ISO] [--w 1280 --h 720]
@@ -29,6 +30,8 @@ import { join } from 'node:path';
 import { fmt, openApp, problems, renderTargetScan, sleep, table, waitFrames, withHarness } from './lib.mjs';
 
 const T_DEFAULT = '2026-11-08T12:00:00Z';
+/** particle realizations averaged in the near-crest radiance check */
+const NEAR_CREST_SEEDS = 4;
 // gap edges of the rendered profile (km): docs/ring-physics.md section 5 (measure_features.mjs)
 const GAPS = {
   635: { name: 'Daphnis', gap: 'Keeler', edgesKm: [136_483, 136_523] },
@@ -275,11 +278,21 @@ await withHarness('edges', { usage: 'node scripts/test/edges.mjs [--base URL] [-
     }, strip);
     const a = await openApp(browser, base, p, { settle: 3000 });
     let withMap = 0, straight = 0, lNear = 0, lMed = 0, drawStruct = false;
+    const lNears = [];
     try {
       withMap = await drawnOf(a.page);
       drawStruct = await drawUsesStructure(a.page);
-      lNear = await lum(a.page);
       await a.page.screenshot({ path: join(out, 'near-crest.png') });
+      // the lower half is dominated by the few metre-sized boulders closest to the camera: average the radiance over
+      // NEAR_CREST_SEEDS particle realizations (re-seeded through the anchor id; one realization scatters by ~+-0.2)
+      for (let k = 0; k < NEAR_CREST_SEEDS; k++) {
+        if (k > 0) {
+          await a.page.evaluate(() => { window.__sv.anchor.anchorId += 1; });
+          await sleep(2000);
+        }
+        lNears.push(await lum(a.page));
+      }
+      lNear = lNears.reduce((s, v) => s + v, 0) / lNears.length;
       const pr = await problems(a.page, a.errs);
       rep.check('near-crest: clean (errors, GL, passes)', pr.length === 0, pr.slice(0, 3).join(' | ') || 'none');
       await a.page.evaluate(() => { window.__sv.pipeline.passes.rings.inner.edgeWaveScale = 0; });
@@ -291,7 +304,7 @@ await withHarness('edges', { usage: 'node scripts/test/edges.mjs [--base URL] [-
     }
     const b = await openApp(browser, base, { ...p, nearField: 0 }, { settle: 3000 });
     try { lMed = await lum(b.page); } finally { await b.page.close(); }
-    console.log(`  near-crest: camera r = ${fmt(crest.r / 1e3, 3)} km, ${fmt(crest.s / 1e3, 0)} km behind Daphnis (edge displaced ${fmt(crest.xi / 1e3, 2)} km); drawn >= 1 px: ${withMap} with the map, ${straight} with straight edges; lower-half radiance near+medium ${fmt(lNear, 4)} vs medium ${fmt(lMed, 4)}`);
+    console.log(`  near-crest: camera r = ${fmt(crest.r / 1e3, 3)} km, ${fmt(crest.s / 1e3, 0)} km behind Daphnis (edge displaced ${fmt(crest.xi / 1e3, 2)} km); drawn >= 1 px: ${withMap} with the map, ${straight} with straight edges; lower-half radiance near+medium ${fmt(lNear, 4)} (mean of ${lNears.length} realizations: ${lNears.map((v) => fmt(v, 4)).join(' / ')}) vs medium ${fmt(lMed, 4)}`);
     rep.range('near-crest: particles >= 1 px drawn over displaced material', withMap, 1000, 1e9);
     rep.range('near-crest: drawn with straight edges / with the map (the camera is then over the gap)', straight / Math.max(withMap, 1), 0, 0.05);
     const ratio = lNear / lMed;
@@ -302,6 +315,6 @@ await withHarness('edges', { usage: 'node scripts/test/edges.mjs [--base URL] [-
       // 1.11 with the one-line change)
       console.log(`  INFO near-crest: radiance near+medium / medium = ${fmt(ratio, 3)} -- not checked: nearDraw.vert.glsl still uses ringSampleIdx(ringIdxFromLocal(lp)); with ringSampleLocal(lp) this becomes a check in 0.8 .. 1.25`);
     }
-    rep.data.nearCrest = { crest, withMap, straight, lNear, lMed, ratio, drawUsesStructure: drawStruct };
+    rep.data.nearCrest = { crest, withMap, straight, lNear, lNears, lMed, ratio, drawUsesStructure: drawStruct };
   }
 });

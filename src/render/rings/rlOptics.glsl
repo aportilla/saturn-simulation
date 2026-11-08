@@ -300,7 +300,8 @@ struct RlTS {
 // fraction; mu0: beam direction cosine. Unit beam irradiance. Boundary: no diffuse light incident.
 RlTS rlTwoStream(float tau, vec3 w, float beta, float beta0, float mu0) {
   RlTS s;
-  mu0 = max(mu0, 2e-3);
+  // (floor far below the equinox values: the incidence of a tilted patch / the extended solar disk can be ~1e-5)
+  mu0 = max(mu0, 1e-6);
   tau = max(tau, 0.0);
   vec3 g1 = 2.0 * (1.0 - w * (1.0 - beta));
   vec3 g2 = 2.0 * w * beta;
@@ -382,7 +383,7 @@ float rlTransW(RlS s, float m, float Wf) {
 // -- the same model the near-field march integrates step by step (both wake regimes), so the two agree.
 vec3 rlLayerIFW(RlS s, float mu, float muB, float cosA, bool refl, float We, float Ws, float Wv) {
   mu = max(mu, 1e-4);
-  muB = max(muB, 1e-3);
+  muB = max(muB, 1e-6);
   float P = rlPhase(cosA, s.dust);
   vec3 w = s.alb;
   float beta = rlBeta(s.dust);

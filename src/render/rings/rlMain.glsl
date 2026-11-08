@@ -52,18 +52,22 @@ vec3 rlFalse(float x) {
 }
 
 // Slab segment [sA, sB] of the main-ring particle layer along rd (sBns: end ignoring the scene), and the
-// weight wM of the near-field march vs the far-field thin sheet for this ray.
+// weight wM of the near-field march vs the far-field thin sheet for this ray. Relief: the layer lies around the local
+// mid-plane z0 (the camera is "inside" when within the slab of the mid-plane under it, uRsCam.y), and the segment
+// covers the slab widened by the relief bound near the camera (uRrCamN.z), in which the march follows z0.
 void rlSlabSegment(vec3 rd, float sd, out float sA, out float sB, out float sBns, out float wM, out bool inside) {
   float zc = uRingCamLocal.z;
+  float zcRel = zc - uRsCam.y;
   float zs = ringSlabHalfThickness(uRlHSlab);
-  inside = abs(zc) < zs;
+  float zE = zs + uRrCamN.z;
+  inside = abs(zcRel) < zs;
   sA = 0.0;
   sB = -1.0;
-  if (inside) {
-    sB = abs(rd.z) > 1e-12 ? ((rd.z > 0.0 ? zs : -zs) - zc) / rd.z : 1e30;
+  if (abs(zc) < zE) {
+    sB = abs(rd.z) > 1e-12 ? ((rd.z > 0.0 ? zE : -zE) - zc) / rd.z : 1e30;
   } else if (rd.z * zc < 0.0) {
-    sA = (abs(zc) - zs) / abs(rd.z);
-    sB = (abs(zc) + zs) / abs(rd.z);
+    sA = (abs(zc) - zE) / abs(rd.z);
+    sB = (abs(zc) + zE) / abs(rd.z);
   }
   sB = min(sB, uRlMarchMax);
   // clip to the main-ring annulus (r < 139,500 km)
@@ -87,7 +91,7 @@ void rlSlabSegment(vec3 rd, float sd, out float sA, out float sB, out float sBns
   if (uRlNearOn > 0.5 && sBns > sA) {
     if (inside) wM = 1.0;
     else {
-      float sMid = abs(zc / rd.z);
+      float sMid = abs(zcRel / rd.z);
       // footprint of the march that produces this pixel (2x for the half-resolution march)
       float fpH = sMid * uPixelAngle * (uRlUseLow > 0.5 ? 2.0 : 1.0);
       // handover over 5 -> 2.5 px per wake spacing: completes before the march's contrast fade begins
@@ -134,12 +138,25 @@ void main() {
   // ---------------------------------------------------------------- main-ring plane / slab
   float zc = uRingCamLocal.z;
   float tP = abs(rd.z) > 1e-12 ? -zc / rd.z : -1.0;
-  bool hitP = tP > 0.0 && tP < sd;
+  // hit with the displaced mid-plane z = z0 (relief: moonlet edge waves, bending waves, corrugation, sites;
+  // sv_ringReliefShade): searched from the plane hit across the relief slab when the relief can move it by more
+  // than a fraction of the footprint; stH = the structure state there (streamline map + height, slope)
+  RingStream stH;
+  float tH = tP;
+  if (tP > 0.0) tH = ringReliefHit(rd, zc, tP, rlFootprint(rd, tP, rd * tP), stH);
+  bool hitP = tH > 0.0 && tH < sd;
   // a scene object inside the particle layer (a near-field particle) is seen through the part of the layer
   // between it and the camera, not all-or-nothing at the midplane (that made particles in front of the
-  // midplane unattenuated and the sheet regime with particles ~2-3 % darker than the march at grazing view)
+  // midplane unattenuated and the sheet regime with particles ~2-3 % darker than the march at grazing view);
+  // heights relative to the local mid-plane at the object (relief)
+  bool reliefAny = uRrOn > 0.5 || uRsOn > 0.5;
   float zObj = zc + rd.z * sd;
-  bool objIn = tP > 0.0 && sd < 1e29 && abs(zObj) < ringSlabHalfThickness(uRlHSlab);
+  float zObjRel = zObj;
+  if (reliefAny && sd < 1e29 && uRlNearOn > 0.5) {
+    vec3 lo = ringLocalFromRel(rd * sd);
+    zObjRel -= ringStreamRelief(ringDrFromLocal(lo), atan(lo.y, uRingR0 + lo.x), 0.0).zeta;
+  }
+  bool objIn = (tP > 0.0 || uRrCamN.z > 0.0) && sd < 1e29 && abs(zObjRel) < ringSlabHalfThickness(uRlHSlab);
   float sA, sB, sBns, wM;
   bool inside;
   rlSlabSegment(rd, sd, sA, sB, sBns, wM, inside);
@@ -147,18 +164,23 @@ void main() {
   // plane hit geometry (analytic layer + G rings)
   vec3 Lp = vec3(0.0);
   float Tp = 1.0;
-  float tauHit = 0.0, steps = 0.0, fpHit = 0.0, rHit = 0.0, thHit = 0.0;
-  float tOrder = hitP ? tP : (objIn ? sd : (wM > 0.0 ? sA : 1e30));
+  float tauHit = 0.0, steps = 0.0, fpHit = 0.0, rHit = 0.0, thHit = 0.0, zHit = 0.0, drHit = 0.0, dthHit = 0.0;
+  float tOrder = hitP ? tH : (objIn ? sd : (wM > 0.0 ? sA : 1e30));
   if ((hitP || objIn) && wM < 1.0) {
-    vec3 p = rd * tP;
+    float tS = hitP ? tH : tP;
+    vec3 p = rd * tS;
     vec3 l = ringLocalFromRel(p);
     float dr = ringDrFromLocal(l);
     float theta = uRlPhi0 + atan(l.y, uRingR0 + l.x);
-    float fp = rlFootprint(rd, tP, p);
+    float fp = rlFootprint(rd, tS, p);
     fpHit = fp;
     float r = uRingR0 + dr;
     rHit = r;
     thHit = theta;
+    zHit = zc + rd.z * tS;
+    drHit = dr;
+    dthHit = atan(l.y, uRingR0 + l.x);
+    if (!hitP) stH = ringStreamRelief(dr, atan(l.y, uRingR0 + l.x), fp);
     vec3 La;
     float Ta;
     if (r < 1.4e8) {
@@ -167,17 +189,17 @@ void main() {
       // so this equals the march's integral of sigma_unres). carry decreases with distance and is < 0.5 % of
       // tau at uRlLodRange, so stopping at 1.2x the range is invisible.
       float unres = 1.0;
-      if (uRlLodRange > 0.0 && tP < 1.2 * uRlLodRange) {
+      if (uRlLodRange > 0.0 && tS < 1.2 * uRlLodRange) {
         float carried = 0.0;
-        for (int k = 0; k < LOD_CLASSES; k++) carried += uLodTauFrac[k] * lodCarry(uLodAEff[k], k, tP, -zc);
+        for (int k = 0; k < LOD_CLASSES; k++) carried += uLodTauFrac[k] * lodCarry(uLodAEff[k], k, tS, -(zc - stH.zeta));
         unres = clamp(1.0 - carried, 0.0, 1.0);
       }
-      rlMainSheet(rd, p, dr, theta, fp, unres, La, Ta, tauHit);
+      rlMainSheet(rd, p, dr, theta, fp, unres, stH, La, Ta, tauHit);
       if (objIn) {
         // share of the layer's column between the camera's side and the object (same vertical model as the
         // particles: anchor thickness), transmission and emission of that part
-        float q = rlExt(zObj, max(uLodH, 0.1), sd).z;
-        float fr = clamp(zc > 0.0 ? q : 1.0 - q, 0.0, 1.0);
+        float q = rlExt(zObjRel, max(uLodH, 0.1), sd).z;
+        float fr = clamp(zc - uRsCam.y > 0.0 ? q : 1.0 - q, 0.0, 1.0);
         float Tf = pow(max(Ta, 1e-6), fr);
         La *= 1.0 - Ta > 1e-4 ? (1.0 - Tf) / (1.0 - Ta) : fr;
         Ta = Tf;
@@ -203,14 +225,17 @@ void main() {
       vec2 fr = lpos - vec2(b0);
       ivec2 lmax = textureSize(tLow, 0) - 1;
       vec4 acc = vec4(0.0);
-      float wsum = 0.0;
+      float wsum = 0.0, tLo = 1.0, tHi = 0.0;
       for (int j = 0; j < 2; j++)
         for (int i = 0; i < 2; i++) {
           vec4 v = texelFetch(tLow, clamp(b0 + ivec2(i, j), ivec2(0), lmax), 0);
           float w = (i == 0 ? 1.0 - fr.x : fr.x) * (j == 0 ? 1.0 - fr.y : fr.y);
-          if (v.a >= 0.0 && v.a <= 1.0) { acc += w * v; wsum += w; }
+          if (v.a >= 0.0 && v.a <= 1.0) { acc += w * v; wsum += w; tLo = min(tLo, v.a); tHi = max(tHi, v.a); }
         }
-      if (wsum > 0.05) {
+      // relief near the camera: the layer's edge against the sky (a horizon over tilted relief) is slanted -- march it at
+      // full resolution, the 2x2 blocks showed as 2 px steps along it
+      bool edge = uRrCamN.w > 0.5 && tHi - tLo > 0.5;
+      if (wsum > 0.05 && !edge) {
         Lm = acc.rgb / wsum;
         Tm = acc.a / wsum;
         own = false;
@@ -252,6 +277,14 @@ void main() {
   else if (uRlDebug == 10) col = vec3(gRlS3, Tp, steps);                                       // raw: e^-3 distance
   else if (uRlDebug == 11) col = gRlWsrc < 0.0 ? vec3(0.0) : rlFalse((gRlWsrc + 1.0) / 8.0) * 2.0; // wake source
   else if (uRlDebug == 12) col = vec3(wM, gRlWsrc, (Lp * PI / uSunE).g);                       // raw
+  // relief (sheet hit; numbers outside the near field's 11-22 / 31-34; scripts/test/relief.mjs reads 23, 24, 26): 23 raw
+  // (r - r0 [m], azimuth - phi0 [rad] of the hit in the ring frame, z of the ray there [m, SEF]); 24 raw (mid-plane z0
+  // there [m], relief sun visibility, solar incidence on the lit face of the local layer); 25 visual: z0 (false colour,
+  // +-1 km) darkened by the relief shadows; 26 raw (footprint [m], mid-plane slopes dz0/dr, dz0/(r dtheta))
+  else if (uRlDebug == 23) col = vec3(drHit, dthHit, zHit);
+  else if (uRlDebug == 26) col = vec3(fpHit, stH.slope);
+  else if (uRlDebug == 24) col = gRlRelief.xyz;
+  else if (uRlDebug == 25) col = rlFalse(0.5 + 0.5 * gRlRelief.x / 1000.0) * 2.0 * (0.25 + 0.75 * gRlRelief.y);
   outColor = vec4(col, 1.0);
 }
 #endif

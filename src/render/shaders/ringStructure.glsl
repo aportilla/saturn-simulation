@@ -2,8 +2,8 @@
 // The 2-D (radius, azimuth, time) structure of the main rings. EVERY main-ring optical-depth lookup goes through
 // this chunk (ring-layer sheet and march, near-field presence and culling, the astronaut's ring column, ...); the
 // radial profile of sv_ringProfile is the Lagrangian profile tau0(a') it maps.
-// Requires sv_common, sv_ringProfile. Uniforms: src/rings/RingStructure.ts (spread via SharedUniforms); CPU mirror
-// and model description: src/rings/streamlines.ts.
+// Requires sv_common, sv_ringProfile, sv_ringRelief (relief sources). Uniforms: src/rings/RingStructure.ts (spread via
+// SharedUniforms); CPU mirror and model description: src/rings/streamlines.ts, src/rings/relief.ts.
 //
 // Streamline model. Material is labelled by its Lagrangian (unperturbed) radius a'. At azimuth theta and time t the
 // streamline sits at r = a' + xi(a', theta, t) and at height zeta(a', theta, t). The Eulerian optical depth is
@@ -34,11 +34,16 @@
 //   float ringSunTransmissionStream(p, fp)      ringSunTransmission through the structure
 //   bool  rsIdentityAt(dr)                      cheap test: no source can displace material near dr
 //   void ringLocalPolar(l, out dr, out dth)
-// Hooks for later work packages (identity now; keep their signatures):
-//   ringStructureRelief(aL, dth)  -> vec3(height, dheight/da', dheight/dS)  bending waves, B-ring-edge structures,
-//                                    propeller/moonlet relief ... (added to the moonlets' zeta)
+//   RingSample ringSampleLocalRelief(l, fp, out rel)   THE lookup + the local mid-plane there: rel = (zeta, slope, a' - r0)
+// Relief and texture hooks:
+//   ringStructureRelief(aL, dth, fp) -> vec3(height, dheight/da', dheight/dS), added to the moonlets' zeta: bending waves
+//                                    and the 1983 corrugation (rsReliefWaves), B-ring-edge structures and S/2009 S1
+//                                    (rsReliefSites) -- both sv_ringRelief, included before this chunk -- and propeller
+//                                    relief (rsReliefPropellers, stub); fp = radial footprint (prefiltering)
 //   ringStructureTauMod(aL, dth)  -> multiplicative 2-D optical-depth modulation (azimuthal fine texture,
 //                                    propellers); must average to ~1 over azimuth
+// Every consumer of the layer's vertical structure takes heights relative to the local mid-plane z0 = .zeta (the
+// relief contract, docs/ARCHITECTURE.md); the ring frame itself stays in the SEF plane.
 #ifndef SV_RING_STRUCTURE
 #define SV_RING_STRUCTURE
 
@@ -72,12 +77,13 @@ struct RingStream {
 // ---------------------------------------------------------------- hooks (later work packages)
 // One stub per source so that independent work packages fill different functions (each may move its body into a
 // chunk of its own; keep the names and signatures, or update the sums below and their documentation).
-// Vertical relief sources at Lagrangian offset aL (m) and azimuth offset dth: (height (m), d/da', d/dS) each.
-vec3 rsReliefWaves(float aL, float dth) { return vec3(0.0); }       // bending waves, C-ring corrugation (relief package)
-vec3 rsReliefSites(float aL, float dth) { return vec3(0.0); }       // B-ring-edge structures, embedded moonlets (relief package)
+// Vertical relief sources at Lagrangian offset aL (m), azimuth offset dth, radial footprint fp (m): (height (m), d/da',
+// d/dS) each.
+vec3 rsReliefWaves(float aL, float dth, float fp) { return rrWaves(aL, dth, fp); }  // bending waves, 1983 corrugation (sv_ringRelief)
+vec3 rsReliefSites(float aL, float dth, float fp) { return rrSites(aL, dth, fp); }  // B-ring-edge region A, S/2009 S1 (sv_ringRelief)
 vec3 rsReliefPropellers(float aL, float dth) { return vec3(0.0); }  // propeller moonlets (texture / propeller package)
-vec3 ringStructureRelief(float aL, float dth) {
-  return rsReliefWaves(aL, dth) + rsReliefSites(aL, dth) + rsReliefPropellers(aL, dth);
+vec3 ringStructureRelief(float aL, float dth, float fp) {
+  return rsReliefWaves(aL, dth, fp) + rsReliefSites(aL, dth, fp) + rsReliefPropellers(aL, dth);
 }
 // Multiplicative 2-D optical-depth modulation sources at Lagrangian offset aL and azimuth offset dth.
 float rsTauModTexture(float aL, float dth) { return 1.0; }     // azimuthal fine texture (texture / propeller package)
@@ -221,7 +227,7 @@ void rsEval(float aL, float dth, float fp, bool wantZ, out vec3 r, out vec3 z) {
   z = vec3(0.0);
   rsModes(aL, dth, r);
   for (int k = 0; k < RS_MOONLETS; k++) rsMoonlet(k, aL, dth, fp, wantZ, r, z);
-  if (wantZ) z += ringStructureRelief(aL, dth);
+  if (wantZ) z += ringStructureRelief(aL, dth, fp);
 }
 
 // true if no source can displace material near the Eulerian offset dr (cheap reject before the Newton iteration)
@@ -243,7 +249,7 @@ RingStream rsInvert(float dr, float dth, float fp, bool wantZ) {
   st.da = 0.0; st.J = 1.0; st.tauMod = 1.0; st.zeta = 0.0; st.slope = vec2(0.0); st.daGrad = vec2(0.0);
   if (rsIdentityAt(dr)) {
     st.tauMod = ringStructureTauMod(dr, dth);
-    if (wantZ) { vec3 h = ringStructureRelief(dr, dth); st.zeta = h.x; st.slope = h.yz; }
+    if (wantZ) { vec3 h = ringStructureRelief(dr, dth, fp); st.zeta = h.x; st.slope = h.yz; }
     return st;
   }
   float x = dr;
@@ -269,7 +275,7 @@ RingStream ringStreamRelief(float dr, float dth, float fp) { return rsInvert(dr,
 
 // forward map at the Lagrangian offset aL = a' - r0: (xi (m), zeta (m), J)
 vec3 ringStreamXi(float aL, float dth, float fp) {
-  if (uRsOn < 0.5) return vec3(0.0, ringStructureRelief(aL, dth).x, 1.0);
+  if (uRsOn < 0.5) return vec3(0.0, ringStructureRelief(aL, dth, fp).x, 1.0);
   vec3 r, z;
   rsEval(aL, dth, fp, true, r, z);
   return vec3(r.x, z.x, 1.0 / max(1.0 + r.y, uRsJFloor));
@@ -334,6 +340,21 @@ RingSample ringSampleLocal(vec3 l, float fp) {
   ringLocalPolar(l, dr, dth);
   return ringSampleStream(dr, dth, fp);
 }
+// The same lookup plus the local mid-plane there: rel = (height zeta (m), slope dzeta/dr, dzeta/(r dth), Lagrangian
+// offset a' - r0 (m)).
+RingSample ringSampleLocalRelief(vec3 l, float fp, out vec4 rel) {
+  float dr, dth;
+  ringLocalPolar(l, dr, dth);
+  RingStream st = ringStreamRelief(dr, dth, fp);
+  RingSample s = ringSampleLagrangian(dr + st.da, fp * st.J);
+  float f = st.J * st.tauMod;
+  s.tau *= f;
+  s.sigma *= f;
+  rel = vec4(st.zeta, st.slope, dr + st.da);
+  return s;
+}
+// Height of the camera above the local mid-plane (m).
+float ringCamHeight() { return uRingCamLocal.z - uRsCam.y; }
 
 // ringSunTransmission (sv_ringProfile) through the 2-D structure: direct-sunlight transmission of the main rings
 // (thin sheet) for a camera-relative point p

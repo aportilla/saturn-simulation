@@ -57,6 +57,13 @@ export interface RingFrame {
   eZ: Vector3;
   /** Camera position in the frame (m): x radial, y azimuthal (prograde), z north */
   camLocal: Vector3;
+  /**
+   * Height (m, SEF z) of the ring material's local mid-plane under the camera: the vertical relief z0 (moonlet edge
+   * waves, bending waves, corrugation, ...; RingStructure.update). The frame stays in the SEF plane: the camera's
+   * height above the layer is camLocal.z - zMid -- every consumer of the layer's vertical structure uses heights
+   * relative to the local mid-plane.
+   */
+  zMid: number;
   /** Sim time (s since J2000) at which this anchor was created */
   tAnchor: number;
 }
@@ -208,6 +215,7 @@ export function createFrameState(): FrameState {
       ePhi: new Vector3(0, 1, 0),
       eZ: new Vector3(0, 0, 1),
       camLocal: new Vector3(),
+      zMid: 0,
       tAnchor: 0,
     },
     exposure: 0.25,

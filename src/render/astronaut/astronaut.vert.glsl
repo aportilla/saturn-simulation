@@ -73,23 +73,33 @@ void main() {
   // hardware early depth test can skip the fragments hidden behind ring particles (no gl_FragDepth)
   gl_Position.z = logDepthClipZ(gl_Position.w);
 
-  float mu0 = max(abs(uSunDir.z), 1e-3);
-  float sg = uSunDir.z >= 0.0 ? 1.0 : -1.0;
+  // the local layer under the camera (vertical relief: mid-plane z0 = uRsCam.y, slope uRrCamN.xy): heights relative to
+  // it, the Sun's side and incidence (extended disk) on the tilted layer, the relief's shadows
+  bool relC = uRrCamN.w > 0.5 || uRsCam.w > 0.5;
+  vec3 nC = relC ? normalize(vec3(0.0, 0.0, 1.0) - uRrCamN.x * uRingER - uRrCamN.y * uRingEPhi) : vec3(0.0, 0.0, 1.0);
+  float sunNc = dot(uSunDir, nC);
+  float mu0 = max(ringReliefSunMuExt(abs(sunNc), uSunAngRadius), 1e-5);
+  float sg = sunNc >= 0.0 ? 1.0 : -1.0;
   vSg = sg;
   float vis = saturnSunVisibility(p) * moonsSunVisibility(p, -1);
-  float Esun = uSunE * vis;
 
   // near the rings: precise local Hill-frame geometry; far away: SEF heights and the thin-sheet transmission
   bool nearRings = abs(uRingCamLocal.z) < 2.0e5;
   vec3 lp = ringLocalFromRel(p);
-  float zl = nearRings ? lp.z : p.z + uCamPos.z;
+  float zl = nearRings ? lp.z - uRsCam.y : p.z + uCamPos.z;
+  if (nearRings && relC) {
+    float drC, dthC;
+    ringLocalPolar(lp, drC, dthC);
+    vis *= ringReliefSunVis(drC - uRsCam.x, dthC, uRsCam.y, ringSampleLocal(lp, 0.0).tau, 0.0);
+  }
+  float Esun = uSunE * vis;
   vec2 tSun = vec2(1.0);
   vec3 Fl = vec3(0.0), Fd = vec3(0.0);
   if (nearRings) {
     RingSample rs = ringSampleLocal(lp, 0.0);
     float H = max(rs.H, 0.5);
     vec2 sh = vec2(dot(uSunDir, uRingER), dot(uSunDir, uRingEPhi));
-    vec2 sh2 = sh / max(abs(uSunDir.z), 0.02);
+    vec2 sh2 = sh / max(abs(sunNc), 0.02);
     // where the sun ray crosses the mid-plane (when the layer lies sunward of the body)
     RingSample rc = ringSampleLocal(vec3(lp.xy + sh2 * max(-sg * zl, 0.0), 0.0), 0.0);
     // column fractions above the body (fUp) and, for the shadow map's complement, the part the map does not
@@ -97,7 +107,7 @@ void main() {
     vec2 pl2 = vec2(dot(p, uRingER), dot(p, uRingEPhi));
     float shl = max(length(sh), 1e-6);
     vec2 sdir = sh / shl;
-    float dzdl = uSunDir.z / shl;
+    float dzdl = sunNc / shl;
     float fUp = 0.0, fPart = 0.0, wsum = 0.0;
     for (int k = 0; k < LOD_CLASSES; k++) {
       float wk = uLodTauFrac[k];

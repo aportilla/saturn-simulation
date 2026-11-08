@@ -12,7 +12,7 @@
     "shot": "node scripts/shot.mjs",
     "shots": "node scripts/shots.mjs",
     "img": "node scripts/img.mjs",
-    "test": "node scripts/test/run.mjs smoke physics counts seam exposure edges moonflux particles",
+    "test": "node scripts/test/run.mjs smoke physics counts seam exposure edges moonflux particles relief",
     "test:smoke": "node scripts/test/smoke.mjs",
     "test:physics": "node scripts/test/physics.mjs",
     "test:counts": "node scripts/test/counts.mjs",
@@ -21,7 +21,8 @@
     "test:exposure": "node scripts/test/exposure.mjs",
     "test:edges": "node scripts/test/edges.mjs",
     "test:moonflux": "node scripts/test/moonflux.mjs",
-    "test:particles": "node scripts/test/particles.mjs"
+    "test:particles": "node scripts/test/particles.mjs",
+    "test:relief": "node scripts/test/relief.mjs"
   },
   "dependencies": {
     "three": "^0.187.0"

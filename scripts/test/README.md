@@ -7,7 +7,7 @@ follow [Adding a tool](#adding-a-tool) so the next session can run it too.
 
 | command | what it checks | runtime* |
 |---|---|---|
-| `npm test` | smoke + physics + counts + seam (incl. handover) + exposure + edges + moonflux + particles against one private dev server; summary table | ~8 min |
+| `npm test` | smoke + physics + counts + seam (incl. handover) + exposure + edges + moonflux + particles + relief against one private dev server; summary table | ~9 min |
 | `npm run test:smoke` | every place loads and renders cleanly (errors, fallbacks, NaN / negative pixels) | ~1.5 min |
 | `npm run test:physics` | Sun ephemeris, orbital frequencies, near-field particle kinematics | ~15 s |
 | `npm run test:counts` | drawn particle counts vs the analytic expectation, HUD count line, radius sampler | ~30 s |
@@ -17,6 +17,7 @@ follow [Adding a tool](#adding-a-tool) so the next session can run it too.
 | `npm run test:edges` | gap edges perturbed by moonlets and the B-ring edge modes (streamline map): gaps empty, rendered edges = model, near field follows | ~50 s |
 | `npm run test:moonflux` | point-source flux of unresolved moons = resolved brightness (measured shapes + ellipsoid control) | ~10 s |
 | `npm run test:particles` | resolved-particle photometry and shape contract: GLSL vs CPU mirrors, factor LUT, relief area / photometry | ~20 s |
+| `npm run test:relief` | the rings' vertical relief (one height field z0): model checks, GPU heights / slopes vs the CPU mirror, ray / height-field hits, equinox shadow length, near field and station keeping on the local mid-plane | ~1 min |
 | `node scripts/shot.mjs …` / `node scripts/shots.mjs …` | screenshots (one / batch spec) | — |
 | `node scripts/img.mjs profile\|mean\|crop\|rotate …` | PNG brightness profiles, region ratios, contrast-stretched zooms, rotate/scale | — |
 
@@ -205,7 +206,7 @@ debug views 7 and 9 give (r, τ, θ) per pixel, compared with the CPU mirror (`_
 | NaN / negative pixels (normal render), console / GL errors, passes ok | none | none |
 | near-crest: particles ≥ 1 px over material displaced 2.8 km into the unperturbed gap, 30 m above | ≥ 1000 | 53.5k |
 | near-crest: the same with straight edges (`edgeWaveScale` 0, camera then over the gap) / with the map | ≤ 0.05 | 0 |
-| near-crest: lower-half radiance near field + medium / medium alone | 0.8 … 1.25 — checked once `nearDraw.vert.glsl` lights particles through `ringSampleLocal` (informational before) | 2.44 now; 1.11 with that one-line change |
+| near-crest: lower-half radiance near field + medium / medium alone (near field: mean of 4 particle realizations — the strip is dominated by the few boulders closest to the camera; single realizations scatter 0.84–1.30) | 0.8 … 1.25 — checked once `nearDraw.vert.glsl` lights particles through `ringSampleLocal` (informational before) | 1.03 (with the vertical relief; realizations 1.30 / 0.89 / 0.89 / 1.03; without relief 0.97) |
 
 Screenshots `<view>.png`, `near-crest.png`, `near-crest-straight-edges.png`; per-view numbers in `results.json`. ~50 s.
 
@@ -247,6 +248,32 @@ code.
    axes near the orbit normal for large particles): 0.987 edge-on … 1.026 from above for a ≥ 0.6 m (NR_ISO 0.8;
    0.92 … 1.14 with the full shape spread).
 
+### relief — `scripts/test/relief.mjs` (`--only model,gpu,shadow,near`, `--views mimas53,titan,cring,region-a,keeler`)
+The rings' vertical relief: ONE height field z0 = moonlet ζ + bending waves + corrugation + B-ring-edge sites
+(`src/rings/relief.ts`, `sv_ringRelief` / `sv_ringReliefShade`, docs/ring-physics.md §10) that every renderer takes
+heights relative to. The model part imports the TypeScript sources in Node (type stripping, Node ≥ 23).
+
+| check | tolerance (why) | measured |
+|---|---|---|
+| model: wave-table phase advance 4–12 W from the resonance / WKB (k = \|D'x\| / 2πGΣ), each wave | 0.99 … 1.01 (the local wavenumber of the exact linear profile oscillates by a few % around WKB; the advance over ~10 cycles must not) | 0.9988 (all three) |
+| model: Mimas 5:3 peak height / maximum slope | 445–455 m (calibration to VIMS) / 7–11° (observed ~10°) | 450 m / 8.48° |
+| model: Titan −1:0 maximum slope; \|h\| at 10 / 20 / 30 km | 44–46° (calibration) ; 500–1500 m (Sega & Stewart) | 45.0°; 1157 / 915 / 679 m |
+| model: corrugation wavenumber, analytic (GLSL) / numerical d(Ω − ν)/dr | 1 … 1.005 | 1.0000 |
+| model: region A at the PIA11668 frame time | inside the frame's ring footprint 165.8–168.4° | 168.22° |
+| GPU vs CPU (views straight up at the sheet: Mimas 5:3 40 km inside r_V, Titan 20 km outside, C-ring corrugation, region A at the PIA11668 epoch, the Keeler gap), every 3rd pixel of debug views 23 / 24 / 26 vs `structure.streamAt(dr, dth, fp, true)`: max \|z0 GPU − CPU\| | ≤ 1 m + 1 % of the view's max \|z0\| (float32 phases) | 0.009 / 0.028 / 0.021 / 0.46 / 0.002 m (max \|z0\| 443 / 939 / 8 / 3284 / 455 m) |
+| … max \|slope GPU − CPU\| | ≤ 0.002 + 2 % of the max slope | ≤ 2.0e-4 |
+| … ray / height-field intersection: \|z0 − z_ray\| tan(zenith angle) at the hit > 0.3 footprints + 2 m | ≤ 0.5 % of the pixels (the search is skipped exactly where the relief moves the hit by less than 0.3 footprints) | 0 % (max 0.22 footprints) |
+| … relief in view | max \|z0\| 100–2000 m (waves), 300–3600 m (region A): the views see the relief | see above |
+| S/2009 S1 at its NAC frame time (Sun 0.24°): rendered shadow end (relief visibility 0.5 on the anti-Sun axis) / (h / tan B = 35.9 km) | 0.97 … 1.03 | 0.983 (35.3 km) |
+| … relief visibility halfway along the shadow | ≤ 0.1 | 0.000 |
+| near field 30 m above the local mid-plane inside the Mimas 5:3 wave (mid-plane −364 m): 99 % of \|z_particle − z0(x, y)\| over the drawn particles (r0RT readback) | ≤ 40 m (the layer's vertical scatter; on the SEF plane it would be hundreds of m) | 4.7 m (6,033 particles; vs the camera's mid-plane: 458 m) |
+| … z0 spread under the drawn particles | ≥ 50 m (the check sees relief) | 599 m |
+| … HUD height above the local mid-plane; after ~2 s at warp 3000 (mid-plane moved ≥ 20 m), then paused | 29.5–30.5 m | 30.00 m; moved 65–80 m (frame-rate dependent), 30.00 m |
+| every view: NaN / negative pixels, console / GL errors, passes ok | none | none |
+
+Screenshots of every view in `<out>`; numbers per view in `results.json` (incl. the worst pixel). ~1 min.
+Model numbers in full: `node scripts/data/rings/relief_check.mjs`.
+
 ## Tools
 
 - `scripts/shot.mjs <url> <out.png> [--until expr] [--eval expr] [--wait ms] [--w --h --dpr] [--keep-storage]` —
@@ -260,7 +287,13 @@ code.
   the 1 km wake view with and without the near field, Daphnis in the Keeler gap with and without edge waves
   (`edgeWaveScale` 0), Daphnis and Pan close-ups, the Keeler gap and the B-ring edge at the 2009 equinox. The
   orbit-camera `az` values put the Sun ~30–40° to the side on those dates (Sun azimuth 61° on 2026-11-08,
-  −136° in Aug 2009). `scripts/test/specs/moon-shapes.json`: the measured small-moon shapes — 9 Cassini frames
+  −136° in Aug 2009). Vertical relief (render at 1024×1024, `--w 1024 --h 1024`, for the NAC frames): Cassini NAC
+  geometries (fov 0.35° set by `eval`, positions from the OPUS ring geometry of the frames; north up, so rotate
+  before comparing) of PIA11668 (B-ring edge region A, 2009-07-26, with a `relief=0` twin), PIA11676 (A-ring shadows
+  a week after equinox: Mimas 5:3 band, Daphnis' waves; `relief=0` twin), PIA11656 / PIA11655 (Daphnis' edge waves,
+  April / May 2009: range, elevation and phase angle from the captions), the Titan −1:0 wave and the C-ring
+  corrugation on the equinox day; oblique views of the Mimas 5:3 (`relief=0` twin) and Titan waves on 2026-11-08,
+  and 30 m above the local mid-plane inside the Mimas 5:3 wave. `scripts/test/specs/moon-shapes.json`: the measured small-moon shapes — 9 Cassini frames
   reproduced from the PDS shape-model documents' image tables (the first shot defines `window.__mv(o)`: SCLK → time,
   calibrated so the app's sub-solar W longitude equals the table's; camera at the sub-spacecraft lat / W lon and range;
   NAC-like fov below the UI's 20° minimum), generic views of all 7 reshaped moons on 2026-11-08 and a camera-clearance

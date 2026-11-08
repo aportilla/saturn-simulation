@@ -208,7 +208,8 @@ export class Pipeline {
     const rKm = rKmE + c.structure.cam.da / 1000;
     const local = c.profile.local(rKm * 1000);
     const drifted = local.macroscopic !== this.lastLocalMacro || Math.abs(rKm - this.lastLocalRKmL) > 20;
-    const camZ = f.ring.camLocal.z;
+    // the camera's height above the local mid-plane (vertical relief; the frame stays in the SEF plane)
+    const camZ = f.ring.camLocal.z - f.ring.zMid;
     if (anchorChanged || movedFar || drifted || c.lod.needsRealloc(pa, camZ)) {
       const driftKm = c.structure.maxDisplacementNear(rKmE * 1000) / 1000;
       // each size class is generated at the max tau over the radial span of its own box (+ the possible drift)
@@ -220,7 +221,7 @@ export class Pipeline {
       this.lastLocalMacro = local.macroscopic;
     }
     // the near field is active while the camera is within the distance its largest particles can be drawn at
-    const nearAllowed = f.settings.nearField && Math.abs(f.camPos.z) < c.lod.maxReach && c.lod.totalParticles > 0;
+    const nearAllowed = f.settings.nearField && Math.abs(camZ) < c.lod.maxReach && c.lod.totalParticles > 0;
     c.lod.setActive(nearAllowed && (this.passes.near?.enabled ?? false));
     c.wakes.enabled = f.settings.wakes;
     if (this.lastWakesOn !== f.settings.wakes) this.lastWakesOn = f.settings.wakes;

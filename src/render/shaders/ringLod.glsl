@@ -74,14 +74,16 @@ float lodGaussQ(float z, float sig) { return 0.5 * (1.0 - erfApprox(z / (1.41421
 // Extinction coefficients (1/m) at height z (m, from the ring midplane) in a ring patch with normal
 // optical depth tau, full thickness H and wake density factor W (mean 1), at 3-D distance s (m) from the
 // camera. sigTot: all particles. sigUnres: only the part NOT carried by discrete near-field particles.
+// Heights relative to the local mid-plane (vertical relief): the camera's is uRingCamLocal.z - uRsCam.y.
 void ringExtinction(float s, float z, float tau, float H, float W, out float sigTot, out float sigUnres) {
   float tot = 0.0, res = 0.0;
+  float zc = uRingCamLocal.z - uRsCam.y;
   for (int k = 0; k < LOD_CLASSES; k++) {
     float w = uLodTauFrac[k];
     if (w <= 0.0) continue;
     float g = w * lodGaussPdf(z, max(uLodSigZ[k] * H, 0.02));
     tot += g;
-    res += g * lodCarry(uLodAEff[k], k, s, z - uRingCamLocal.z);
+    res += g * lodCarry(uLodAEff[k], k, s, z - zc);
   }
   // sub-class particles (a < 1 mm): always part of the medium
   if (uLodTauSub > 0.0) tot += uLodTauSub * lodGaussPdf(z, max(uLodSigZSub * H, 0.02));

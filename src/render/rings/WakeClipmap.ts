@@ -108,7 +108,8 @@ export class WakeClipmap {
       this.levelCount = 0;
       return false;
     }
-    const zc = Math.abs(f.ring.camLocal.z);
+    // height above the local mid-plane (vertical relief)
+    const zc = Math.abs(f.ring.camLocal.z - f.ring.zMid);
     const pa = f.pixelAngle;
     if (!(Number.isFinite(zc) && Number.isFinite(pa) && pa > 0 && Number.isFinite(lambda) && lambda > 0) || zc * pa > lambda / 2) {
       this.levelCount = 0;

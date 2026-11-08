@@ -303,6 +303,8 @@ export class NearShadow {
   enabled = true;
   /** first size class rendered into the map */
   firstClass = 10;
+  /** the local mid-plane's slope at the camera (dz0/dx, dz0/dy; set by NearFieldPass from the ring structure) */
+  readonly reliefSlope: [number, number] = [0, 0];
   private readonly eu = new Vector3();
   private readonly ev = new Vector3();
 
@@ -329,9 +331,14 @@ export class NearShadow {
     const sz = s.z;
     const cosE = Math.sqrt(Math.max(1 - sz * sz, 0));
     const slab = 1.6 * lod.H + 0.5;
-    const V = SHADOW_U * Math.abs(sz) + slab * cosE + 1.0;
-    // the tube must intersect the particle slab near the camera (camera within ~V of the layer)
-    const camZ = f.ring.camLocal.z;
+    // relief: the layer follows the local mid-plane z0; over the tube's footprint around the camera (the slab crossing
+    // within ~slab / |sz| along the Sun) it rises or falls by ~|grad z0| times that distance (camera's slope)
+    const g = Math.min(Math.hypot(this.reliefSlope[0], this.reliefSlope[1]), 2);
+    const V0 = SHADOW_U * Math.abs(sz) + slab * cosE + 1.0;
+    const V = V0 + g * (SHADOW_U + slab / Math.max(Math.abs(sz), 0.05)) * cosE;
+    // the tube must intersect the particle slab near the camera (camera within ~V of the layer, relative to the local
+    // mid-plane)
+    const camZ = f.ring.camLocal.z - f.ring.zMid;
     const on = this.enabled && cosE > 0.02 && Math.abs(sz) > 0.005 && lod.active && Math.abs(camZ) * cosE < V + slab;
     const eu = this.eu.set(s.y, -s.x, 0); // s x z
     if (eu.lengthSq() < 1e-12) eu.set(1, 0, 0);
