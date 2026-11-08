@@ -2,8 +2,9 @@
 // Particles smaller than half a render pixel are flat discs of half a render pixel, rasterized with
 // probability (rho / 0.5)^2 (expected coverage = true coverage; at render scale 1 that only concerns the
 // 0.4-0.5 display-px handover band: every particle >= 1 display px is drawn at its true size). Each vertex
-// fetches its particle through the compacted list (HistoPyramid). Per drawn particle: projected footprint, body
-// orientation, ellipsoid axes, albedo, and the lighting environment at the particle center:
+// fetches its particle through the compacted list (HistoPyramid). Per drawn particle: projected footprint (of the
+// relief's outer shell when the surface is ray-marched), body orientation, ellipsoid axes, relief parameters,
+// albedo, the regolith photometry factors (Sun, Saturnshine) and the lighting environment at the particle center:
 //   sunlight  x Saturn/moon occultation x layer transmission: inside the shadow-map tube the map's
 //             discrete visibility x the statistically unresolved part, elsewhere the whole column; the
 //             statistical column is scaled by the self-gravity-wake density along the sun path (as the
@@ -22,9 +23,11 @@ uniform float uNearAllocD[LOD_CLASSES];   // half-size of each class's allocated
 flat out vec4 vC;         // center (camera-relative SEF, m), 1 = tiny (flat disc of half a render pixel) else 0
 flat out vec4 vQ;         // body -> world orientation
 flat out vec4 vAx;        // ellipsoid semi-axes (m), w = sprite size (px)
-flat out vec4 vAlb;       // albedo rgb, w = surface texture seed
-flat out vec4 vE;         // (E_sun (W/m^2) x Saturn/moon visibility, E_saturn (attenuated), 1 = shadow lookup needed, Lambert->phase factor)
+flat out vec4 vAlb;       // albedo rgb, w = regolith grain albedo (ringRegolithIF)
+flat out vec4 vE;         // (E_sun (W/m^2) x Saturn/moon visibility, E_saturn (attenuated) x its factor, 1 = shadow lookup needed, regolith factor (Sun))
 flat out vec4 vSS;        // direction to Saturn (SEF), w = shadow-map weight
+flat out vec4 vDisp;      // relief: (geometric amplitude amp (0: analytic ellipsoid), kappa, inner, outer shell radius (unit-sphere units))
+flat out vec4 vRel;       // relief parameters: texture offset (xyz), clast weight (w)
 flat out vec4 vTiny;      // flat-disc radiance (rgb) for sub-pixel particles, w = view depth of the center
 flat out vec2 vT;         // layer transmission of sunlight: (whole column, part not resolved by the shadow map)
 flat out vec3 vFl;        // multiply-scattered ring light arriving from the lit-face side (W/m^2, rgb)
@@ -45,12 +48,19 @@ void main() {
   vec3 c = r0.xyz;
   float a = r0.w;
   uint idx = uint((tc.y - uClsRow0[k]) * uTexW + tc.x), seed = uint(uClsSeed[k]);
-  vec3 ax = a * nearShape(idx, seed);
-  float rb = ax.x;
+  vec3 ax = a * nearShape(idx, seed, a);
   float s = length(c);
+  // surface relief: ray-marched displaced surface above NR_PX0 render px (high quality), else the analytic
+  // ellipsoid; the bounding radius is the relief's outer shell
+  vec4 rp = nearReliefParams(idx, seed, a);
+  float amp = nearReliefAmp(ax.x / (s * uPixelAngle));
+  vec2 shell = nearReliefShell(amp, rp.w);
+  vDisp = vec4(amp, nearKappa(amp, rp.w), shell);
+  vRel = rp;
+  float rb = ax.x * (amp > 0.0 ? shell.y : 1.0);
   vec3 v = uWorldToCam * c;
   float w = -v.z;
-  float sinB = rb / s;
+  float sinB = min(rb / s, 1.0);
   // largest semi-axis of the projected ellipse (px), including the off-axis stretch
   float cosT = clamp(w / s, -1.0, 1.0);
   float rpx = (w > 0.0) ? sinB / sqrt(max(1.0 - sinB * sinB, 1e-6)) / (uPixelAngle * cosT * cosT) : 1e9;
@@ -160,17 +170,21 @@ void main() {
   vFl = Fl * Ediff;
   vFd = Fd * Ediff;
   // photometry: regolith-covered particles follow the power-law phase function (ringParticlePhase, incl. the
-  // opposition surge); resolved particles are Lambert-shaded per pixel and rescaled so that their
-  // disk-integrated phase function is the power law (no seam with the medium they replace)
+  // opposition surge); resolved particles are shaded per pixel with the regolith surface law (ringRegolithIF,
+  // grain albedo w from the particle albedo) and rescaled by the factor that makes a sphere's disk-integrated
+  // phase function exactly the power law (no seam with the medium they replace): one factor for the Sun, one
+  // for Saturnshine (at Saturn's centre direction; NearRegolith.ts)
   float cosSS = dot(dS, vdir);
-  float fSun = ringParticleLambertFactor(cosA);
-  float fSS = ringParticleLambertFactor(cosSS);
+  float albL = luminance(alb);
+  vec2 fw = nearRegolithFactor(cosA, albL);
+  float fSun = fw.x;
+  float fSS = nearRegolithFactor(cosSS, albL).x;
   // the shadow-map lookup only matters where unshadowed direct sunlight would not be negligible next to the
   // multiply-scattered light (< 1% of it: deep in dense rings, in eclipse); elsewhere the statistical mean
   float dirMax = Esun * mix(vT.x, vT.y, mapW) * fSun;
   float needSh = mapW > 0.0 && dirMax > 0.01 * dot(Fl + Fd, vec3(0.5 / 3.0)) * Ediff ? 1.0 : 0.0;
 
-  vAlb = vec4(alb, float(nearHash(idx, seed, NS_TEX) >> 9u) * (1.0 / 8388608.0));
+  vAlb = vec4(alb, fw.y);
   vE = vec4(Esun, Ess * fSS, needSh, fSun);
   vSS = vec4(dS, mapW);
 
@@ -196,14 +210,19 @@ void main() {
     int corner = gl_VertexID;   // 0..5 -> two triangles
     int cid = corner == 0 ? 0 : (corner == 1 || corner == 4) ? 1 : (corner == 2 || corner == 3) ? 2 : 3;
     vec2 cxy = vec2((cid & 1) == 1 ? 1.0 : -1.0, (cid & 2) == 2 ? 1.0 : -1.0);
-    vec3 dirv = v / s;                                   // view-space direction to the center
-    vec3 up = abs(dirv.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-    vec3 e1 = normalize(cross(up, dirv)), e2 = cross(dirv, e1);
-    float dq = max(s - rb, 2e-3);
-    float h = dq * sinB / sqrt(max(1.0 - sinB * sinB, 1e-4)) * 1.05 + 2e-3;
-    vec3 pv = dirv * dq + (e1 * cxy.x + e2 * cxy.y) * h;
-    gl_Position = uProj * vec4(pv, 1.0);
-    gl_Position.z = 0.0;
+    if (s < 1.05 * rb) {
+      // the camera is inside the bounding shell (but outside the body, see the classifier): whole screen
+      gl_Position = vec4(cxy, 0.0, 1.0);
+    } else {
+      vec3 dirv = v / s;                                   // view-space direction to the center
+      vec3 up = abs(dirv.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+      vec3 e1 = normalize(cross(up, dirv)), e2 = cross(dirv, e1);
+      float dq = max(s - rb, 2e-3);
+      float h = dq * sinB / sqrt(max(1.0 - sinB * sinB, 1e-4)) * 1.05 + 2e-3;
+      vec3 pv = dirv * dq + (e1 * cxy.x + e2 * cxy.y) * h;
+      gl_Position = uProj * vec4(pv, 1.0);
+      gl_Position.z = 0.0;
+    }
     vAx = vec4(ax, 4096.0);   // (no sprite) full surface detail
   }
 }

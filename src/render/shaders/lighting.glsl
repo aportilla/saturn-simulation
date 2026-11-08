@@ -28,9 +28,11 @@ float phaseHG(float cosTheta, float g) {
 // (B ~0.45, A ~0.3), which no Lambert-sphere albedo <= 1 can. C = 2 / (pi Int_0^1 u^n sin(pi u) du).
 #define RING_PHASE_N 3.3
 #define RING_PHASE_C 5.69698
+// intrinsic opposition surge of the particle phase function (alpha = phase angle, rad)
+float ringParticleSurge(float a) { return 1.0 + 0.5 * exp(-a / 0.05); }
 float ringParticlePhase(float cosAlpha) {
   float a = acos(clamp(cosAlpha, -1.0, 1.0));
-  return RING_PHASE_C * pow(max(1.0 - a / PI, 0.0), RING_PHASE_N) * (1.0 + 0.5 * exp(-a / 0.05));
+  return RING_PHASE_C * pow(max(1.0 - a / PI, 0.0), RING_PHASE_N) * ringParticleSurge(a);
 }
 // Fine dust: strongly forward scattering double Henyey-Greenstein.
 float ringDustPhase(float cosAlpha) {
@@ -46,11 +48,67 @@ float ringPhaseLambert(float cosAlpha, float dust) {
   float a = acos(clamp(cosAlpha, -1.0, 1.0));
   return mix(phaseLambertSphere(cosAlpha) * (1.0 + 0.5 * exp(-a / 0.05)), ringDustPhase(cosAlpha), dust);
 }
-// Resolved particles: multiply the radiance of a Lambert-shaded sphere (A E mu0 / pi) by this factor and the
-// sphere's disk-integrated phase function becomes ringParticlePhase, so an ensemble of resolved particles has
-// exactly the brightness of the medium it replaces (includes the opposition surge).
+// Lambert-shaded particles (diagnostics: the near field's debug view 32): multiply the radiance of a Lambert
+// surface (A E mu0 / pi) by this factor and a sphere's disk-integrated phase function becomes ringParticlePhase.
 float ringParticleLambertFactor(float cosAlpha) {
   return ringParticlePhase(cosAlpha) / max(phaseLambertSphere(cosAlpha), 1e-3);
+}
+// Resolved particles: regolith surface law, radiance factor I/F of a surface element lit at incidence cosine
+// mu0 and seen at mu (w.r.t. its normal), phase angle g (cosg), grain single-scattering albedo w. Hapke's model
+// with macroscopic roughness theta-bar = 30 deg (Hapke 1984) and the 2002 H functions, single-term HG grains
+// (xi = -0.35); no opposition term (the surge is carried by the per-particle factor). The radiance of a
+// particle is L = (A E / pi) I/F f(alpha) with f from nearRegolithFactor (nearCommon.glsl), which makes a
+// sphere's disk-integrated phase function exactly ringParticlePhase. CPU mirror, parameters and sources:
+// src/render/near/NearRegolith.ts (regolithIF) - keep both identical.
+#define RG_TANT 0.577350269   // tan(theta-bar)
+#define RG_COTT 1.732050808
+#define RG_CHI 0.698908180    // (1 + pi tan^2(theta-bar))^-1/2
+#define RG_XI (-0.35)
+float ringRegolithIF(float mu0, float mu, float cosg, float w) {
+  if (mu0 <= 0.0 || mu <= 0.0) return 0.0;
+  float si = sqrt(max(1.0 - mu0 * mu0, 0.0)), se = sqrt(max(1.0 - mu * mu, 0.0));
+  float cp = si * se > 1e-6 ? clamp((cosg - mu0 * mu) / (si * se), -1.0, 1.0) : 1.0;   // cos(azimuth psi)
+  float psi = acos(cp);
+  float f = exp(-2.0 * sqrt(max(1.0 - cp, 0.0) / max(1.0 + cp, 1e-6)));                 // exp(-2 tan(psi/2))
+  float ci = mu0 / max(si, 1e-6), ce = mu / max(se, 1e-6);                                // cot i, cot e
+  float E1i = exp(-0.636619772 * RG_COTT * ci), E1e = exp(-0.636619772 * RG_COTT * ce);
+  float qi = RG_COTT * ci, qe = RG_COTT * ce;
+  float E2i = exp(-INV_PI * qi * qi), E2e = exp(-INV_PI * qe * qe);
+  float etai = RG_CHI * (mu0 + si * RG_TANT * E2i / (2.0 - E1i));
+  float etae = RG_CHI * (mu + se * RG_TANT * E2e / (2.0 - E1e));
+  float s2 = 0.5 * (1.0 - cp);
+  float mu0e, mue, S;
+  if (mu0 >= mu) {
+    float den = 2.0 - E1e - psi * INV_PI * E1i;
+    mu0e = RG_CHI * (mu0 + si * RG_TANT * (cp * E2e + s2 * E2i) / den);
+    mue = RG_CHI * (mu + se * RG_TANT * (E2e - s2 * E2i) / den);
+    S = (mue / etae) * (mu0 / etai) * (RG_CHI / (1.0 - f + f * RG_CHI * mu0 / etai));
+  } else {
+    float den = 2.0 - E1i - psi * INV_PI * E1e;
+    mu0e = RG_CHI * (mu0 + si * RG_TANT * (E2i - s2 * E2e) / den);
+    mue = RG_CHI * (mu + se * RG_TANT * (cp * E2i + s2 * E2e) / den);
+    S = (mue / etae) * (mu0 / etai) * (RG_CHI / (1.0 - f + f * RG_CHI * mu / etae));
+  }
+  mu0e = max(mu0e, 1e-6);
+  mue = max(mue, 1e-6);
+  float gam = sqrt(max(1.0 - w, 0.0)), r0 = (1.0 - gam) / (1.0 + gam);
+  float H0 = 1.0 / (1.0 - w * mu0e * (r0 + (0.5 - r0 * mu0e) * log((1.0 + mu0e) / mu0e)));
+  float H1 = 1.0 / (1.0 - w * mue * (r0 + (0.5 - r0 * mue) * log((1.0 + mue) / mue)));
+  float p = (1.0 - RG_XI * RG_XI) / pow(1.0 + 2.0 * RG_XI * cosg + RG_XI * RG_XI, 1.5);
+  return max(0.25 * w * (mu0e / (mu0e + mue)) * (p + H0 * H1 - 1.0) * S, 0.0);
+}
+// Irradiance on a surface from a uniform spherical source of angular radius sigma (sinSigma) whose centre is at
+// cosTheta from the normal, relative to the irradiance normal to the source: cosTheta while the whole source is
+// above the horizon, exact partial-horizon form otherwise (Snyder 1996; Lagarde & de Rousiers 2014). Used as
+// the effective incidence cosine of Saturn (~55 deg across inside the main rings). Energy-conserving over a sphere.
+float extendedSourceCosine(float cosTheta, float sinSigma) {
+  float s2 = sinSigma * sinSigma;
+  if (cosTheta * cosTheta >= s2) return max(cosTheta, 0.0);
+  float sinTheta = sqrt(max(1.0 - cosTheta * cosTheta, 1e-8));
+  float x = sqrt(max(1.0 / max(s2, 1e-8) - 1.0, 0.0));
+  float y = clamp(-x * cosTheta / sinTheta, -1.0, 1.0);
+  float sty = sinTheta * sqrt(max(1.0 - y * y, 0.0));
+  return max(((cosTheta * acos(y) - x * sty) * s2 + atan(sty, max(x, 1e-6))) / (PI * s2), 0.0);
 }
 
 // Irradiance (W/m^2, on a surface facing Saturn) at camera-relative point p due to sunlight reflected by
