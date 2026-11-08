@@ -58,6 +58,8 @@ WAKE_ROWS = [
      lambda r: f"{g(r, 'orientation', 'median'):.1f} ({g(r, 'orientation', 'q25'):.0f}–{g(r, 'orientation', 'q75'):.0f})", None),
     ('pitch: spectral peak / ACF axis [deg]',
      lambda r: f"{g(r, 'spectrum', 'pitch_deg', 0):.1f} / {g(r, 'acf', 'pitch_e', 0):.1f}", None),
+    ('pitch within a snapshot: IQR / drift of the median over time (std) [deg]',
+     lambda r: f"{g(r, 'orientation', 'instantaneous', 'iqr_mean'):.1f} / {g(r, 'orientation', 'instantaneous', 'median_std_over_time'):.1f}", None),
     ('share of crest energy trailing', lambda r: g(r, 'orientation', 'frac_trailing'), 2),
     ('along-crest correlation length (1/e) / λ_T', lambda r: g(r, 'acf', 'L_par_e_over_lambda'), 2),
     ('across-crest correlation length (1/e) / λ_T', lambda r: g(r, 'acf', 'L_perp_e_over_lambda'), 3),

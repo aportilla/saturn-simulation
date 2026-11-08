@@ -35,9 +35,9 @@ Both kinds of runs go through the same pipeline on a physical grid of cell h = l
                local mass-weighted rms z vs D (log-log slope beta: sigma_z ~ D^beta)
     filling    mid-plane volume filling factor FF = sum pi (a^2 - z^2) / area (sigma lambda/16 and lambda/32):
                mean, mean in cores, 99th percentile, max; FF vs D
-    sizes      per size bin (lambda/8): participation p = cov(n_b, D_-b) / (var(D_-b) - var_noise(D_-b)) (D_-b = mass
-               density without the bin; its shot-noise variance from the same particles at random positions; p = 1:
-               follows the wakes exactly, as all sizes do in the procedural model), contrast <n_b>_wake / <n_b>_gap,
+    sizes      per size bin (lambda/8): participation p = cov(n_b, D_-b) / cov(D_-b,A, D_-b,B) (D_-b = mass density of
+               the other bins, A/B = two random halves of those particles: the shot noise cancels in the covariance;
+               p = 1: follows the wakes exactly, as all sizes do in the procedural model), contrast <n_b>_wake / <n_b>_gap,
                mean D_-b at the particles (lambda/16); velocity dispersion (global and relative to the local mean flow
                at lambda/8)
     raycast    (every --raycast N snapshots) normal photometric optical depth by Monte-Carlo vertical rays through
@@ -264,10 +264,14 @@ def particle_weights(run, snap):
              mz2=(m * z * z, 'mass'), mvx=(m * vel[:, 0], 'mass'), mvy=(m * vy, 'mass'), mvz=(m * vel[:, 2], 'mass'))
     nb_ = len(run.bins) - 1
     if nb_ > 1:
+        # fixed random halves of the particles (for the noise-free signal variance of the participation estimator)
+        half = (np.random.default_rng(7).random(len(m)) < 0.5).astype(np.float64)
+        w['mA'] = (m * half, 'mass')
         for b in range(nb_):
             sel = (run.bin_of == b).astype(np.float64)
             w[f'n{b}'] = (sel, 'point')
             w[f'm{b}'] = (sel * m, 'mass')
+            w[f'mA{b}'] = (sel * m * half, 'mass')
     return w
 
 
@@ -728,7 +732,6 @@ def analyze(args):
     ffD_den = np.zeros(len(Dbins) - 1)
     zD_num = np.zeros((nbins, len(ZD_EDGES) - 1))
     zD_cnt = np.zeros((nbins, len(ZD_EDGES) - 1))
-    noise_var = {}
     t_start = time.time()
     for n, i in enumerate(idx):
         s = nb.load_snapshot(R.snaps[i])
@@ -761,6 +764,10 @@ def analyze(args):
                              T16[w].mean() if w.any() else np.nan, T16[~w].mean()])
         oh, oe, _, _ = orientation_hist(D32, h, lam)
         ohist += oh
+        # instantaneous orientation spread (within this snapshot) vs its drift (median over time)
+        occ = 0.5 * (oe[1:] + oe[:-1])
+        cdf = np.cumsum(oh) / max(oh.sum(), 1e-30)
+        per.setdefault('orient_inst', []).append([float(np.interp(q, cdf, occ)) for q in (0.25, 0.5, 0.75)])
         pad = 32 if R.periodic else min(32, R.nm)
         Dpad = F.box(fld, s16, pad=pad) / F.mean_fld
         sk = skeleton_stats(Dpad, pad, h, lam, 1.0)
@@ -817,35 +824,24 @@ def analyze(args):
         per['zr_m'].append([float(np.sqrt((wm * z[inb] ** 2).sum()))])
         if nbins > 1:
             pp, cc, ee = [], [], []
-            # participation p_b = cov(n_b, D_-b) / (var(D_-b) - var_noise(D_-b)) at lambda/8: D_-b is the mass density
-            # factor of all OTHER bins; its shot-noise variance (boulders!) is measured on the same particles at
-            # uniformly random positions (refreshed every 5th snapshot) so that p = 1 means "follows the wakes exactly"
+            # participation p_b = cov(n_b, D_-b) / var_signal(D_-b) at lambda/8, D_-b = mass density factor of all OTHER
+            # bins. The signal variance is the covariance of the two random halves A, B of those particles (their shot
+            # noise is independent, the wakes are common): p = 1 means "follows the wakes exactly", as every size does
+            # in the procedural model. Robust to the noise model (boulders, hard-sphere exclusion).
             Mtot = F.box('mass', s8)
-            area_native = R.Lx * R.Ly if R.periodic else F.gnx * F.gny * F.cell
-            if n % 5 == 0 or not noise_var:
-                srand = dict(s)
-                pr_ = s['pos'].copy()
-                if R.periodic:
-                    pr_[:, 0] = rng.uniform(-R.Lx / 2, R.Lx / 2, len(pr_))
-                    pr_[:, 1] = rng.uniform(-R.Ly / 2, R.Ly / 2, len(pr_))
-                else:
-                    pr_[:, 0] = rng.uniform(-R.Lx / 2 - R.margin, R.Lx / 2 + R.margin, len(pr_))
-                    pr_[:, 1] = rng.uniform(-R.Ly / 2 - R.margin, R.Ly / 2 + R.margin, len(pr_))
-                srand['pos'] = pr_
-                wr = {'mass': (R.m, 'mass')}
-                wr.update({f'm{b}': ((R.bin_of == b) * R.m, 'mass') for b in range(nbins)})
-                Fr = Fields(R, srand, wr)
-                Mr = Fr.box('mass', s8)
-                for b in range(nbins):
-                    mr = Mr - Fr.box(f'm{b}', s8)
-                    noise_var[b] = float((mr / mr.mean()).var())
+            MA = F.box('mA', s8)
             for b in range(nbins):
                 nbx = F.box(f'n{b}', s8)
                 mbx = F.box(f'm{b}', s8)
-                mean_rest = F.mean_mass - F.raw[f'm{b}'].sum() / area_native   # mean density of all other bins
-                Dm = (Mtot - mbx) / mean_rest
+                rest = Mtot - mbx
+                restA = MA - F.box(f'mA{b}', s8)
+                restB = rest - restA
+                Dm = rest / rest.mean()
+                DA, DB = restA / restA.mean(), restB / restB.mean()
                 nn = nbx / nbx.mean() if nbx.mean() > 0 else nbx
-                pp.append(float(np.cov(nn.ravel(), Dm.ravel())[0, 1] / max(Dm.var() - noise_var[b], 0.05 * Dm.var())))
+                sig = np.cov(DA.ravel(), DB.ravel())[0, 1]
+                pp.append(float(np.cov(nn.ravel(), 0.5 * (DA + DB).ravel())[0, 1] / sig) if sig > 0 else float('nan'))
+                mean_rest = F.mean_mass - F.raw[f'm{b}'].sum() / (R.Lx * R.Ly if R.periodic else F.gnx * F.gny * F.cell)
                 wk = Dm >= 1
                 cc.append(float(nn[wk].mean() / max(nn[~wk].mean(), 1e-9)))
                 sb = (R.bin_of == b) & inb
@@ -941,6 +937,12 @@ def analyze(args):
                     frac_trailing=float(w[oc > 0].sum()), q25=float(np.interp(0.25, cdf, oc)), q75=float(np.interp(0.75, cdf, oc)),
                     hist_5deg=[round(float(v), 4) for v in w])
     out['orientation'] = ostats(ohist)
+    oi = np.array(per['orient_inst'])
+    out['orientation']['instantaneous'] = dict(
+        iqr_mean=float(np.mean(oi[:, 2] - oi[:, 0])), median_std_over_time=float(np.std(oi[:, 1])),
+        median_range_5_95=[float(np.quantile(oi[:, 1], 0.05)), float(np.quantile(oi[:, 1], 0.95))],
+        note='per snapshot: IQR of the crest pitch (mean over snapshots) and the spread of the snapshot medians over time; '
+             'N-body-like = wide within a snapshot, steady in time')
     q16 = block_stats(per['q16'], T, R.P)
     q8 = block_stats(per['q8'], T, R.P)
     labels = [f'p{q * 100:g}' for q in QUANT] + ['max', 'std']

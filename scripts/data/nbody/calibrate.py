@@ -16,7 +16,7 @@ error, a floor)). Coordinate search in three stages, each starting from the best
   time        T_LIFE with the birth mode m0 = (m0x, 6) chosen so that the amplitude-weighted pitch stays near the
               N-body median (integer m0x keeps the texture tileable)                          -> C(dt), pitch
   envelope    model variant (not in the app): plateau envelope with crossfade width env_w x T_LIFE instead of sin^2,
-              T_LIFE 4-7 with matching m0x
+              T_LIFE 4-7 with matching m0x; envelope2: T_LIFE -1..+2, env_w 0.05/best/0.2, m0x +-1 around the best
   generations model variant (not in the app): n_gen = 3, 4 overlapping generations born every T_LIFE/n_gen with
               amplitude (2/n_gen) sin^2 (sum = strength), T_LIFE 3-5 (uWakeGen already has a third, unused slot)
   contrast2   gamma x 0.8 .. 1.25 around the best
@@ -56,6 +56,8 @@ METRICS = [
     ('filament', lambda r: r['skeleton']['filament_length_over_lambda'][0], 0.3),
     ('pitch_med', lambda r: r['orientation']['median'], 1.5),
     ('pitch_iqr', lambda r: r['orientation']['q75'] - r['orientation']['q25'], 1.5),
+    ('pitch_iqr_inst', lambda r: r['orientation']['instantaneous']['iqr_mean'], 1.5),
+    ('pitch_drift', lambda r: r['orientation']['instantaneous']['median_std_over_time'], 1.0),
     ('C0.1', lambda r: r['temporal']['C'][r['temporal']['lags_orbits'].index(0.1)], 0.04),
     ('C0.2', lambda r: r['temporal']['C'][r['temporal']['lags_orbits'].index(0.2)], 0.04),
     ('C0.3', lambda r: r['temporal']['C'][r['temporal']['lags_orbits'].index(0.3)], 0.04),
@@ -127,6 +129,8 @@ def main(argv):
     ap.add_argument('--stages', default='contrast,morphology,time')
     ap.add_argument('--jobs', type=int, default=6)
     ap.add_argument('--start', help='start from the best parameters of a previous calib_*.json (instead of the app defaults)')
+    ap.add_argument('--strength', type=float, help='search with this wake strength instead of the zone value (the contrast '
+                                                   'depends on -ln(gamma) * strength; the app defaults are scored unchanged)')
     ap.add_argument('--out')
     a = ap.parse_args(argv)
     with open(a.target) as f:
@@ -168,6 +172,12 @@ def main(argv):
     print(f'calibrating against {a.target} ({name}); defaults: {base}')
     best = run_batch([dict(base)])
     print(f"simulator defaults: score {best['score']:.2f}")
+    if a.strength is not None:
+        # same mean contrast at the new strength: ln(gamma') = ln(gamma) * strength / strength'
+        g2 = math.exp(math.log(base['gamma']) * base['strength'] / a.strength)
+        sb = run_batch([dict(base, strength=a.strength, gamma=g2)])
+        print(f"strength {a.strength} (gamma {g2:.3f}): score {sb['score']:.2f}")
+        best = sb   # continue the search at this strength
     if a.start:
         with open(a.start) as f:
             prev = json.load(f)['best']['params']
@@ -185,13 +195,18 @@ def main(argv):
         elif stage == 'time':
             cands = []
             for T in (3.0, 4.0, 5.0, 6.0, 7.0, 8.0):
-                cands.append(dict(b, t_life=T, m0x=m0x_for(T, pitch_target), n_gen=2))
+                cands.append(dict(b, t_life=T, m0x=m0x_for(T, pitch_target), n_gen=2, env_w=0.0))
         elif stage == 'envelope':
             # model variant: plateau envelope (rise / fall smoothstep over env_w * T_LIFE, constant in between; the
             # two generations still sum to strength) - not in the app yet (app: sin^2)
             cands = [dict(b, n_gen=2, t_life=T, env_w=w, m0x=m0x) for T, w, m0x in
                      ((4.0, 0.15, 3.0), (5.0, 0.1, 2.0), (5.0, 0.15, 0.0), (5.0, 0.1, 1.0), (6.0, 0.1, 2.0), (6.0, 0.15, 0.0),
                       (6.0, 0.1, 1.0), (7.0, 0.1, 0.0))]
+        elif stage == 'envelope2':
+            # around a plateau-envelope optimum: longer lives, narrower / wider crossfades, birth mode +-1
+            T0, w0, m0 = b['t_life'], max(b.get('env_w', 0.1), 0.05), b['m0x']
+            cands = [dict(b, n_gen=2, t_life=T, env_w=w, m0x=m) for T in (T0 - 1, T0, T0 + 1, T0 + 2) for w in (0.05, w0, 0.2)
+                     for m in (m0 - 1, m0, m0 + 1) if not (T == T0 and abs(w - w0) < 1e-9 and m == m0) and T >= 3]
         elif stage == 'generations':
             # model variant: n overlapping generations (born every T/n, amplitude (2/n) sin^2) - not in the app yet
             cands = [dict(b, n_gen=n, t_life=T, m0x=m0x_for(T, pitch_target)) for n in (3, 4) for T in (3.0, 4.0, 5.0)]
