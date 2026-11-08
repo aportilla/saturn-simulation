@@ -574,7 +574,7 @@ export class NearContact {
   private frameNo = 0;
   private readonly zero4 = new Uint32Array(4);
   // shared uniform objects
-  private readonly selU = { value: [2, 4, 4, 5] };
+  private readonly selU = { value: [3, 6, 4, 5] };
   private readonly visU = { value: [0, 10, 10, 10] };
   private readonly mwU = { value: 0 };
   private readonly invCellU = { value: new Float32Array(LOD_CLASSES) };

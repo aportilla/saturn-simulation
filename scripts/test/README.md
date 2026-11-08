@@ -292,10 +292,12 @@ All overlapping resolved pairs (incl. shallow ones within the tolerance and hidd
 1423 → 1015), a-inside 1205 → 698, a-30m 402 → 203. GPU-missed 0, bucket overflow 0 (max bucket fill 5–8 of 16).
 Temporal, + 1 s / + 10 s: b-inside 46 / 84 pops (max 18.7 / 55 px: clusters that re-pack as the shear moves them),
 a-inside 3 / 5, a-30m 0 / 0; warp +1000 / −1000 residual ratios 0.12 / 0.13 (B), 0.06 / 0.10 (A), 0.04 / 0.05 (30 m).
-Cost on the shared GPU (min over trials; the range across 3 runs shows the contention), ms: the step alone 2.5–4.5
-(b-default, 9k list), 1.2–1.3 (a-default, 1.8k), 7.9–18 (b-inside, 49k), 2.0–3.3 (a-inside, 12k); its fixed part
-(list compaction ~0.4–0.9, materialization ≤ 0.3) dominates small lists. Whole frame off → on: b-default +1.9,
-a-default +2.3, b-inside +7.5, a-inside +7.0 (one run). The fps A/B was noise-dominated (±20 ms).
+Cost on a GPU shared with other agents (min over trials; ranges over 4 runs show the contention), ms — the step
+alone: b-default (9k list) 2.5–4.5, a-default (1.8k) 1.2–1.4, b-inside (49k) 7.9–11 (one run 18), a-inside (12k)
+2.0–4.1, `b-fov12` (55k: the B ring through a 12° fov at render scale 1, the largest contact set) 8.4; its fixed part
+(list compaction 0.3–1.5, materialization ≤ 0.3) dominates small lists. Whole frame with the step off → on (2 runs):
+b-default +1.9 / +3.9 (28 → 32 ms), a-default +2.3 / +2.4 (10.3 → 12.6 ms), b-inside +7.5 / +10.6, a-inside
++7.0 / +3.9, b-fov12 +7.5. The fps A/B was noise-dominated (±20 ms).
 
 ## Tools
 

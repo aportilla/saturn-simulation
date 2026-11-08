@@ -24,8 +24,8 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
   GLSL vs CPU mirrors, projected-area and photometry contracts; prints new constants when the relief changes) +
   `test:contact` (near-field contact resolution: overlaps before / after vs an independent CPU pair search,
   displacement bound, R0 write-back and drawn flags, frame-to-frame smoothness, warp ±1000; `--cost` adds the
-  step's GPU time and a whole-frame off / on A/B). `npm run test:fps` = informational fps table per preset × quality. Details, tolerances, measured values and the
-  shared helpers: `scripts/test/README.md`.
+  step's GPU time and a whole-frame off / on A/B). `npm run test:fps` = informational fps table per preset ×
+  quality. Details, tolerances, measured values and the shared helpers: `scripts/test/README.md`.
 - Screenshots on the real GPU (headless Chrome, ANGLE/Metal); console errors and page errors are printed:
   - one page: `node scripts/shot.mjs "<url>" <out.png> --until "window.__svReady===true" --wait 3000 [--w --h --dpr --eval "<js>"]`
   - batch: `node scripts/shots.mjs <spec.json> <outDir> [--w --h] [--uncapped] [--base URL] [--keep-storage]`
