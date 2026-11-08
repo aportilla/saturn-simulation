@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""Calibrate the procedural wake model's parameters against an N-body result (same pipeline, same box and particles).
+
+usage ($PY = the venv python, see README.md):
+  $PY scripts/data/nbody/calibrate.py --target scripts/data/nbody/results/A128-sd.json --like data-raw/nbody/A128-sd
+      [--name A128] [--orbits 2] [--stages contrast,morphology,time] [--jobs 6] [--out results/calib_A128.json]
+
+Each candidate is a synthetic run (procedural.py synth: the port of WakeField.ts / wakes.glsl with overridden
+parameters, particles drawn like the near field) analysed by analyze.py exactly like the N-body run. The score is
+sum_i ((m_i - m_i^Nbody) / s_i)^2 over the metrics below (s_i = tolerance: max(15 % of the target, its standard
+error, a floor)). Coordinate search in three stages, each starting from the best candidate so far:
+  contrast    gamma (strength fixed at the zone value; only -ln(gamma) * strength matters)    -> D quantiles
+  morphology  spreadPar x spreadPerp x R_C                                                    -> ACF, skeleton
+  time        T_LIFE with the birth mode m0 = (m0x, 6) chosen so that the amplitude-weighted pitch stays near the
+              N-body median (integer m0x keeps the texture tileable)                          -> C(dt), pitch
+Metrics: D quantiles p5 p25 p75 p95 p99 (lambda/16), ACF L_par and L_perp (1/e) / lambda, first minimum and side-peak
+height across crests, skeleton end and branch points per lambda^2 and filament length / lambda, orientation median and
+IQR, temporal C at 0.1, 0.2, 0.3 orbit.
+"""
+import argparse
+import itertools
+import json
+import math
+import os
+import shutil
+import sys
+from concurrent.futures import ProcessPoolExecutor
+
+import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import nbcommon as nb  # noqa: E402
+
+METRICS = [
+    # name, getter, floor
+    ('p5', lambda r: r['pdf']['sigma_lambda_16']['p5'][0], 0.03),
+    ('p25', lambda r: r['pdf']['sigma_lambda_16']['p25'][0], 0.05),
+    ('p75', lambda r: r['pdf']['sigma_lambda_16']['p75'][0], 0.08),
+    ('p95', lambda r: r['pdf']['sigma_lambda_16']['p95'][0], 0.15),
+    ('p99', lambda r: r['pdf']['sigma_lambda_16']['p99'][0], 0.25),
+    ('L_par', lambda r: r['acf']['L_par_e_over_lambda'], 0.08),
+    ('L_perp', lambda r: r['acf']['L_perp_e_over_lambda'], 0.01),
+    ('acf_min', lambda r: r['acf']['first_min'], 0.04),
+    ('acf_side', lambda r: r['acf']['side_peak_height'][0], 0.04),
+    ('n_end', lambda r: r['skeleton']['n_end_per_lambda2'][0], 0.08),
+    ('n_branch', lambda r: r['skeleton']['n_branch_per_lambda2'][0], 0.08),
+    ('filament', lambda r: r['skeleton']['filament_length_over_lambda'][0], 0.3),
+    ('pitch_med', lambda r: r['orientation']['median'], 1.5),
+    ('pitch_iqr', lambda r: r['orientation']['q75'] - r['orientation']['q25'], 1.5),
+    ('C0.1', lambda r: r['temporal']['C'][r['temporal']['lags_orbits'].index(0.1)], 0.04),
+    ('C0.2', lambda r: r['temporal']['C'][r['temporal']['lags_orbits'].index(0.2)], 0.04),
+    ('C0.3', lambda r: r['temporal']['C'][r['temporal']['lags_orbits'].index(0.3)], 0.04),
+]
+
+
+def metric_vector(res):
+    return {name: float(get(res)) for name, get, _ in METRICS}
+
+
+def score(cand, target, se=None):
+    s = 0.0
+    parts = {}
+    for name, get, floor in METRICS:
+        t = target[name]
+        tol = max(0.15 * abs(t), floor, (se or {}).get(name, 0.0))
+        d = (cand[name] - t) / tol
+        parts[name] = d
+        s += d * d
+    return s, parts
+
+
+def m0x_for(t_life, pitch_deg, m0y=6.0, q=1.5):
+    """Integer m0x such that the pitch at the envelope peak (age T/2) is closest to pitch_deg."""
+    ideal = m0y * (1 / math.tan(math.radians(pitch_deg)) - q * t_life / 2)
+    best = None
+    for c in (math.floor(ideal), math.ceil(ideal)):
+        p = math.degrees(math.atan2(m0y, c + q * t_life / 2 * m0y))
+        if best is None or abs(p - pitch_deg) < abs(best[1] - pitch_deg):
+            best = (c, p)
+    return float(best[0])
+
+
+def evaluate(job):
+    """Run one candidate (in a worker process). job: dict(params, like, workdir, orbits, seed)."""
+    import procedural as pr
+    import analyze as an
+    p = job['params']
+    wd = job['workdir']
+    os.makedirs(wd, exist_ok=True)
+    sargs = argparse.Namespace(like=job['like'], name=os.path.basename(wd), out=wd, orbits=job['orbits'], snap=0.05,
+                               margin_lambda=1.0, gamma=p.get('gamma'), spread_par=p.get('spread_par'),
+                               spread_perp=p.get('spread_perp'), rc=p.get('rc'), t_life=p.get('t_life'),
+                               strength=p.get('strength'), m0=f"{p['m0x']},{p.get('m0y', 6.0)}" if 'm0x' in p else None,
+                               seed=job.get('seed', 12345), t0=None, particles=True)
+    import contextlib
+    import io
+    with contextlib.redirect_stdout(io.StringIO()):
+        pr.synth(sargs)
+        aargs = argparse.Namespace(run=wd, from_orbit=None, to_orbit=None, every=1, json=os.path.join(wd, 'analysis.json'),
+                                   plots=False, raycast=0, granola=0, rays=100000, quick=False)
+        res = an.analyze(aargs)
+    mv = metric_vector(res)
+    if not job.get('keep'):
+        for fn in os.listdir(wd):
+            if fn.startswith(('snap_', 'dens_')):
+                os.remove(os.path.join(wd, fn))
+    return dict(params=p, metrics=mv, workdir=wd)
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0], formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--target', required=True, help='analysis JSON of the N-body run')
+    ap.add_argument('--like', required=True, help='N-body run directory (box, lambda, particles)')
+    ap.add_argument('--name')
+    ap.add_argument('--orbits', type=float, default=2.0, help='length of each synthetic candidate run (orbits)')
+    ap.add_argument('--stages', default='contrast,morphology,time')
+    ap.add_argument('--jobs', type=int, default=6)
+    ap.add_argument('--out')
+    a = ap.parse_args(argv)
+    with open(a.target) as f:
+        tres = json.load(f)
+    target = metric_vector(tres)
+    name = a.name or tres['run']
+    with open(os.path.join(a.like, 'params.json')) as f:
+        params = json.load(f)
+    import procedural as pr
+    sc = pr.simulator_config(params)
+    pitch_target = target['pitch_med']
+    base = dict(gamma=sc['gamma'], strength=sc['strength'], spread_par=sc['spread_par'], spread_perp=sc['spread_perp'],
+                rc=sc['rc'], t_life=sc['t_life'], m0x=sc['m0x'], m0y=sc['m0y'])
+    work = os.path.join(nb.RAW_DIR, 'calib', name)
+    os.makedirs(work, exist_ok=True)
+    results = []
+    counter = itertools.count()
+
+    def run_batch(cands):
+        jobs = []
+        for c in cands:
+            k = next(counter)
+            jobs.append(dict(params=c, like=os.path.abspath(a.like), workdir=os.path.join(work, f'c{k:03d}'), orbits=a.orbits))
+        with ProcessPoolExecutor(max_workers=a.jobs) as ex:
+            out = list(ex.map(evaluate, jobs))
+        for o in out:
+            o['score'], o['parts'] = score(o['metrics'], target)
+            results.append(o)
+            pp = o['params']
+            print(f"  score {o['score']:8.2f}  gamma {pp['gamma']:.3f} spreads {pp['spread_par']:.2f}/{pp['spread_perp']:.2f} "
+                  f"Rc {pp['rc']:.2f} T {pp['t_life']:.1f} m0x {pp['m0x']:+.0f}", flush=True)
+        return min(out, key=lambda o: o['score'])
+
+    print(f'calibrating against {a.target} ({name}); defaults: {base}')
+    best = run_batch([dict(base)])
+    print(f"simulator defaults: score {best['score']:.2f}")
+    for stage in a.stages.split(','):
+        b = dict(best['params'])
+        if stage == 'contrast':
+            cands = [dict(b, gamma=g) for g in (0.06, 0.09, 0.12, 0.16, 0.2, 0.25, 0.32) if abs(g - b['gamma']) > 1e-6]
+        elif stage == 'morphology':
+            cands = [dict(b, spread_par=sp, spread_perp=sq, rc=rc) for sp in (1.6, 2.4, 3.2) for sq in (5.0, 7.0, 9.0)
+                     for rc in (0.45, 0.7, 1.0)]
+        elif stage == 'time':
+            cands = []
+            for T in (2.5, 3.0, 3.5, 4.0, 5.0):
+                cands.append(dict(b, t_life=T, m0x=m0x_for(T, pitch_target)))
+        elif stage == 'contrast2':
+            cands = [dict(b, gamma=b['gamma'] * f) for f in (0.8, 0.9, 1.1, 1.25)]
+        else:
+            raise SystemExit(f'unknown stage {stage}')
+        print(f'stage {stage}: {len(cands)} candidates')
+        bb = run_batch(cands)
+        if bb['score'] < best['score']:
+            best = bb
+        print(f"  best so far: score {best['score']:.2f} {best['params']}")
+    out = dict(target=os.path.relpath(a.target, nb.REPO), like=os.path.relpath(os.path.abspath(a.like), nb.REPO), name=name,
+               simulator_defaults=dict(params=base, metrics=results[0]['metrics'], score=results[0]['score']),
+               target_metrics=target, best=dict(params=best['params'], metrics=best['metrics'], score=best['score'],
+                                                 parts={k: round(v, 3) for k, v in best['parts'].items()}),
+               candidates=[dict(params=r['params'], score=round(r['score'], 3), metrics={k: round(v, 4) for k, v in r['metrics'].items()})
+                           for r in results],
+               orbits_per_candidate=a.orbits, metrics_doc=[m[0] for m in METRICS])
+    path = a.out or os.path.join(nb.RESULTS_DIR, f'calib_{name}.json')
+    nb.write_json(path, out)
+    print(f'wrote {path}')
+    shutil.rmtree(work, ignore_errors=True)
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])
