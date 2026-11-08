@@ -128,6 +128,25 @@ over ±40 km, except across dust ↔ macroscopic boundaries (gap and ring edges 
 * Ramps are intermediate.
 * **Uncertainty ±0.05–0.1**, and model-dependent: the albedo trades off against the assumed particle phase function.
 
+**Particle surfaces and photometry** (resolved particles of the near field; `src/render/near/NearRegolith.ts`,
+`nearCommon.glsl`).
+* *Nature*: porous (internal densities ~0.1–0.5 g/cm³, above), regolith-covered icy aggregates — "dynamic ephemeral
+  bodies" that grow and break up by collisions (Weidenschilling et al. 1984). Rendered as triaxial ellipsoids with a
+  cellular relief of sub-clasts (weight 0 below ~10 cm, full above ~0.7 m) plus pebble- and grain-scale texture.
+* *Spin*: principal-axis rotation about the short axis (other states are damped by collisions and internal
+  friction); large particles near the orbit normal at ~Ω/2 (the vorticity of the Keplerian shear), small ones
+  faster and random. Aligned large bodies are kept nearly round in this model (`NR_ISO`) because the medium's
+  cross-section is isotropic; tidal (radial) alignment is not modelled.
+* *Surface law*: Hapke's model with macroscopic roughness (Hapke 1984) and the 2002 H functions. θ̄ = 30°: Hapke fits
+  to HST ring phase curves give 26 ± 9° for the C ring, 10 ± 5° for the Cassini Division and 63–70° for the A and
+  B rings, "suggesting lumpy particles" (Poulet et al. 2002; beyond the model's range — that part of the roughness
+  is the resolved relief here); icy satellites are ≤ 40°, Rhea 33° (Ciarniello et al. 2011). Grain phase function
+  single-term Henyey-Greenstein, ξ = −0.35 (Poulet et al. 2002: −0.26 C … −0.38 A). Grain albedo w per particle
+  from its albedo through the spherical albedo of a regolith sphere (A_s = 0.50 at w ≈ 0.95, 0.25 at w ≈ 0.71).
+  Such a sphere already has nearly the power-law phase function the medium uses: P(0) = 4.6–5.3 vs 5.70 (Lambert
+  sphere 2.67), so the per-particle factor that enforces the power law stays within ~0.96–1.18 for α ≤ 90°.
+  The opposition surge stays an α-only factor (the medium's intrinsic surge).
+
 **Wakes** (0–1, relative). Strongest in the inner/mid A ring, where the azimuthal brightness asymmetry and
 occultation wake signal peak (Colwell et al. 2006; Hedman et al. 2007; French et al. 2007). Weaker beyond the
 Encke gap. Present but packed with narrow gaps in the B ring (Colwell et al. 2007; Nicholson & Hedman 2010).
@@ -398,7 +417,8 @@ features / 8 modes in the shader: `RS_FEATURES`, `RS_MODES`).
 
 Afigbo, V. M., et al. 2025, JGR Planets (Kronoseismology VII; arXiv:2502.19265) · Albers, N., et al. 2012,
 Icarus 217, 367 · Altobelli, N., et al. 2014 (via Miller et al. 2024) · Baillié, K., et al. 2011, Icarus 216, 292 ·
-Becker, T. M., et al. 2016, Icarus 279, 20 · Bosh, A. S., et al. 2002, Icarus 157, 57 · Ciarniello, M., et al. 2019,
+Becker, T. M., et al. 2016, Icarus 279, 20 · Bosh, A. S., et al. 2002, Icarus 157, 57 · Ciarniello, M., et al. 2011,
+Icarus 214, 541 (Rhea, Hapke) · Ciarniello, M., et al. 2019,
 Icarus 317, 242 · Colwell, J. E., Esposito, L. W., Sremčević, M. 2006, GRL 33, L07201 · Colwell, J. E., et al. 2007,
 Icarus 190, 127 · Colwell, J. E., et al. 2009, in *Saturn from Cassini-Huygens* (Springer), 375 · Colwell, J. E.,
 et al. 2010, AJ 140, 1569 · Cooke, M. L. 1991, PhD thesis, Cornell · Cuzzi, J. N., Scargle, J. D. 1985, ApJ 292, 276 ·
@@ -408,8 +428,9 @@ Cuzzi, J. N. 1989, Icarus 80, 104 · El Moutamid, M., et al. 2016, Icarus 279, 1
 EGU22-6601 · Filacchione, G., et al. 2014, Icarus
 241, 45 · French, R. G., Nicholson, P. D. 2000, Icarus 145, 502 · French, R. G., Salo, H., McGhee, C. A., Dones, L. 2007,
 Icarus 189, 493 ·
-French, R. G., et al. 2016, Icarus 274, 131 · Goldreich, P., Tremaine, S. 1980, ApJ 241, 425 · Harbison, R. A.,
-Nicholson, P. D., Hedman, M. M. 2013, Icarus 226,
+French, R. G., et al. 2016, Icarus 274, 131 · Goldreich, P., Tremaine, S. 1980, ApJ 241, 425 · Hapke, B. 1984,
+Icarus 59, 41 (macroscopic roughness) · Hapke, B. 2002, Icarus 157, 523 · Harbison, R. A., Nicholson, P. D., Hedman,
+M. M. 2013, Icarus 226,
 1225 · Hedman, M. M., et al. 2007a, Icarus 188, 89 (D ring) · Hedman, M. M., et al. 2007b, AJ 133, 2624 (A-ring
 wakes) · Hedman, M. M., et al. 2013, Icarus 223, 105 · Hedman, M. M., Nicholson, P. D. 2013, AJ 146, 12 ·
 Hedman, M. M., Nicholson, P. D. 2014, MNRAS 444, 1369 · Hedman, M. M., Nicholson, P. D. 2016, Icarus 279, 109 ·
@@ -422,12 +443,14 @@ composition of Saturn's rings*, Space Sci. Rev. (arXiv:2311.17344) · Morishima,
 2024) · Nicholson, P. D., Hedman, M. M. 2010, Icarus 206, 410 · Nicholson, P. D., et al. 2014a, Icarus 227, 152
 (B-ring edge) · Nicholson, P. D., et al. 2014b, Icarus 241, 373 (C ring) · PDS Rings Node, *Vital statistics for
 Saturn's rings* (pds-rings.seti.org/saturn/saturn_rings_table.html) · Porco, C. C., et al. 2007, Science 318, 1602 ·
+Poulet, F., Cuzzi, J. N., French, R. G., Dones, L. 2002, Icarus 158, 224 (HST phase curves, Hapke / Shkuratov fits) ·
 Showalter, M. R., Cuzzi, J. N., Marouf, E. A., Esposito, L. W. 1986, Icarus 66, 297 · Spitale, J. N., Porco, C. C.
 2009, AJ 138, 1520 · Spitale, J. N., Porco, C. C. 2010, AJ 140, 1747 · Tajeddine, R., et al. 2017,
 ApJS 232, 28 · Tiscareno, M. S., et al. 2007, Icarus 189,
 14 · Tiscareno, M. S., et al. 2013, Icarus 224, 201 · Tiscareno, M. S., Harris, B. E. 2018, Icarus 312, 157 ·
-Weiss, J. W., Porco, C. C., Tiscareno, M. S. 2009, AJ 138, 272 · Wisdom, J., Tremaine, S. 1988, AJ 95, 925 ·
-Zebker, H. A., Marouf, E. A., Tyler, G. L. 1985, Icarus 64, 531.
+Weidenschilling, S. J., Chapman, C. R., Davis, D. R., Greenberg, R. 1984, in *Planetary Rings* (Univ. Arizona
+Press), 367 · Weiss, J. W., Porco, C. C., Tiscareno, M. S. 2009, AJ 138, 272 · Wisdom, J., Tremaine, S. 1988, AJ 95,
+925 · Zebker, H. A., Marouf, E. A., Tyler, G. L. 1985, Icarus 64, 531.
 
 Data: PDS Ring-Moon Systems Node, volumes CORSS_8001 and COUVIS_8001. Scripts in `scripts/data/rings/`:
 `fetch.mjs` (downloads into `data-raw/rings/`), `build_tau.mjs`, `measure_features.mjs`, `mass_check.mjs`,

@@ -84,7 +84,9 @@ void main() {
   // --- vertical oscillation
   float B = uSig.y * sqrt(-2.0 * log(nearU(idx, seed, NS_VA)));
   float z = B * cos(uKin.y + TWO_PI * nearU(idx, seed, NS_VP));
-  float rb = 1.2 * a; // conservative bounding radius (ellipsoid major semi-axis <= ~1.15 a)
+  // conservative bounding radius: ellipsoid major semi-axis (<= 1.36 a) times the outer relief bound at high quality
+  // (~1.68 a in all), a for the spheres of medium / low quality (nearCommon.glsl)
+  float rb = nearMaxExtent() * a;
 
   // --- early out (most slots): a particle that is neither possibly in view and large enough to be drawn nor
   // a possible shadow caster is not needed this frame. Margin: the largest self-gravity wake displacement

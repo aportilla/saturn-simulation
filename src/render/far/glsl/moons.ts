@@ -550,14 +550,15 @@ MoonTrace traceShapedMoon(int i, vec3 rd) {
   vec3 nG = qrot(q, nb);
   vec3 p = c + qrot(q, pb * Rm);                   // camera-relative point
   float t = tU * Rm;
-  if (uFarDebug >= 30 && uFarDebug <= 34) {
-    // debug views (?debug=30..34): body-frame normal as colour / self-shadow sun visibility on the lit side /
-    // geometric cos(incidence) / march outcome (red: miss within AA reach, green: covered hit, blue: grazing hit) /
-    // external shadows: r = Saturn, g = other moons, b = ring transmission
-    vec3 dc = uFarDebug == 30 ? 0.5 + 0.5 * nb
-      : uFarDebug == 31 ? vec3(dot(nG, uSunDir) > 0.0 ? shapeSunVisibility(i, p, nG, t) : 0.0)
-      : uFarDebug == 32 ? vec3(max(dot(nG, uSunDir), 0.0))
-      : uFarDebug == 34 ? vec3(saturnSunVisibility(p), farMoonsSunVisibility(p, i), ringSunTransmission(p, ringShadowFootprint(p, nG, rd, t)))
+  if (uFarDebug >= 40 && uFarDebug <= 44) {
+    // debug views (?debug=40..44; 11-22 and 31-34 belong to the near field): body-frame normal as colour /
+    // self-shadow sun visibility on the lit side / geometric cos(incidence) / march outcome (red: miss within AA
+    // reach, green: covered hit, blue: grazing hit) / external shadows: r = Saturn, g = other moons, b = ring
+    // transmission
+    vec3 dc = uFarDebug == 40 ? 0.5 + 0.5 * nb
+      : uFarDebug == 41 ? vec3(dot(nG, uSunDir) > 0.0 ? shapeSunVisibility(i, p, nG, t) : 0.0)
+      : uFarDebug == 42 ? vec3(max(dot(nG, uSunDir), 0.0))
+      : uFarDebug == 44 ? vec3(saturnSunVisibility(p), farMoonsSunVisibility(p, i), ringSunTransmission(p, ringShadowFootprint(p, nG, rd, t)))
       : (state == 0 ? vec3(1.0, 0.0, 0.0) : covered ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0));
     m.L = cov * dc; m.cov = cov; m.T = vec3(1.0 - cov); m.dist = t;
     return m;

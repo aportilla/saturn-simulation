@@ -10,7 +10,7 @@
 //            [--raw data-raw/moon_shapes/pds]
 //   e.g. Pan as in PIA21436 (left): pan out.png --lat 39.21 --lonW 216.71 --sunLat 26.71 --sunLonW 199.29 --kmPerPx 0.147
 //   modes: lambert = cos(incidence) (night side black); ambient = + 0.04 (shows the unlit silhouette);
-//          normals = 0.5 + 0.5 n (body frame), the app's ?debug=30 colouring
+//          normals = 0.5 + 0.5 n (body frame), the app's ?debug=40 colouring
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';

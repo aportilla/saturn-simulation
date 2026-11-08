@@ -51,9 +51,13 @@ Implications:
   Macroscopic particles follow the **power law P = 5.697 (1 − α/π)^3.3** (Dones et al. 1993) with an intrinsic
   opposition surge: real regolith-covered particles back-scatter far more than Lambert spheres (P(0) 5.70 vs
   2.67), and only this reproduces the observed low-phase I/F with the measured albedos. Resolved particles are
-  Lambert-shaded × `ringParticleLambertFactor(cosα)`, which makes each sphere's disk-integrated phase function
-  equal `ringParticlePhase` — so an *ensemble of resolved particles has the same brightness as the medium*
-  (no seams). JS mirrors: `src/render/rings/phase.ts` (model 1), `far/Ringshine.ts`.
+  shaded with a **regolith surface law** (`ringRegolithIF`: Hapke 1984 macroscopic roughness θ̄ = 30°, Hapke 2002
+  H functions, back-scattering grains ξ = −0.35, grain albedo w from the particle albedo) × a per-particle factor
+  f(α) (`nearRegolithFactor`, LUT from `src/render/near/NearRegolith.ts`) that makes each sphere's
+  disk-integrated phase function equal `ringParticlePhase` — so an *ensemble of resolved particles has the same
+  brightness as the medium* (no seams). The rough regolith sphere alone already has nearly the power law
+  (f ≈ 0.96–1.18 for α ≤ 90°; Lambert would need 0.68–2.1). JS mirrors: `src/render/rings/phase.ts` (model 1),
+  `far/Ringshine.ts`, `near/NearRegolith.ts` (regolith law, disk integration).
 * `FrameState.timeWarp` is 0 while paused.
 
 ## Frame flow
@@ -95,8 +99,9 @@ Implications:
   penetration in pixels (a ridge in front of the core counts as covered), normals from the interpolated tangential
   gradient field (one-sided on the equatorial ridge crests) and self-shadowing from a soft-shadow march toward the Sun.
   The CPU `MoonShape.radiusAlong` is the same function (camera clearance via `moonSurfaceRadius`); MoonPoints
-  integrates unresolved moons over the r_max disk with the same tracer. Debug views `?debug=30..34`: normal,
-  self-shadow, cos i, march outcome, external shadows (r Saturn, g moons, b rings).
+  integrates unresolved moons over the r_max disk with the same tracer. Debug views `?debug=40..44`: normal,
+  self-shadow, cos i, march outcome, external shadows (r Saturn, g moons, b rings). (Debug-view numbers are shared
+  by all passes through `settings.debugView`: ring layer 1–12, near field 11–22 and 31–34, far-field moons 40–44.)
 * **Auto exposure** (`PostPass`): highlight meter (per-cell peak/extended brightness, Sun excluded, isolated
   point sources ≤ 64× key) for small bright bodies on black sky; when lit material (> 1e-4 W m⁻² sr⁻¹) covers
   most of the frame it blends to the 90th percentile of the lit pixels (interpolated within its half-stop
@@ -158,7 +163,9 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   1/gap, reach)). The camera's
   streamline state is `uRsCam` = (ξ, ζ, J, near-field zone flag). Far-field shaders (`src/render/far/**`) include
   only `sv_ringProfile` (km-scale edge waves are below their footprints).
-* `sv_lighting`: `phaseLambertSphere`, `phaseHG`, `ringPhase(cosα, dust)`, `saturnshine(p, out dir)`,
+* `sv_lighting`: `phaseLambertSphere`, `phaseHG`, `ringPhase(cosα, dust)`, `ringParticleSurge(α)`,
+  `ringRegolithIF(μ0, μ, cos g, w)` (resolved particles; CPU mirror `near/NearRegolith.ts`),
+  `extendedSourceCosine(cosθ, sin σ)` (incidence cosine of an extended spherical source), `saturnshine(p, out dir)`,
   `diskOverlapFraction`, `moonsSunVisibility(p, skip)`, `sunVisibility(p)`; moon spheres `uMoonPosR[32]`.
 * `sv_ringLod` (mirror of `src/rings/RingLod.ts`): 14 octave size classes from 1 mm, `lodCarryParticle(a,k,s,dz)`
   (one particle's draw probability: count contract, display pixels via `uLodPixelAngle`), `lodCarry(a,k,s,dz)`
@@ -173,12 +180,22 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   fields with phase dislocations and a non-shell-crossing profile (`uWakeShape` = ln γ, 1/Rc², Wmin, Wmax).
   Spacing at peak = Toomre λ (≈ 40 m mid-A, 51–55 m in B), pitch ≈ 20° trailing; contrast γ = 0.16 (A), 0.24 (B);
   no wakes in the C ring / Cassini Division.
-* **Near-field photometry contract** (`NearFieldPass`): sub-pixel particles use `ringParticlePhase`, resolved
-  ones Lambert × `ringParticleLambertFactor`; multiple scattering by the same two-stream solution as the medium
-  with `phaseTables(1)` back-scatter fractions; shadow hiding exp(b·min(τ_sun, τ_view)) on the statistical part
-  of the sun path; the sun path through the layer samples the wake density at the same two points the medium
-  uses; a 2048×1024 sun-aligned shadow map resolves particle-on-particle shadows near the camera (the statistical
-  transmission keeps only what the map cannot resolve).
+* **Near-field photometry contract** (`NearFieldPass`): sub-pixel particles use `ringParticlePhase`; resolved
+  ones the regolith law `ringRegolithIF` per pixel × `nearRegolithFactor` per particle (the Sun at the particle's
+  phase angle; Saturnshine likewise at Saturn's centre direction, with `extendedSourceCosine` for its ~55° disc),
+  at every particle quality. The factor LUT (`NearRegolith.ts`, RGBA32F 64 phase angles × 32 albedo rows, built at
+  start-up in ~130 ms) is f(α) = P_power(α) / (4 Φ_w(α)), Φ_w = the regolith sphere's disk integral (Gauss-Legendre
+  24 × 12 in photometric coordinates); the narrow surge is multiplied in GLSL; w per row inverts the regolith
+  sphere's spherical albedo A_s(w) = A. At high quality the resolved relief (normals, self-shadowing) would change
+  the disk-integrated brightness (× 0.75 at 120° for a ray-marched clumpy boulder: resolved roughness the power
+  law already contains), so the Sun factor is also multiplied by `nearReliefPhotFix` (table `RELIEF_PHOT` in
+  `NearRelief.ts`, measured by a CPU ray tracer mirroring the fragment shader). Diffuse ring light stays
+  cosine-weighted (a near-isotropic field, as in the medium). Multiple scattering by the same two-stream solution
+  as the medium with `phaseTables(1)` back-scatter fractions; shadow hiding exp(b·min(τ_sun, τ_view)) on the
+  statistical part of the sun path; the sun path through the layer samples the wake density at the same two points
+  the medium uses; a 2048×1024 sun-aligned shadow map resolves particle-on-particle shadows near the camera (the
+  statistical transmission keeps only what the map cannot resolve). `scripts/test/particles.mjs` checks the GLSL
+  against the CPU mirrors and the LUT / relief contracts.
 
 ## The ring model (physics)
 * **Radial profile** (`src/rings/RingProfile.ts`): 0.25 km grid, 66,000–139,500 km. Optical depth from
@@ -202,7 +219,23 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   Particles smaller than half a *render* pixel are opaque discs of half a render pixel rasterized with
   probability (ρ_render/0.5)²·lodCarryParticle (stable per-particle threshold: expected coverage = true
   coverage, and the ring layer's march still stops at them). `particleQuality` (high/medium/low) only
-  changes the rendering: lumpy ellipsoids + shadow map / spheres + shadow map / spheres, statistical shadows.
+  changes the rendering: relief-displaced ellipsoids + profiled shadow map / spheres + shadow map / spheres,
+  statistical shadows (the regolith photometry is the same at every quality).
+* **Particle shapes and spin** (`nearCommon.glsl`): triaxial ellipsoids (`nearShape`, ⟨projected area⟩ = πa²) in
+  **principal-axis rotation** about their short axis (`nearOrientation`: spin axis near the orbit normal for large
+  particles, random for small ones; a commented hook marks where a tidal-alignment term would go — not active:
+  it makes the cross-section direction-dependent, an LOD-contract change). A body spinning about its short axis
+  shows more area along the spin axis than across it, so the asphericity of the spin-aligned (large) particles is
+  reduced (`NR_ISO` 0.8): their mean cross-section is 0.987–1.026 πa² from edge-on to face-on (1.14 face-on with
+  the full shape spread). At high quality the surface is r(u) = κ(1 + amp·h(u)) in the axis-scaled body frame:
+  `nearRelief` = gradient-noise irregularity + two cellular "clast" layers (sub-aggregates, union-of-spheres domes;
+  weight 0 below ~10 cm to 1 above ~0.7 m) + finer layers; ray-marched (sphere tracing on value-only R16F
+  textures, exact depth, soft self-shadowing) above `NR_PX0`–`NR_PX1` = 12–22 render px radius (amp fades in),
+  below that the analytic ellipsoid with the relief as normal perturbation; absolute-scale regolith texture (4 cm
+  pebbles, 8 mm grain clumps) on the shading normal where resolved. κ(amp, wc) keeps ⟨projected area⟩ = πa²
+  (fit in `NR_K0..3`, residual ≤ 0.6%, `NearRelief.ts` measures it from the outline radius ρ(φ) of the projection).
+  Shadow-map casters store a 24-sample outline profile ρ(φ) (second RGBA32UI attachment, `NEAR_SHADOW_PROFILE`
+  lookups) so shadows follow the relief; the astronaut's lookups keep the plain ellipses.
 * **Allocation** (`RingLod.configure`): each particle of radius a lives in its own shearing-periodic box of
   half-size D(a) = min(√((c·a)² − dz²), box[k]), c = 1.25/(displayPixelAngle·0.4): the horizontal distance at
   which it falls below the handover band (with zoom headroom) from the lowest camera height served (dz above

@@ -7,7 +7,7 @@ follow [Adding a tool](#adding-a-tool) so the next session can run it too.
 
 | command | what it checks | runtime* |
 |---|---|---|
-| `npm test` | smoke + physics + counts + seam + exposure + edges + moonflux against one private dev server; summary table | ~6 min |
+| `npm test` | smoke + physics + counts + seam + exposure + edges + moonflux + particles against one private dev server; summary table | ~6.5 min |
 | `npm run test:smoke` | every place loads and renders cleanly (errors, fallbacks, NaN / negative pixels) | ~1.5 min |
 | `npm run test:physics` | Sun ephemeris, orbital frequencies, near-field particle kinematics | ~15 s |
 | `npm run test:counts` | drawn particle counts vs the analytic expectation, HUD count line, radius sampler | ~30 s |
@@ -16,6 +16,7 @@ follow [Adding a tool](#adding-a-tool) so the next session can run it too.
 | `npm run test:exposure` | the camera-pinned astronaut doesn't change the auto exposure (meter mask) | ~45 s |
 | `npm run test:edges` | gap edges perturbed by moonlets and the B-ring edge modes (streamline map): gaps empty, rendered edges = model, near field follows | ~50 s |
 | `npm run test:moonflux` | point-source flux of unresolved moons = resolved brightness (measured shapes + ellipsoid control) | ~10 s |
+| `npm run test:particles` | resolved-particle photometry and shape contract: GLSL vs CPU mirrors, factor LUT, relief area / photometry | ~20 s |
 | `node scripts/shot.mjs …` / `node scripts/shots.mjs …` | screenshots (one / batch spec) | — |
 | `node scripts/img.mjs profile\|mean\|crop\|rotate …` | PNG brightness profiles, region ratios, contrast-stretched zooms, rotate/scale | — |
 
@@ -173,6 +174,33 @@ integrated over the bounding circle / 0.5, E_flux = the moon's flux-target row s
 0.9995, Daphnis 0.970, Atlas 1.026, Prometheus 0.972, Pandora 0.973, Epimetheus 0.967, Janus 0.986, Mimas 1.070. It
 guards the bounding radius r_max (Pan's / Atlas's ridges reach 3–4 km beyond their IAU ellipsoids) and the ray count.
 
+### particles — `scripts/test/particles.mjs` (`--only regolith,relief,photometry,anisotropy`, `--bodies`, `--dirs`)
+The near field's resolved particles (regolith law, factor LUT, relief: `src/render/near/NearRegolith.ts`,
+`NearRelief.ts`, `nearCommon.glsl`). The CPU mirrors run in the page (dynamic `import()` through the Vite server), the
+GLSL in a separate WebGL2 context of the same page (the chunks compiled as raw GLSL), so both sides are the shipped
+code.
+1. **regolith**: on a 64×64 grid, GLSL `ringRegolithIF` vs the CPU `regolithIF` (rel. ≤ 1e-3 where I/F > 1e-3;
+   measured 4.3e-6), `extendedSourceCosine` (abs. ≤ 2e-4; 3e-7), `nearRegolithFactor` = the LUT lookup (rel. ≤ 3e-3,
+   the GPU's 8-bit filter weights; 4e-4). The contract between the LUT nodes: f(α, A)·4Φ_w(α)/ringParticlePhase(α) − 1
+   at phase angles off the nodes and albedos between the rows, with the interpolated w the shader uses: ≤ 0.3% for
+   α < 120° (measured 0.29%, at A = 0.13), ≤ 1.5% for 120–160° (0.50%); beyond 160° (P < 0.1% of its peak) printed
+   only. Also prints f·A_s for an A-ring particle (1 = the regolith sphere alone has the power law: 1.18 / 1.08 / 0.98 /
+   0.96 / 1.02 / 1.36 at 0 / 10 / 30 / 60 / 90 / 120°) and the LUT build time (~130 ms).
+2. **relief**: GPU `nearRelief` vs the CPU mirror (abs. ≤ 3e-3 radii; 1.3e-4). Orientation-averaged projected area
+   of the displaced bodies with the GLSL κ relative to their ellipsoids, for three size ensembles (0.05 / 0.4 / 1.5 m,
+   their clast weights and shapes), amp 0.25–1: |ratio − 1| ≤ 0.01 (measured ≤ 0.0062; without κ up to +7%). Prints
+   the least-squares κ coefficients — paste them into `NR_K0..3` (nearCommon.glsl) when the relief changes — the
+   h bounds and the base ellipsoids' mean area / πa² (1.000–1.004, Knud Thomsen).
+3. **photometry**: CPU ray tracer mirroring the fragment shader (regolith law, relief normals, visible-normal clamp,
+   macro-normal guard, self-shadowing): disk-integrated brightness of the two relief paths relative to smooth
+   ellipsoids, as the correction table (1/ratio) at 0–160° × clast weight 0 / 0.5 / 1. Check: the stored
+   `RELIEF_PHOT` (NearRelief.ts) equals the measurement within 2% for α ≤ 120° (deterministic, so it fails exactly
+   when the relief or the shader logic changed — paste the printed table then). Measured corrections: ≤ 4% for the
+   analytic path up to 100°, ray-marched clumpy boulders 1.06 / 1.12 / 1.24 / 1.44 at 60 / 80 / 100 / 120°.
+4. **anisotropy** (informational): mean cross-section / πa² of the principal-axis rotators vs view elevation (spin
+   axes near the orbit normal for large particles): 0.987 edge-on … 1.026 from above for a ≥ 0.6 m (NR_ISO 0.8;
+   0.92 … 1.14 with the full shape spread).
+
 ## Tools
 
 - `scripts/shot.mjs <url> <out.png> [--until expr] [--eval expr] [--wait ms] [--w --h --dpr] [--keep-storage]` —
@@ -192,7 +220,9 @@ guards the bounding radius r_max (Pan's / Atlas's ridges reach 3–4 km beyond t
   NAC-like fov below the UI's 20° minimum), generic views of all 7 reshaped moons on 2026-11-08 and a camera-clearance
   check 20 m above Pan's ridge (eval prints the clamped distance vs the surface radius). Compare with the raw frames
   (`https://opus.pds-rings.seti.org/opus/api/files/co-iss-<frame>.json` → `_full.png`) rotated by the frame's
-  `noraz` (clockwise); renders are north-up.
+  `noraz` (clockwise); renders are north-up. `scripts/test/specs/particle-look.json`: before/after views of the resolved particles at render
+  scale 1 — A/B ring inside (fov 35 and 12), 30 m above the A ring, each with the astronaut for scale, the relief
+  debug view (33: red = ray-marched) and the former Lambert law (32) in the same frame, and medium / low quality.
 - `scripts/img.mjs profile <x0> <x1> <y0> <y1> <step> a.png b.png …` — vertical brightness + texture profile of
   a column strip in several screenshots side by side (find seams); `mean a.png b.png "x0,y0,x1,y1" …` — region
   means and ratio; `crop out.png x0 y0 w h scale gain a.png b.png …` — stacked, upscaled, contrast-stretched

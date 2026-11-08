@@ -16,19 +16,22 @@
 //      view-frustum and statistical occlusion culling)
 //   2. HistoPyramid compaction of R0 into lists (point sprites / large quads / shadow casters)
 //   3. sun shadow map of all present particles >= ~8 cm in a tube along the sun direction around the camera
-//      (NearShadow.ts): per texel the most sunward caster's exact projected outline, tested analytically by
-//      the lookups (resolution-independent edges, physical penumbra); the statistical layer transmission keeps
-//      only the part the map cannot resolve
+//      (NearShadow.ts): per texel the most sunward caster's exact projected outline (x its relief profile at high
+//      quality, second attachment), tested analytically by the lookups (resolution-independent edges, physical
+//      penumbra); the statistical layer transmission keeps only the part the map cannot resolve
 //   4. one point-sprite draw + one quad draw for all classes: each vertex fetches its particle through the
-//      pyramid and ray-traces a spinning lumpy triaxial ellipsoid, writing radiance, distance and exact
-//      depth into ctx.sceneRT. Photometry matches the ring-layer medium (power-law particle phase function,
-//      two-stream multiple scattering with the same back-scatter fractions, wake-aware sun paths, shadow
-//      hiding), so the particles fade into the medium without a brightness seam.
+//      pyramid and ray-traces a triaxial ellipsoid in principal-axis rotation (high quality: its relief-
+//      displaced surface, ray-marched above ~12 render px, nearCommon.glsl nearRelief), writing radiance,
+//      distance and exact depth into ctx.sceneRT. Photometry matches the ring-layer medium (regolith surface
+//      law x the per-particle factor that gives the power-law particle phase function, NearRegolith.ts; two-
+//      stream multiple scattering with the same back-scatter fractions, wake-aware sun paths, shadow hiding),
+//      so the particles fade into the medium without a brightness seam.
 // Orbital phases kappa(t-tRef), nu(t-tRef), spin phases, the shear copy offsets etc. are computed in JS
 // double precision and reduced before being passed to the GPU, so nothing degrades over long sim times.
 // Debug views (settings.debugView): 11 shadow terms, 12 sun factor, 13 Saturnshine, 14 diffuse ring light,
 // 15 wake density at the particles, 17 map-vs-statistics, 18 caster map, 19-22 shadow lookup tests,
-// 31 no surface noise. `skip` disables sub-passes for profiling.
+// 31 no relief normals, 32 the former Lambert law, 33 ray-marched relief (red = amplitude), 34 relief
+// self-shadowing. `skip` disables sub-passes for profiling.
 import {
   BufferGeometry, DoubleSide, FloatType, GLSL3, InstancedBufferGeometry, LessEqualDepth, Mesh, NearestFilter, NoBlending,
   Points, RawShaderMaterial, RedFormat, RGBAFormat, Vector2, Vector3, Vector4, WebGLRenderTarget, type IUniform,
@@ -46,9 +49,15 @@ import nearDrawVert from '../near/nearDraw.vert.glsl?raw';
 import nearDrawFrag from '../near/nearDraw.frag.glsl?raw';
 import { NearCompaction, NEAR_PYR_GLSL } from '../near/NearCompaction';
 import { phaseTables, PHASE_LUT_N } from '../rings/phase';
-import { buildNearNoise } from '../near/NearNoise';
+import {
+  buildNearClasts, buildNearNoise, buildValueTexture, CLAST_N, CLAST_P, gradientBound, nearClastData, nearNoiseData, NOISE_N,
+  NOISE_P, valueRange,
+} from '../near/NearNoise';
+import { REGOLITH_A0, REGOLITH_A1, REGOLITH_LUT_NA, REGOLITH_LUT_NALB, regolithTable } from '../near/NearRegolith';
+import { reliefPhotUniform } from '../near/NearRelief';
 import {
   NearShadow, NEAR_SHADOW_CASTER_FS, NEAR_SHADOW_CASTER_VS, NEAR_SHADOW_COMMON_GLSL, NEAR_SHADOW_LOOKUP_GLSL,
+  NEAR_SHADOW_PROFILE_GLSL,
 } from '../near/NearShadow';
 
 const TEX_W = 2048;
@@ -83,7 +92,7 @@ vec4 nearClassify(ivec2 tc) {
   int k = nearClassOfRow(tc.y);
   if (k < 0) return vec4(0.0);
   // every present particle of the mapped classes inside the shadow tube casts (drawn or not)
-  float cst = nearShadowCaster(r0.xyz, 1.4 * abs(r0.w), k) ? 1.0 : 0.0;
+  float cst = nearShadowCaster(r0.xyz, nearMaxExtent() * abs(r0.w), k) ? 1.0 : 0.0;
   if (r0.w < 0.0) return vec4(0.0, 0.0, cst, 0.0);
   float s = max(length(r0.xyz), 1e-4);
   float cnt = lodRho(r0.w, s) >= LOD_RHO_FULL ? 1.0 : 0.0;
@@ -94,11 +103,17 @@ vec4 nearClassify(ivec2 tc) {
   float pr = lodCarryParticle(r0.w, k, s, r0.z) * min(1.0, 4.0 * rhoR * rhoR);
   if (nearU(idx, uint(uClsSeed[k]), NS_LOD) >= pr) return vec4(0.0, 0.0, cst, cnt);
   if (rhoR < 0.5) return vec4(1.0, 0.0, cst, cnt);
-  float rb = r0.w * nearShape(idx, uint(uClsSeed[k])).x;
-  if (s < 1.02 * rb + 1e-3) return vec4(0.0, 0.0, cst, cnt);   // camera inside the particle
+  // bounding radii of the drawn surface (as nearDraw.vert.glsl): the relief's outer / inner shells when it is
+  // ray-marched, else the ellipsoid's major / minor semi-axes
+  vec3 shp = r0.w * nearShape(idx, uint(uClsSeed[k]), r0.w);
+  float amp = nearReliefAmp(shp.x / (s * uPixelAngle));
+  vec2 shell = amp > 0.0 ? nearReliefShell(amp, nearReliefParams(idx, uint(uClsSeed[k]), r0.w).w) : vec2(1.0);
+  float rb = shp.x * shell.y;
+  if (s < shp.z * shell.x) return vec4(0.0, 0.0, cst, cnt);   // camera inside the particle
   float w = -(uWorldToCam * r0.xyz).z;
-  float sinB = rb / s, cosT = w / s;
+  float sinB = min(rb / s, 1.0), cosT = w / s;
   float rpx = w > 0.0 ? sinB * inversesqrt(max(1.0 - sinB * sinB, 1e-6)) / (uPixelAngle * cosT * cosT) : 1e9;
+  // (camera inside the bounding shell: w < rb -> a whole-screen quad)
   bool big = w < 3.0 * rb || rpx > uPtMax || cosT < 0.35;
   return big ? vec4(0.0, 1.0, cst, cnt) : vec4(1.0, 0.0, cst, cnt);
 }
@@ -215,7 +230,25 @@ export class NearFieldPass implements RenderPass {
   /** (fraction of the layer column above the camera height, -, -, -) */
   private readonly env2U = { value: new Vector4(0.5, 0, 0, 0) };
   private readonly satDirU = { value: new Vector3(-1, 0, 0) };
+  // particle surface relief (nearRelief, nearCommon.glsl): noise textures (value + gradient; value-only R16F
+  // copies for the ray march and the shadow-outline profiles), the value ranges of their texels and the bounds of
+  // their interpolated gradients (1% / 2% margins for the half-float rounding of the value-only copies)
   private readonly noiseU = { value: buildNearNoise() };
+  private readonly clastU = { value: buildNearClasts() };
+  private readonly noiseVU = { value: buildValueTexture(nearNoiseData(), NOISE_N) };
+  private readonly clastVU = { value: buildValueTexture(nearClastData(), CLAST_N) };
+  private readonly reliefU = { value: (() => {
+    const c = valueRange(nearClastData()), n = valueRange(nearNoiseData());
+    return new Vector4(c[0] * 1.01, c[1] * 1.01, n[0] * 1.01, n[1] * 1.01);
+  })() };
+  private readonly reliefGradU = { value: new Vector2(
+    1.02 * gradientBound(nearNoiseData(), NOISE_N, NOISE_P), 1.02 * gradientBound(nearClastData(), CLAST_N, CLAST_P),
+  ) };
+  // regolith photometry of resolved particles: per-particle factor LUT (NearRegolith.ts) and the relief's
+  // photometric correction table (NearRelief.ts RELIEF_PHOT)
+  private readonly regolithU = { value: regolithTable().lut };
+  private readonly reliefPhotU = { value: reliefPhotUniform() };
+  private readonly regolithLutU = { value: new Vector4(REGOLITH_LUT_NA, REGOLITH_LUT_NALB, REGOLITH_A0, REGOLITH_A1) };
   /** render fidelity (settings.particleQuality): 0 low, 1 medium, 2 high */
   private readonly qualityU = { value: 2 };
 
@@ -231,7 +264,12 @@ export class NearFieldPass implements RenderPass {
     this.shadow = new NearShadow();
     // later passes (the astronaut) receive the particles' shadows from the same map
     ctx.nearShadow = { uniforms: { ...this.shadow.uniforms, uNearAllocD: this.allocDU }, frame: -1, prepare: (r) => this.shadow.prepare(r) };
-    const sh = { ...ctx.shared.u, ...this.shadow.uniforms, uNearQuality: this.qualityU };
+    const sh = {
+      ...ctx.shared.u, ...this.shadow.uniforms, uNearQuality: this.qualityU,
+      tNearNoise: this.noiseU, tNearClast: this.clastU, tNearNoiseV: this.noiseVU, tNearClastV: this.clastVU,
+      uNearRelief: this.reliefU, uNearReliefGrad: this.reliefGradU,
+      tRegolithF: this.regolithU, uRegolithLut: this.regolithLutU, uNearReliefPhot: this.reliefPhotU,
+    };
     const common = SV_HEADER_ALL + '\n' + nearCommon + '\n' + NEAR_SHADOW_COMMON_GLSL + '\n';
     const tables = (): Record<string, IUniform> => ({
       tR0: this.r0U,
@@ -298,8 +336,9 @@ export class NearFieldPass implements RenderPass {
       blending: NoBlending,
     });
     const listGlsl = NEAR_CLASSIFY_GLSL + NEAR_PYR_GLSL;
-    const vs = common + listGlsl + NEAR_SHADOW_LOOKUP_GLSL + nearDrawVert;
-    const fs = common + NEAR_SHADOW_LOOKUP_GLSL + nearDrawFrag;
+    // (the particles' shadow lookups use the relief-profiled caster outlines; the astronaut's the plain ellipses)
+    const vs = common + listGlsl + NEAR_SHADOW_PROFILE_GLSL + NEAR_SHADOW_LOOKUP_GLSL + nearDrawVert;
+    const fs = common + NEAR_SHADOW_PROFILE_GLSL + NEAR_SHADOW_LOOKUP_GLSL + nearDrawFrag;
     const drawMat = (quad: number) =>
       new RawShaderMaterial({
         glslVersion: GLSL3,
@@ -316,7 +355,6 @@ export class NearFieldPass implements RenderPass {
           uNearEnv2: this.env2U,
           uNearSatDir: this.satDirU,
           uNearAllocD: this.allocDU,
-          tNearNoise: this.noiseU,
           uDebug: { value: 0 },
         },
         depthTest: true,
@@ -328,8 +366,8 @@ export class NearFieldPass implements RenderPass {
     this.ptMat = drawMat(0);
     this.qdMat = drawMat(1);
     this.shMat = NearShadow.casterMaterial(
-      common + listGlsl + 'uniform float uClsSpinW[LOD_CLASSES];\n' + NEAR_SHADOW_CASTER_VS,
-      common + NEAR_SHADOW_CASTER_FS,
+      common + listGlsl + 'uniform float uClsSpinW[LOD_CLASSES];\n' + NEAR_SHADOW_PROFILE_GLSL + NEAR_SHADOW_CASTER_VS,
+      common + NEAR_SHADOW_PROFILE_GLSL + NEAR_SHADOW_CASTER_FS,
       { ...sh, ...tables(), ...this.pyr.uniforms(), uClsSpinW: this.clsSpinW },
     );
     const cg = new BufferGeometry();
