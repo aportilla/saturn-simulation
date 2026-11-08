@@ -4,13 +4,14 @@
 // usage: node scripts/test/run.mjs [smoke physics counts seam exposure edges ...] [--base URL] [--out DIR]
 //
 // Starts a private Vite server unless --base answers, passes --base / --out <DIR>/<test> to each test, prints a
-// pass/fail table with runtimes and exits 1 if any test failed. Default tests: smoke physics counts seam exposure edges.
+// pass/fail table with runtimes and exits 1 if any test failed. Default tests: smoke physics counts seam exposure
+// edges moonflux.
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { REPO, outputDir, parseArgs, startServer, table, writeJson } from './lib.mjs';
 
 const args = parseArgs();
-const tests = args._.length ? args._ : ['smoke', 'physics', 'counts', 'seam', 'exposure', 'edges'];
+const tests = args._.length ? args._ : ['smoke', 'physics', 'counts', 'seam', 'exposure', 'edges', 'moonflux'];
 const out = outputDir('run', args.str('out'));
 const srv = await startServer({ base: args.str('base') });
 const rows = [];

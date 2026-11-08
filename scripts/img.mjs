@@ -11,6 +11,10 @@
 //   node scripts/img.mjs crop <out.png> <x0> <y0> <w> <h> <scale> <gain> a.png [b.png ...]
 //        crops of the same rectangle from several files, integer-upscaled and contrast-stretched around each
 //        crop's mean (gain > 1 makes faint seams visible), stacked vertically into one PNG
+//   node scripts/img.mjs rotate <in.png> <out.png> <cwDeg> <scale> <W> <H> [cx cy]
+//        rotate clockwise by cwDeg and scale (bilinear) about the input point (cx, cy) (default: the centre) into a
+//        W x H output centred on it — e.g. turn a north-up render into the orientation of a Cassini frame whose
+//        projected spin axis is `noraz` degrees clockwise from up (PDS image tables), scale = render m/px / frame m/px
 // Pixel coordinates are display pixels of the PNG, y down. Helpers: scripts/test/lib.mjs (decodePng, encodePng).
 import { writeFileSync } from 'node:fs';
 import { decodePng, encodePng, pngLumaMean } from './test/lib.mjs';
@@ -63,7 +67,31 @@ if (cmd === 'profile') {
   });
   writeFileSync(out, encodePng(W, H, rgba));
   console.log(`${out} ${W}x${H}`);
+} else if (cmd === 'rotate') {
+  const [inp, out, cw, sc, Wo, Ho, cxa, cya] = rest;
+  const im = decodePng(inp);
+  const W = Number(Wo), H = Number(Ho), a = (Number(cw) * Math.PI) / 180, s = Number(sc);
+  const cx = cxa !== undefined ? Number(cxa) : im.w / 2, cy = cya !== undefined ? Number(cya) : im.h / 2;
+  const ca = Math.cos(a), sa = Math.sin(a);
+  const rgba = new Uint8Array(W * H * 4);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    // output -> input: undo the clockwise rotation (y down) and the scale
+    const dx = (x + 0.5 - W / 2) / s, dy = (y + 0.5 - H / 2) / s;
+    const sx = ca * dx + sa * dy + cx - 0.5, sy = -sa * dx + ca * dy + cy - 0.5;
+    const x0 = Math.floor(sx), y0 = Math.floor(sy), fx = sx - x0, fy = sy - y0;
+    for (let c = 0; c < 3; c++) {
+      let v = 0;
+      for (const [ox, oy, wt] of [[0, 0, (1 - fx) * (1 - fy)], [1, 0, fx * (1 - fy)], [0, 1, (1 - fx) * fy], [1, 1, fx * fy]]) {
+        const xx = x0 + ox, yy = y0 + oy;
+        if (xx >= 0 && yy >= 0 && xx < im.w && yy < im.h) v += wt * im.data[(yy * im.w + xx) * 4 + c];
+      }
+      rgba[(y * W + x) * 4 + c] = Math.round(v);
+    }
+    rgba[(y * W + x) * 4 + 3] = 255;
+  }
+  writeFileSync(out, encodePng(W, H, rgba));
+  console.log(`${out} ${W}x${H}`);
 } else {
-  console.log('usage: node scripts/img.mjs profile|mean|crop ... (see the header of scripts/img.mjs)');
+  console.log('usage: node scripts/img.mjs profile|mean|crop|rotate ... (see the header of scripts/img.mjs)');
   process.exit(cmd ? 1 : 0);
 }

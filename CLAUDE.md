@@ -18,7 +18,7 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
   `test:counts` (drawn particles vs the analytic expectation, HUD "complete") + `test:seam` (near field +
   medium vs medium alone, incl. the old arc repro) + `test:exposure` (the astronaut doesn't change the auto
   exposure) + `test:edges` (moonlet gap edges and B-ring edge modes: gaps empty, rendered edges = streamline model,
-  near field follows).
+  near field follows) + `test:moonflux` (unresolved-moon point flux = resolved brightness, measured shapes).
   `npm run test:fps` = informational fps table per preset × quality. Details, tolerances, measured
   values and the shared helpers: `scripts/test/README.md`.
 - Screenshots on the real GPU (headless Chrome, ANGLE/Metal); console errors and page errors are printed:
@@ -27,7 +27,8 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
     (spec format in the file header; relative URLs work — a private server is started if needed, e.g.
     `scripts/test/specs/*.json`; same-URL shots reuse the page, so `eval` can change settings between shots;
     localStorage is cleared before every page load, so pin settings in the URL)
-  - image utilities: `node scripts/img.mjs profile|mean|crop …` (PNG brightness profiles, region means, crops)
+  - image utilities: `node scripts/img.mjs profile|mean|crop|rotate …` (PNG brightness profiles, region means, crops,
+    rotate/scale e.g. to a Cassini frame's orientation)
   - exposure debugging: `node scripts/meter-debug.mjs "?preset=…&t=…"` (auto-exposure meter intermediates)
   - put screenshots in the session scratchpad, not the repo; view PNGs with the Read tool
 - Useful URLs: `/?preset=<place>` (ids in `src/app/presets.ts`: overview, rings-above, edge-on, a-ring-inside,
@@ -79,6 +80,7 @@ mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,ove
 | shared shader code (camera rays, log depth, Saturn, ring profile, lighting/phase functions) | `src/render/shaders/*.glsl`, `chunks.ts` |
 | pass order, render targets, local-ring LOD updates | `src/render/Pipeline.ts`, `SharedUniforms.ts` |
 | moon ephemerides and rotation | `src/moons/*`; data `public/data/moons/`, rebuilt by `scripts/data/moons/*` |
+| measured small-moon shapes (ridges of Pan/Atlas/Daphnis, shepherds, co-orbitals) | `src/moons/shapes.ts`, `traceShapedMoon` in `src/render/far/glsl/moons.ts`; data `public/data/moons/shapes.*` by `scripts/data/moons/build_shapes.mjs`; check `scripts/test/specs/moon-shapes.json` |
 | app shell, places, settings, camera controllers, HUD, labels | `src/app/*`, `src/camera/*`, `src/ui/*` |
 | data build scripts (download originals into git-ignored `data-raw/`, write `public/data/`) | `scripts/data/**` |
 

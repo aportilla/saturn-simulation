@@ -15,6 +15,7 @@ import { ICRF_TO_SEF } from '../core/ephemeris';
 import type { MoonProvider } from './types';
 import { OrbitModel, OrbitSample, tauFromT, type OrbitJson, type OrbitTables } from './orbitModel';
 import { HyperionRotation, type ChaoticRotationJson } from './hyperionRotation';
+import { loadMoonShapes, type MoonShape } from './shapes';
 import { StubMoons } from './stubMoons';
 
 const DEG = Math.PI / 180;
@@ -72,7 +73,11 @@ export class MoonSystem implements MoonProvider {
   private readonly _m = new Matrix4();
   private readonly W = new Float64Array(6);
 
-  constructor(data: MoonsFileJson, tables: OrbitTables, hyperionData: Float32Array | null) {
+  constructor(
+    data: MoonsFileJson, tables: OrbitTables, hyperionData: Float32Array | null,
+    /** measured shapes by lower-case name (shapes.ts); moons without one keep their ellipsoid */
+    private readonly shapes: Map<string, MoonShape> = new Map(),
+  ) {
     this.data = data;
     this.count = data.moons.length;
     this.models = data.moons.map((m) => new OrbitModel(m.orbit, tables));
@@ -126,6 +131,7 @@ export class MoonSystem implements MoonProvider {
         pos: new Vector3(), vel: new Vector3(),
         radii: new Vector3(m.radiiKm[0] * 1e3, m.radiiKm[1] * 1e3, m.radiiKm[2] * 1e3),
         meanRadius: m.meanRadiusKm * 1e3,
+        shape: this.shapes.get(m.name.toLowerCase()) ?? null,
         orient: new Quaternion(),
         albedo: m.albedo,
         color: [m.color[0], m.color[1], m.color[2]],
@@ -227,16 +233,21 @@ function float32le(buf: ArrayBuffer): Float32Array {
 }
 
 /** Build a MoonSystem from already-fetched files (e.g. in Node tests). */
-export function createMoonSystem(json: MoonsFileJson, i16: ArrayBuffer, f32: ArrayBuffer | null, hyperion: ArrayBuffer | null): MoonSystem {
-  return new MoonSystem(json, { i16: int16le(i16), f32: f32 ? float32le(f32) : null }, hyperion ? float32le(hyperion) : null);
+export function createMoonSystem(
+  json: MoonsFileJson, i16: ArrayBuffer, f32: ArrayBuffer | null, hyperion: ArrayBuffer | null,
+  shapes?: Map<string, MoonShape>,
+): MoonSystem {
+  return new MoonSystem(json, { i16: int16le(i16), f32: f32 ? float32le(f32) : null }, hyperion ? float32le(hyperion) : null, shapes);
 }
 
 /**
- * Load the real moon system from public/data/moons/ (moons.json, moon_tables.i16, hyperion_rotation.f32).
- * Falls back to the circular-orbit StubMoons (with a console warning) if the data cannot be loaded.
+ * Load the real moon system from public/data/moons/ (moons.json, moon_tables.i16, hyperion_rotation.f32, and the
+ * measured small-moon shapes shapes.json/.u16). Falls back to the circular-orbit StubMoons (with a console warning)
+ * if the ephemeris cannot be loaded; missing shape maps only fall back to ellipsoids.
  */
 export async function loadMoonSystem(): Promise<MoonProvider> {
   try {
+    const shapesP = loadMoonShapes();
     const jr = await fetch(dataUrl('data/moons/moons.json'));
     if (!jr.ok) throw new Error(`moons.json: HTTP ${jr.status}`);
     const json = (await jr.json()) as MoonsFileJson;
@@ -251,7 +262,7 @@ export async function loadMoonSystem(): Promise<MoonProvider> {
     let hyp: ArrayBuffer | null = null;
     if (th && th.ok) hyp = await th.arrayBuffer();
     else if (hm) console.warn('[moons] Hyperion rotation table missing; Hyperion will be shown synchronous');
-    return createMoonSystem(json, await ti.arrayBuffer(), tf ? await tf.arrayBuffer() : null, hyp);
+    return createMoonSystem(json, await ti.arrayBuffer(), tf ? await tf.arrayBuffer() : null, hyp, await shapesP);
   } catch (e) {
     console.warn('[moons] could not load the moon ephemeris, using StubMoons:', e);
     return new StubMoons();

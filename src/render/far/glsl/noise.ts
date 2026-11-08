@@ -96,7 +96,9 @@ vec4 fn_hash4(ivec3 c, uint seed) {
 // projection offset, a 2x2x2 neighbourhood suffices. Accumulates height h (in cell units) and its 3-D
 // gradient g, and an albedo modulation (fresh rims bright, floors per 'floorDark'). Profile: parabolic
 // bowl of depth/diameter 0.2, raised rim, exponential ejecta blanket; larger craters get a central peak.
-void craterOctave(vec3 x, uint seed, float density, float floorDark, inout float h, inout vec3 g, inout float alb) {
+// rFade > 0 (lattice units, ~a pixel): craters with radius < 2 rFade fade out individually (no sub-pixel aliasing);
+// rFade = 0: every crater at full strength.
+void craterOctave(vec3 x, uint seed, float density, float floorDark, float rFade, inout float h, inout vec3 g, inout float alb) {
   vec3 base = floor(x - 0.5);
   float F = length(x);
   for (int k = 0; k < 8; k++) {
@@ -108,6 +110,11 @@ void craterOctave(vec3 x, uint seed, float density, float floorDark, inout float
     ctr *= F / length(ctr);
     // power-law sizes: many small, few large
     float R = 0.13 * (0.2 + 0.8 * r.y * r.y);
+    float fade = 1.0;
+    if (rFade > 0.0) {
+      fade = smoothstep(rFade, 2.0 * rFade, R);
+      if (fade <= 0.0) continue;
+    }
     vec3 dv = x - ctr;
     float d = length(dv);
     float u = d / R;
@@ -129,12 +136,19 @@ void craterOctave(vec3 x, uint seed, float density, float floorDark, inout float
       hh = rim * e;
       dh = -5.0 * rim * e;
     }
+    if (rFade > 0.0) { hh *= fade; dh *= fade; }
     h += hh;
     g += (dh / R) * (dv / max(d, 1e-6));
     // albedo: fresh craters (r.w high) have bright rims/ejecta, older ones fade; floors per material
     float fresh = smoothstep(0.75, 1.0, r.w);
-    alb += fresh * 0.25 * exp(-abs(u - 1.0) * 4.0) * (u < 1.6 ? 1.0 : 0.0);
-    alb -= floorDark * (1.0 - smoothstep(0.55, 0.95, u));
+    float aRim = fresh * 0.25 * exp(-abs(u - 1.0) * 4.0) * (u < 1.6 ? 1.0 : 0.0);
+    float aFloor = floorDark * (1.0 - smoothstep(0.55, 0.95, u));
+    if (rFade > 0.0) {
+      alb += fade * (aRim - aFloor);
+    } else {
+      alb += aRim;
+      alb -= aFloor;
+    }
   }
 }
 #endif
