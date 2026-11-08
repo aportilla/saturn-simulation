@@ -51,6 +51,7 @@ import {
   NOISE_P, valueRange,
 } from '../near/NearNoise';
 import { REGOLITH_A0, REGOLITH_A1, REGOLITH_LUT_NA, REGOLITH_LUT_NALB, regolithTable } from '../near/NearRegolith';
+import { reliefPhotUniform } from '../near/NearRelief';
 import {
   NearShadow, NEAR_SHADOW_CASTER_FS, NEAR_SHADOW_CASTER_VS, NEAR_SHADOW_COMMON_GLSL, NEAR_SHADOW_LOOKUP_GLSL,
   NEAR_SHADOW_PROFILE_GLSL,
@@ -240,8 +241,10 @@ export class NearFieldPass implements RenderPass {
   private readonly reliefGradU = { value: new Vector2(
     1.02 * gradientBound(nearNoiseData(), NOISE_N, NOISE_P), 1.02 * gradientBound(nearClastData(), CLAST_N, CLAST_P),
   ) };
-  // regolith photometry of resolved particles: per-particle factor LUT (NearRegolith.ts)
+  // regolith photometry of resolved particles: per-particle factor LUT (NearRegolith.ts) and the relief's
+  // photometric correction table (NearRelief.ts RELIEF_PHOT)
   private readonly regolithU = { value: regolithTable().lut };
+  private readonly reliefPhotU = { value: reliefPhotUniform() };
   private readonly regolithLutU = { value: new Vector4(REGOLITH_LUT_NA, REGOLITH_LUT_NALB, REGOLITH_A0, REGOLITH_A1) };
   /** render fidelity (settings.particleQuality): 0 low, 1 medium, 2 high */
   private readonly qualityU = { value: 2 };
@@ -262,7 +265,7 @@ export class NearFieldPass implements RenderPass {
       ...ctx.shared.u, ...this.shadow.uniforms, uNearQuality: this.qualityU,
       tNearNoise: this.noiseU, tNearClast: this.clastU, tNearNoiseV: this.noiseVU, tNearClastV: this.clastVU,
       uNearRelief: this.reliefU, uNearReliefGrad: this.reliefGradU,
-      tRegolithF: this.regolithU, uRegolithLut: this.regolithLutU,
+      tRegolithF: this.regolithU, uRegolithLut: this.regolithLutU, uNearReliefPhot: this.reliefPhotU,
     };
     const common = SV_HEADER_ALL + '\n' + nearCommon + '\n' + NEAR_SHADOW_COMMON_GLSL + '\n';
     const tables = (): Record<string, IUniform> => ({

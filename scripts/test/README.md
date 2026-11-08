@@ -7,13 +7,14 @@ follow [Adding a tool](#adding-a-tool) so the next session can run it too.
 
 | command | what it checks | runtime* |
 |---|---|---|
-| `npm test` | smoke + physics + counts + seam + exposure against one private dev server; summary table | ~5.5 min |
+| `npm test` | smoke + physics + counts + seam + exposure + particles against one private dev server; summary table | ~6 min |
 | `npm run test:smoke` | every place loads and renders cleanly (errors, fallbacks, NaN / negative pixels) | ~1.5 min |
 | `npm run test:physics` | Sun ephemeris, orbital frequencies, near-field particle kinematics | ~15 s |
 | `npm run test:counts` | drawn particle counts vs the analytic expectation, HUD count line, radius sampler | ~30 s |
 | `npm run test:seam` | near field + medium vs medium alone (seams/arcs), particle flux vs render scale | ~2.2 min |
 | `npm run test:fps` | uncapped fps table: places × particle quality (informational) | ~2.5 min |
 | `npm run test:exposure` | the camera-pinned astronaut doesn't change the auto exposure (meter mask) | ~45 s |
+| `npm run test:particles` | resolved-particle photometry and shape contract: GLSL vs CPU mirrors, factor LUT, relief area / photometry | ~20 s |
 | `node scripts/shot.mjs …` / `node scripts/shots.mjs …` | screenshots (one / batch spec) | — |
 | `node scripts/img.mjs profile\|mean\|crop …` | PNG brightness profiles, region ratios, contrast-stretched zooms | — |
 
@@ -134,6 +135,33 @@ pages, paused, `t=` fixed, 1920×1080) and post.EV compared. Checks: |EV on − 
 half-stop histogram is interpolated, so residuals are ≲ 0.1), mask live only while shown, no errors. Measured
 2026-11-07: 0.00 EV at overview, a-ring-30m, enceladus, cloud-tops (default set) and at a-ring-inside,
 b-ring-inside, a-ring-1km, shadow, rings-above; 0.10 at under-rings. ~45 s.
+
+### particles — `scripts/test/particles.mjs` (`--only regolith,relief,photometry,anisotropy`, `--bodies`, `--dirs`)
+The near field's resolved particles (regolith law, factor LUT, relief: `src/render/near/NearRegolith.ts`,
+`NearRelief.ts`, `nearCommon.glsl`). The CPU mirrors run in the page (dynamic `import()` through the Vite server), the
+GLSL in a separate WebGL2 context of the same page (the chunks compiled as raw GLSL), so both sides are the shipped
+code.
+1. **regolith**: on a 64×64 grid, GLSL `ringRegolithIF` vs the CPU `regolithIF` (rel. ≤ 1e-3 where I/F > 1e-3;
+   measured 4.3e-6), `extendedSourceCosine` (abs. ≤ 2e-4; 3e-7), `nearRegolithFactor` = the LUT lookup (rel. ≤ 3e-3,
+   the GPU's 8-bit filter weights; 4e-4). The contract between the LUT nodes: f(α, A)·4Φ_w(α)/ringParticlePhase(α) − 1
+   at phase angles off the nodes and albedos between the rows, with the interpolated w the shader uses: ≤ 0.3% for
+   α < 120° (measured 0.29%, at A = 0.13), ≤ 1.5% for 120–160° (0.50%); beyond 160° (P < 0.1% of its peak) printed
+   only. Also prints f·A_s for an A-ring particle (1 = the regolith sphere alone has the power law: 1.18 / 1.08 / 0.98 /
+   0.96 / 1.02 / 1.36 at 0 / 10 / 30 / 60 / 90 / 120°) and the LUT build time (~130 ms).
+2. **relief**: GPU `nearRelief` vs the CPU mirror (abs. ≤ 3e-3 radii; 1.3e-4). Orientation-averaged projected area
+   of the displaced bodies with the GLSL κ relative to their ellipsoids, for three size ensembles (0.05 / 0.4 / 1.5 m,
+   their clast weights and shapes), amp 0.25–1: |ratio − 1| ≤ 0.01 (measured ≤ 0.0062; without κ up to +7%). Prints
+   the least-squares κ coefficients — paste them into `NR_K0..3` (nearCommon.glsl) when the relief changes — the
+   h bounds and the base ellipsoids' mean area / πa² (1.000–1.004, Knud Thomsen).
+3. **photometry**: CPU ray tracer mirroring the fragment shader (regolith law, relief normals, visible-normal clamp,
+   macro-normal guard, self-shadowing): disk-integrated brightness of the two relief paths relative to smooth
+   ellipsoids, as the correction table (1/ratio) at 0–160° × clast weight 0 / 0.5 / 1. Check: the stored
+   `RELIEF_PHOT` (NearRelief.ts) equals the measurement within 2% for α ≤ 120° (deterministic, so it fails exactly
+   when the relief or the shader logic changed — paste the printed table then). Measured corrections: ≤ 4% for the
+   analytic path up to 100°, ray-marched clumpy boulders 1.06 / 1.12 / 1.24 / 1.44 at 60 / 80 / 100 / 120°.
+4. **anisotropy** (informational): mean cross-section / πa² of the principal-axis rotators vs view elevation (spin
+   axes near the orbit normal for large particles): 0.987 edge-on … 1.026 from above for a ≥ 0.6 m (NR_ISO 0.8;
+   0.92 … 1.14 with the full shape spread).
 
 ## Tools
 

@@ -59,9 +59,11 @@ void main() {
   float spx = vAx.w;                      // sprite size (px; 4096 for quads)
   float amp = vDisp.x;
   bool relief = uNearQuality > 1.5 && uDebug != 31;
-  // geometric layers of the march (cost) and of the shading normal, by on-screen size
-  int geoL = spx > 90.0 ? 4 : 2;
-  int nrmL = spx > 48.0 ? 5 : (spx > 18.0 ? 4 : 2);
+  // relief layers of the march (cost) and of the shading normal, by on-screen size: the marched surface's normal
+  // uses its own geometric layers (+ the low-slope detail layer when large), so no normal faces away from where the
+  // geometry is visible; the analytic ellipsoid gets the coarse layers as a normal perturbation
+  int geoL = spx > 48.0 ? 4 : 2;
+  int nrmL = amp > 0.0 ? (spx > 48.0 ? 5 : geoL) : (spx > 18.0 ? 4 : 2);
   float tl;
   if (amp <= 0.0) {
     float disc = Bh * Bh - A * (C0 - 1.0);
@@ -79,16 +81,16 @@ void main() {
     if (dIn > 0.0) t1 = min(t1, (-Bh - sqrt(dIn)) / A);   // the inner core is solid: F(t1) <= 0
     if (t1 <= t0) discard;
     // sphere tracing: |dF/dt| <= L (Lipschitz bound of the relief, value-only textures); steps of 2 F / L
-    // (over-relaxed: the bound is ~3x the typical slope) and at least 1/40 of the shell crossing, a sign change
+    // (over-relaxed: the bound is ~3x the typical slope) and at least 1/32 of the shell crossing, a sign change
     // refined by bisection; converged when F < 2e-4 radii. (A crossing can only be missed by a relief sliver
     // thinner than one step: at grazing incidence on the outline.)
     float L = sqrt(A) * (1.0 + vDisp.y * amp * nearReliefSlope(vRel.w, geoL) / max(vDisp.z, 0.3));
-    float dtMin = (t1 - t0) * (1.0 / 40.0);
+    float dtMin = (t1 - t0) * (1.0 / 32.0);
     float tk = t0, ta = t0;
     float F = nearSurfF(ob + tk * db, geoL);
     if (F < 0.0) discard;                                  // (camera inside the body)
     bool hit = false;
-    for (int k = 0; k < 48; k++) {
+    for (int k = 0; k < 40; k++) {
       if (F < 2e-4) { hit = true; break; }
       ta = tk;
       tk = min(tk + max(2.0 * F / L, dtMin), t1);
@@ -131,6 +133,8 @@ void main() {
   vec3 ng = nearQRot(vQ, ngb);
   vec3 hit = rd * t;
   vec3 vdir = -rd;
+  // a perturbed normal cannot face away from the viewer on a visible surface: pull it back to >= 3 deg
+  n = normalize(n + max(0.05 - dot(n, vdir), 0.0) * vdir);
 
   float mu0 = dot(n, uSunDir);
   bool lit = mu0 > 0.0 && dot(ng, uSunDir) > -0.1;
@@ -166,11 +170,11 @@ void main() {
     // the penumbra and the pixel footprint), from where the local tangent plane has dropped two footprints below
     // the ray (closer relief is sub-pixel, and the receiving surface itself must not count as an occluder)
     float ts = min(2.0 * rpx / max(dot(ng, uSunDir), 0.05), tEx), occ = 1.0;
-    for (int k = 0; k < 16; k++) {
+    for (int k = 0; k < 12; k++) {
       float Fs = nearSurfF(pb + ts * sbs, geoL);
       occ = min(occ, Fs * aM / max(ts * uSunAngRadius, rpx));
       if (occ < -1.0) break;
-      ts += max(2.0 * Fs / Ls, 0.04 * tEx);
+      ts += max(2.0 * Fs / Ls, 0.06 * tEx);
       if (ts > tEx) break;
     }
     selfSh = smoothstep(-1.0, 1.0, occ);

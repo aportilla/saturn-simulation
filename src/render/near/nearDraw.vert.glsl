@@ -179,6 +179,9 @@ void main() {
   vec2 fw = nearRegolithFactor(cosA, albL);
   float fSun = fw.x;
   float fSS = nearRegolithFactor(cosSS, albL).x;
+  // resolved relief (high quality, sprites > 7 px as in the fragment stage): undo its photometric side effects
+  // on the sunlit brightness (nearReliefPhotFix; Saturnshine: no self-shadowing, normals only, not corrected)
+  if (uNearQuality > 1.5 && (quad || 2.0 * rpx + 2.0 > 7.0)) fSun *= nearReliefPhotFix(acos(clamp(cosA, -1.0, 1.0)), rp.w, amp);
   // the shadow-map lookup only matters where unshadowed direct sunlight would not be negligible next to the
   // multiply-scattered light (< 1% of it: deep in dense rings, in eclipse); elsewhere the statistical mean
   float dirMax = Esun * mix(vT.x, vT.y, mapW) * fSun;

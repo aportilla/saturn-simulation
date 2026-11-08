@@ -150,8 +150,8 @@ uniform vec4 uNearRelief;             // value range of the two textures: (clast
 #define NR_AN3 0.012
 #define NR_WC0 0.08    // clast weight: smoothstep(NR_WC0, NR_WC1, a) x (0.55 .. 1)
 #define NR_WC1 0.7
-#define NR_PX0 10.0    // geometric relief fades in between these radii (render px)
-#define NR_PX1 18.0
+#define NR_PX0 12.0    // geometric relief fades in between these radii (render px)
+#define NR_PX1 22.0
 // kappa^-2 = 1 + amp (NR_K0 + NR_K1 wc) + amp^2 (NR_K2 + NR_K3 wc)  (measured: scripts/test/particles.mjs)
 #define NR_K0 -0.0035
 #define NR_K1 0.0279
@@ -241,6 +241,26 @@ float nearKappa(float amp, float wc) {
 }
 // geometric relief amplitude for a particle whose base bounding radius spans rho render px (0 below high quality)
 float nearReliefAmp(float rho) { return uNearQuality > 1.5 ? smoothstep(NR_PX0, NR_PX1, rho) : 0.0; }
+// Photometric correction of the resolved relief (NearRelief.ts RELIEF_PHOT): relief normals and resolved
+// self-shadowing change a body's disk-integrated brightness (e.g. x 0.75 at 120 deg for a marched clumpy
+// boulder), but that roughness is already part of the power-law phase function the factor imposes; this
+// factor undoes it. Table [path: analytic + relief normals, ray-marched][clast weight 0, 0.5, 1][phase angle 0,
+// 20 .. 180 deg], mixed between the paths by the relief amplitude (continuous at the fade-in).
+uniform float uNearReliefPhot[60];
+float nearReliefPhotFix(float alpha, float wc, float amp) {
+  float x = clamp(alpha * (9.0 / PI), 0.0, 8.999);
+  int i = int(x);
+  float fx = x - float(i);
+  float y = clamp(wc * 2.0, 0.0, 1.999);
+  int j = int(y);
+  float fy = y - float(j);
+  float r[2];
+  for (int p = 0; p < 2; p++) {
+    int b0 = (p * 3 + j) * 10 + i, b1 = b0 + 10;
+    r[p] = mix(mix(uNearReliefPhot[b0], uNearReliefPhot[b0 + 1], fx), mix(uNearReliefPhot[b1], uNearReliefPhot[b1 + 1], fx), fy);
+  }
+  return mix(r[0], r[1], amp);
+}
 // radial bounds of the (displaced) body relative to the base ellipsoid: (inner, outer) = kappa (1 + amp h)
 vec2 nearReliefShell(float amp, float wc) {
   vec2 hb = nearReliefBounds(wc);

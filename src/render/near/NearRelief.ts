@@ -15,7 +15,8 @@
 //    their short axis with near-vertical spin axes (large particles) present more area from above than edge-on.
 // Used by scripts/test/particles.mjs (in the page, through the Vite dev server).
 import nearCommonSrc from './nearCommon.glsl?raw';
-import { CLAST_N, CLAST_P, NOISE_N, NOISE_P, nearClastData, nearNoiseData, valueRange } from './NearNoise';
+import { CLAST_N, CLAST_P, NOISE_N, NOISE_P, nearClastData, nearNoiseData, sampleTex3, valueRange } from './NearNoise';
+import { regolithIF } from './NearRegolith';
 
 /** NR_* constants of nearCommon.glsl */
 export function reliefConstants(): Record<string, number> {
@@ -205,6 +206,203 @@ export function measureReliefArea({ bodies = 160, dirs = 12, amps = [0.25, 0.5, 
     amps, wcs, G, Gk, fit: { K0: fit[0], K1: fit[1], K2: fit[2], K3: fit[3] }, sem: sd / mean / Math.sqrt(ratios.length),
     ellipsoid: sumE / (bodies * dirs), bodies, dirs, ms: performance.now() - t0,
   };
+}
+
+/** nearRelief (value + gradient dh/du) with 2, 4 or 5 layers, CPU mirror */
+export function reliefFull(body: ReliefBody, wc: number, ux: number, uy: number, uz: number, K = reliefConstants(), layers = 5): [number, number, number, number] {
+  const nd = nearNoiseData(), cd = nearClastData();
+  const [sx, sy, sz] = body.so;
+  const t = new Float64Array(4);
+  let h = 0, gx = 0, gy = 0, gz = 0;
+  const add = (data: Float32Array, N: number, P: number, F: number, A: number, ox: number, oy: number, oz: number) => {
+    sampleTex3(data, N, P, ux * F + ox, uy * F + oy, uz * F + oz, t);
+    h += A * t[0]; gx += A * F * t[1]; gy += A * F * t[2]; gz += A * F * t[3];
+  };
+  add(nd, NOISE_N, NOISE_P, K.NR_FN1, K.NR_AN1, sx, sy, sz);
+  if (wc > 0) add(cd, CLAST_N, CLAST_P, K.NR_FC1, wc * K.NR_AC1, sy * 0.5, sz * 0.5, sx * 0.5);
+  if (layers >= 3) add(nd, NOISE_N, NOISE_P, K.NR_FN2, K.NR_AN2, sz + 5.3, sx + 5.3, sy + 5.3);
+  if (layers >= 4 && wc > 0) add(cd, CLAST_N, CLAST_P, K.NR_FC2, wc * K.NR_AC2, sx * 0.5 + 2.7, sy * 0.5 + 2.7, sz * 0.5 + 2.7);
+  if (layers >= 5) add(nd, NOISE_N, NOISE_P, K.NR_FN3, K.NR_AN3, sy + 9.1, sz + 9.1, sx + 9.1);
+  return [h, gx, gy, gz];
+}
+
+export interface PhotometryResult {
+  alphasDeg: number[];
+  /** disk-integrated Phi(alpha) of the smooth ellipsoids, the bump-mapped ones (analytic path) and the displaced,
+   *  self-shadowed ones (ray-marched path), and the ratios to the smooth ellipsoids */
+  smooth: number[];
+  bump: number[];
+  relief: number[];
+  ratioBump: number[];
+  ratioRelief: number[];
+  ms: number;
+}
+
+/**
+ * Disk-integrated photometry of the relief (CPU ray tracer mirroring nearDraw.frag.glsl: regolith law, relief
+ * normals, the macro-normal guard, albedo patchiness, self-shadowing (binary here, soft over a pixel on the GPU)).
+ * Random bodies of radius a (shapes as nearShape, clast weight wc, full relief amplitude) seen along random
+ * directions with the Sun at phase angle alpha, orthographic res x res rays over the outer shell; ratios to the
+ * smooth ellipsoids (for which the LUT factor holds up to the ellipsoid / sphere difference) quantify what the
+ * resolved relief adds to the photometry the medium assumes.
+ */
+export function measureReliefPhotometry({ bodies = 24, res = 40, alphasDeg = [5, 20, 40, 60, 90, 120, 150], wc = 1, w = 0.95, a = 1.5, seed = 3, bumpLayers = 2 } = {}): PhotometryResult {
+  const t0 = performance.now();
+  const K = reliefConstants();
+  const rnd = mulberry32(seed);
+  // the shader's visible-normal clamp: n.v >= 0.05
+  const visible = (n: number[], v: number[]) => {
+    const d = Math.max(0.05 - (n[0] * v[0] + n[1] * v[1] + n[2] * v[2]), 0);
+    const m = [n[0] + d * v[0], n[1] + d * v[1], n[2] + d * v[2]];
+    const l = Math.hypot(m[0], m[1], m[2]);
+    return [m[0] / l, m[1] / l, m[2] / l];
+  };
+  const kap = reliefKappa(1, wc, K);
+  const [hLo, hHi] = reliefBounds(wc, K);
+  const rOut = kap * (1 + hHi), rIn = kap * (1 + hLo);
+  const nA = alphasDeg.length;
+  const sm = new Array(nA).fill(0), bu = new Array(nA).fill(0), re = new Array(nA).fill(0);
+  const F = (body: ReliefBody, y: number[]) => {
+    const r = Math.hypot(y[0], y[1], y[2]);
+    return r - kap * (1 + reliefH(reliefLayers(body, y[0] / r, y[1] / r, y[2] / r, K), wc, K));
+  };
+  const norm = (v: number[]) => { const l = Math.hypot(v[0], v[1], v[2]); return [v[0] / l, v[1] / l, v[2] / l]; };
+  const dot = (p: number[], q: number[]) => p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+  for (let bi = 0; bi < bodies; bi++) {
+    const body = randomBody(rnd, a, K);
+    const D = body.ax;
+    for (let ia = 0; ia < nA; ia++) {
+      const al = (alphasDeg[ia] * Math.PI) / 180;
+      // view direction v (toward the viewer), sun s at angle alpha from v
+      const z = 2 * rnd() - 1, ph = 2 * Math.PI * rnd(), rr = Math.sqrt(1 - z * z);
+      const v = [rr * Math.cos(ph), rr * Math.sin(ph), z];
+      const tt = Math.abs(v[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+      const e1 = norm([v[1] * tt[2] - v[2] * tt[1], v[2] * tt[0] - v[0] * tt[2], v[0] * tt[1] - v[1] * tt[0]]);
+      const e2 = [v[1] * e1[2] - v[2] * e1[1], v[2] * e1[0] - v[0] * e1[2], v[0] * e1[1] - v[1] * e1[0]];
+      const ps = 2 * Math.PI * rnd();
+      const ep = [Math.cos(ps) * e1[0] + Math.sin(ps) * e2[0], Math.cos(ps) * e1[1] + Math.sin(ps) * e2[1], Math.cos(ps) * e1[2] + Math.sin(ps) * e2[2]];
+      const s = [Math.cos(al) * v[0] + Math.sin(al) * ep[0], Math.cos(al) * v[1] + Math.sin(al) * ep[1], Math.cos(al) * v[2] + Math.sin(al) * ep[2]];
+      const cg = Math.cos(al);
+      const sb = [s[0] / D[0], s[1] / D[1], s[2] / D[2]];
+      const ssl = Math.hypot(sb[0], sb[1], sb[2]);
+      const R = rOut * Math.max(D[0], D[1], D[2]) * 1.02;
+      const dA = (2 * R / res) ** 2;
+      const db = [-v[0] / D[0], -v[1] / D[1], -v[2] / D[2]];
+      const A2 = dot(db, db);
+      for (let j = 0; j < res; j++) for (let i = 0; i < res; i++) {
+        const x = -R + (2 * R * (i + 0.5)) / res, y = -R + (2 * R * (j + 0.5)) / res;
+        const o = [3 * v[0] + x * e1[0] + y * e2[0], 3 * v[1] + x * e1[1] + y * e2[1], 3 * v[2] + x * e1[2] + y * e2[2]];
+        const ob = [o[0] / D[0], o[1] / D[1], o[2] / D[2]];
+        const B = dot(ob, db), C = dot(ob, ob);
+        // smooth / bump: unit sphere of the scaled frame
+        const disc = B * B - A2 * (C - 1);
+        if (disc >= 0) {
+          const t = (-B - Math.sqrt(disc)) / A2;
+          const yb = [ob[0] + t * db[0], ob[1] + t * db[1], ob[2] + t * db[2]];
+          const ng = norm([yb[0] / D[0], yb[1] / D[1], yb[2] / D[2]]);
+          const m0 = dot(ng, s);
+          if (m0 > 0) sm[ia] += regolithIF(m0, Math.max(dot(ng, v), 0.02), cg, w) * dA;
+          // analytic path: coarse layers as a normal perturbation (sprites < 18 px), visible-normal clamp
+          const hf = reliefFull(body, wc, yb[0], yb[1], yb[2], K, bumpLayers);
+          const gu = dot(hf.slice(1), yb);
+          const n = visible(norm([(yb[0] - (hf[1] - gu * yb[0])) / D[0], (yb[1] - (hf[2] - gu * yb[1])) / D[1], (yb[2] - (hf[3] - gu * yb[2])) / D[2]]), v);
+          const mb = dot(n, s);
+          if (mb > 0 && m0 > -0.1) bu[ia] += regolithIF(mb, Math.max(dot(n, v), 0.02), cg, w) * (1 + 0.6 * hf[0]) * dA;
+        }
+        // relief: sphere-trace the displaced surface between the shells
+        const dO = B * B - A2 * (C - rOut * rOut);
+        if (dO < 0) continue;
+        let tk = (-B - Math.sqrt(dO)) / A2;
+        let t1 = (-B + Math.sqrt(dO)) / A2;
+        const dI = B * B - A2 * (C - rIn * rIn);
+        if (dI > 0) t1 = Math.min(t1, (-B - Math.sqrt(dI)) / A2);
+        const step = (t1 - tk) / 64;
+        let yh: number[] | null = null;
+        let prev = tk;
+        for (; tk <= t1 + 1e-9; tk += step) {
+          const yy = [ob[0] + tk * db[0], ob[1] + tk * db[1], ob[2] + tk * db[2]];
+          if (F(body, yy) < 0) {
+            let lo = prev, hi = tk;
+            for (let m = 0; m < 12; m++) { const tm = 0.5 * (lo + hi); if (F(body, [ob[0] + tm * db[0], ob[1] + tm * db[1], ob[2] + tm * db[2]]) < 0) hi = tm; else lo = tm; }
+            const tm = 0.5 * (lo + hi);
+            yh = [ob[0] + tm * db[0], ob[1] + tm * db[1], ob[2] + tm * db[2]];
+            break;
+          }
+          prev = tk;
+        }
+        if (!yh) continue;
+        const pr = Math.hypot(yh[0], yh[1], yh[2]);
+        const u = [yh[0] / pr, yh[1] / pr, yh[2] / pr];
+        const hf = reliefFull(body, wc, u[0], u[1], u[2], K, 5);
+        const gu = dot(hf.slice(1), u);
+        const gt = [(hf[1] - gu * u[0]) * kap / pr, (hf[2] - gu * u[1]) * kap / pr, (hf[3] - gu * u[2]) * kap / pr];
+        const ng = norm([(u[0] - gt[0]) / D[0], (u[1] - gt[1]) / D[1], (u[2] - gt[2]) / D[2]]);
+        const n = visible(ng, v);
+        const m0 = dot(n, s);
+        if (m0 <= 0 || dot(ng, s) <= -0.1) continue;
+        // self-shadow: toward the Sun inside the outer shell
+        let shadow = false;
+        const bq = dot(yh, sb), cq = pr * pr - rOut * rOut;
+        const tEx = (-bq + Math.sqrt(Math.max(bq * bq - ssl * ssl * cq, 0))) / (ssl * ssl);
+        for (let k = 1; k <= 40 && !shadow; k++) {
+          const ts = tEx * (k / 40) * (k / 40) + 2e-3;
+          if (F(body, [yh[0] + ts * sb[0], yh[1] + ts * sb[1], yh[2] + ts * sb[2]]) < 0) shadow = true;
+        }
+        if (!shadow) re[ia] += regolithIF(m0, Math.max(dot(n, v), 0.02), cg, w) * (1 + 0.6 * hf[0]) * dA;
+      }
+    }
+  }
+  return {
+    alphasDeg, smooth: sm.map((x) => x / (Math.PI * bodies)), bump: bu.map((x) => x / (Math.PI * bodies)), relief: re.map((x) => x / (Math.PI * bodies)),
+    ratioBump: bu.map((x, i) => x / sm[i]), ratioRelief: re.map((x, i) => x / sm[i]), ms: performance.now() - t0,
+  };
+}
+
+/**
+ * Photometric correction of the resolved relief (uniform uNearReliefPhot, nearReliefPhotFix in nearCommon.glsl):
+ * the per-particle factor is multiplied by 1 / (disk-integrated brightness relative to the smooth ellipsoid) of
+ * its rendering path, so that relief normals and resolved self-shadowing - part of the roughness the power law
+ * already contains - do not change the particles' mean brightness. Nodes: phase angle 0, 20, ..., 160 deg (180 =
+ * 160), clast weight 0, 0.5, 1; bump = analytic ellipsoid with relief normals, march = ray-marched relief with
+ * self-shadowing (mixed by the relief amplitude). Measured by measureReliefPhotometry (48 bodies, 32^2 rays,
+ * seed 3; reproduced by scripts/test/particles.mjs, which prints a new table when the relief changes).
+ */
+export const RELIEF_PHOT_ALPHAS = [0, 20, 40, 60, 80, 100, 120, 140, 160];
+export const RELIEF_PHOT_WCS = [0, 0.5, 1];
+export const RELIEF_PHOT = {
+  bump: [
+    [1.001, 1.004, 1.000, 1.001, 1.008, 0.991, 1.001, 0.957, 0.944],
+    [1.002, 1.014, 1.007, 1.005, 1.002, 0.978, 0.960, 0.872, 0.743],
+    [1.005, 1.039, 1.029, 1.020, 0.997, 0.959, 0.898, 0.772, 0.669],
+  ],
+  march: [
+    [0.997, 0.999, 0.997, 0.999, 1.004, 0.998, 1.005, 0.953, 0.985],
+    [1.002, 1.010, 1.012, 1.015, 1.045, 1.068, 1.115, 1.159, 1.539],
+    [0.991, 1.008, 1.027, 1.060, 1.120, 1.240, 1.442, 1.750, 3.008],
+  ],
+};
+/**
+ * The table as the GLSL uniform: [path][wc][alpha node], 10 alpha nodes (the last repeats 160 deg); capped at 2
+ * (beyond ~140 deg, where the scattered light is < 0.3% of its peak, a larger boost only over-brightens the
+ * thin unshadowed crescent).
+ */
+export function reliefPhotUniform(): Float32Array {
+  const out = new Float32Array(60);
+  [RELIEF_PHOT.bump, RELIEF_PHOT.march].forEach((tab, p) => tab.forEach((row, j) => {
+    for (let i = 0; i < 10; i++) out[(p * 3 + j) * 10 + i] = Math.min(row[Math.min(i, row.length - 1)], 2);
+  }));
+  return out;
+}
+/** measure the correction table (1 / brightness ratio) at the nodes */
+export function measureReliefPhotTable({ bodies = 48, res = 32 } = {}): { bump: number[][]; march: number[][]; ms: number } {
+  const t0 = performance.now();
+  const bump: number[][] = [], march: number[][] = [];
+  for (const wc of RELIEF_PHOT_WCS) {
+    const r = measureReliefPhotometry({ bodies, res, wc, alphasDeg: RELIEF_PHOT_ALPHAS });
+    bump.push(r.ratioBump.map((x) => 1 / x));
+    march.push(r.ratioRelief.map((x) => 1 / x));
+  }
+  return { bump, march, ms: performance.now() - t0 };
 }
 
 /** least-squares kappa fit over measured points: kappa^-2 - 1 = G - 1 = amp (K0 + K1 wc) + amp^2 (K2 + K3 wc) */

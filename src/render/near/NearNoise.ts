@@ -1,5 +1,6 @@
 // Periodic 3-D noise textures for the particle surfaces (one trilinear fetch per layer instead of hashed lattice
 // evaluations), with analytic gradients, and their CPU samplers (NearRelief.ts mirrors the GLSL relief with them).
+// GPU copies: RGBA16F (value + gradient: shading normals) and R16F (value only: ray march, outline profiles).
 //
 // tNearNoise: gradient noise, NOISE_N^3 texels, NOISE_P lattice cells per period: (value ~[-1,1], d/dx, d/dy, d/dz)
 //   per lattice unit. GLSL: texture(tNearNoise, x / NOISE_P) for lattice coordinates x.
@@ -8,7 +9,7 @@
 //   a union of spheres centred at the feature points (domes with V-shaped creases where they meet, larger domes for
 //   larger omega) - normalized to zero mean and unit standard deviation; (h, dh/dx, dh/dy, dh/dz) per lattice unit.
 //   GLSL: texture(tNearClast, x / CLAST_P).
-import { Data3DTexture, DataUtils, FloatType, HalfFloatType, LinearFilter, RedFormat, RepeatWrapping, RGBAFormat } from 'three';
+import { Data3DTexture, DataUtils, HalfFloatType, LinearFilter, RedFormat, RepeatWrapping, RGBAFormat } from 'three';
 
 export const NOISE_N = 64;
 export const NOISE_P = 16;
@@ -25,15 +26,18 @@ function mulberry32(seed: number) {
   };
 }
 
+/** RGBA16F 3-D texture of the data (half the fetch bandwidth of RGBA32F; values <= ~20, 11-bit mantissa) */
 function texture3D(data: Float32Array, N: number): Data3DTexture {
-  const t = new Data3DTexture(data, N, N, N);
+  const h = new Uint16Array(data.length);
+  for (let i = 0; i < data.length; i++) h[i] = DataUtils.toHalfFloat(data[i]);
+  const t = new Data3DTexture(h, N, N, N);
   t.format = RGBAFormat;
-  t.type = FloatType;
+  t.type = HalfFloatType;
   t.minFilter = LinearFilter;
   t.magFilter = LinearFilter;
   t.wrapS = t.wrapT = t.wrapR = RepeatWrapping;
   t.generateMipmaps = false;
-  t.unpackAlignment = 1;
+  t.unpackAlignment = 2;
   t.needsUpdate = true;
   return t;
 }
@@ -138,7 +142,7 @@ export function buildNearClasts(seed = 777): Data3DTexture {
 
 /**
  * Value channel only, half float (R16F): the ray march and the shadow-outline profiles need no gradient, and an
- * R16F trilinear fetch moves 1/8 of the bytes of an RGBA32F one. Same texel grid, so it samples the same field.
+ * R16F trilinear fetch moves 1/4 of the bytes of an RGBA16F one. Same texel grid, so it samples the same field.
  */
 export function buildValueTexture(data: Float32Array, N: number): Data3DTexture {
   const v = new Uint16Array(N * N * N);

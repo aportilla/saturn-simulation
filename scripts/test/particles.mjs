@@ -22,7 +22,7 @@
 import { fmt, openApp, table, withHarness } from './lib.mjs';
 
 await withHarness('particles', { usage: 'node scripts/test/particles.mjs [--base URL] [--out DIR] [--only regolith,relief,anisotropy] [--bodies N] [--dirs N]' }, async ({ args, out, rep, base, browser }) => {
-  const only = new Set(args.list('only', ['regolith', 'relief', 'anisotropy']));
+  const only = new Set(args.list('only', ['regolith', 'relief', 'photometry', 'anisotropy']));
   const { page } = await openApp(browser, base, { preset: 'overview', hud: 0, labels: 0, paused: 1, astronaut: 0, nearField: 0 }, { settle: 500 });
   try {
     // ------------------------------------------------------------------ GPU programs (shared setup)
@@ -234,6 +234,32 @@ void main() {
         ` ensemble shot noise (sem of a ratio) ${a.res.map((r) => fmt(r.sem * 100, 3)).join('/')}%; ${bodies} bodies x ${dirs} directions per set in ${fmt(a.res.reduce((s, r) => s + r.ms, 0) / 1000, 1)} s`);
       rep.check('relief: orientation-averaged projected area with kappa = ellipsoid area (|ratio - 1| <= 0.01)', worst <= 0.01, `max |ratio - 1| ${fmt(worst, 4)}`);
       rep.data.relief = a;
+    }
+
+    if (only.has('photometry')) {
+      const ph = await page.evaluate(async () => {
+        const rel = await import(/* @vite-ignore */ '/src/render/near/NearRelief.ts');
+        const m = rel.measureReliefPhotTable();
+        return { ...m, stored: rel.RELIEF_PHOT, alphas: rel.RELIEF_PHOT_ALPHAS, wcs: rel.RELIEF_PHOT_WCS };
+      });
+      console.log(`\n[photometry] relief correction (1 / disk-integrated brightness relative to the smooth ellipsoids), measured in ${fmt(ph.ms / 1000, 1)} s`);
+      const rows = [];
+      let worst = 0, at = '';
+      for (const path of ['bump', 'march']) {
+        ph.wcs.forEach((wc, j) => {
+          rows.push([`${path === 'bump' ? 'analytic + relief normals' : 'ray-marched + self-shadow'}, wc ${wc}`, ...ph[path][j].map((x) => fmt(x, 3))]);
+          ph.alphas.forEach((deg, i) => {
+            if (deg > 120) return;
+            const e = Math.abs(ph.stored[path][j][i] / ph[path][j][i] - 1);
+            if (e > worst) { worst = e; at = `${path} wc ${wc} alpha ${deg}`; }
+          });
+        });
+      }
+      console.log(table(['measured', ...ph.alphas.map((d) => `${d} deg`)], rows));
+      const paste = (t) => t.map((r) => `    [${r.map((x) => x.toFixed(3)).join(', ')}],`).join('\n');
+      console.log(`RELIEF_PHOT for NearRelief.ts when the relief changes:\n  bump: [\n${paste(ph.bump)}\n  ],\n  march: [\n${paste(ph.march)}\n  ],`);
+      rep.check('relief photometry: stored RELIEF_PHOT = measured (within 2% for alpha <= 120 deg)', worst <= 0.02, `max ${fmt(worst * 100, 3)}%${at ? ` at ${at}` : ''}`);
+      rep.data.photometry = ph;
     }
 
     if (only.has('anisotropy')) {

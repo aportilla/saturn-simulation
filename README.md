@@ -25,9 +25,12 @@ reasonable GPU. Developed on Chrome / Apple M-series. Default time is **now**, r
 scene is rendered at half the display resolution — 960×540 for a 1080p window — and upsampled smoothly). For a sharper image raise **Settings (`O`) → Render scale** (1× = display resolution, capped at
 ~2.4 MP so Retina screens aren't rendered at 4× the pixels) and **Frame rate** (30 / 60 / Max). The number of
 ring particles is never a setting: every particle at least one display pixel across is drawn, at its true
-position and size (millimetre grains right next to you, 10 m boulders out to ~20 km). **Particle quality**
-(High / Medium / Low) only changes how finely they are rendered — lumpy spinning ellipsoids with shadows cast
-by their neighbours, smooth spheres with shadows, or smooth spheres with statistical shadows. For reference, at
+position and size (millimetre grains right next to you, 10 m boulders out to ~20 km). They are shaded as
+porous, regolith-coated icy aggregates (a rough-surface Hapke law that by itself gives the rings' strong
+back-scattering) and spin stably about their short axis. **Particle quality** (High / Medium / Low) only changes
+how finely they are rendered — irregular clumped aggregates (ray-traced relief of sub-clasts, pebbles and regolith
+grains, self-shadowing, shadows from their neighbours that follow their outlines), smooth spheres with shadows, or
+smooth spheres with statistical shadows. For reference, at
 render scale 1, High particle quality and uncapped on an Apple M5 Max at 1920×1080: ~77 fps inside the A ring,
 ~50 fps inside the B ring (the heaviest view), 200–340 fps for Saturn and the moons (at the default render scale
 0.5: 106–124 fps in and above the A ring, 70 fps in the B ring). Settings persist in the browser.
