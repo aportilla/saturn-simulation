@@ -1,0 +1,14 @@
+{
+  "until": "window.__svReady===true",
+  "shots": [
+    { "name": "a-1km", "url": "?preset=a-ring-1km&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1", "wait": 4000 },
+    { "name": "a-30m", "url": "?preset=a-ring-30m&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1", "wait": 4000 },
+    { "name": "a-3km-oblique", "url": "?cam=ring&r=129000e3&phi=100&z=-3000&yaw=-60&pitch=30&roll=180&fov=50&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1", "wait": 4000 },
+    { "name": "a-20km-oblique", "url": "?cam=ring&r=129000e3&phi=100&z=-20e3&yaw=-60&pitch=35&roll=180&fov=50&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1", "wait": 4000 },
+    { "name": "a-60km-down", "url": "?cam=ring&r=129000e3&phi=100&z=-60e3&yaw=90&pitch=89&fov=40&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1", "wait": 4000 },
+    { "name": "a-300km-down", "url": "?cam=ring&r=129000e3&phi=100&z=-300e3&yaw=90&pitch=89&fov=40&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1", "wait": 4000 },
+    { "name": "a-100km-oblique", "url": "?cam=ring&r=129000e3&phi=100&z=-100e3&yaw=-60&pitch=35&roll=180&fov=50&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1", "wait": 4000 },
+    { "name": "b-200km-down", "url": "?cam=ring&r=108000e3&phi=100&z=-200e3&yaw=90&pitch=89&fov=40&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1", "wait": 4000 },
+    { "name": "under-1500m", "url": "?preset=under-rings&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1", "wait": 4000 }
+  ]
+}

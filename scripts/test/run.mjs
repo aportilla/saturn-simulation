@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 // Run several tests in sequence against ONE dev server and summarize (npm test).
 //
-// usage: node scripts/test/run.mjs [refs smoke physics counts seam exposure edges moonflux particles sources ...]
-//        [--base URL] [--out DIR]
+// usage: node scripts/test/run.mjs [refs smoke physics counts seam exposure edges moonflux particles propellers
+//        sources ...] [--base URL] [--out DIR]
 //
 // Starts a private Vite server unless --base answers, passes --base / --out <DIR>/<test> to each test, prints a
 // pass/fail table with runtimes and exits 1 if any test failed. Default tests: refs smoke physics counts seam exposure
-// edges moonflux particles sources. "refs" is scripts/check-refs.mjs (bibliography ↔ docs sync, no browser).
+// edges moonflux particles propellers sources. "refs" is scripts/check-refs.mjs (bibliography ↔ docs sync, no
+// browser).
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { REPO, outputDir, parseArgs, startServer, table, writeJson } from './lib.mjs';
@@ -14,7 +15,7 @@ import { REPO, outputDir, parseArgs, startServer, table, writeJson } from './lib
 /** tests that live outside scripts/test/ */
 const SCRIPTS = { refs: join(REPO, 'scripts', 'check-refs.mjs') };
 const args = parseArgs();
-const tests = args._.length ? args._ : ['refs', 'smoke', 'physics', 'counts', 'seam', 'exposure', 'edges', 'moonflux', 'particles', 'sources'];
+const tests = args._.length ? args._ : ['refs', 'smoke', 'physics', 'counts', 'seam', 'exposure', 'edges', 'moonflux', 'particles', 'propellers', 'sources'];
 const out = outputDir('run', args.str('out'));
 const srv = await startServer({ base: args.str('base') });
 const rows = [];

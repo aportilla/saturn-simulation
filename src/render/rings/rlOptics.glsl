@@ -30,7 +30,6 @@ uniform float uRlIdx0I;         // level-0 index of the ring-frame origin: integ
 uniform float uRlIdx0F;         //   and fractional part (double precision split on the CPU)
 uniform float uRlPhi0;          // SEF azimuth of the ring-frame origin (rad)
 uniform float uRlShScale;       // shadow-hiding width multiplier
-uniform float uRlFineAmp;       // sub-km structure amplitude multiplier
 uniform float uRlCoarse;        // spacing of the coarsest pyramid level (m)
 uniform float uRlPhaseModel;    // 0: Lambert sphere (diagnostics); 1: power law (Dones et al. 1993) = shared ringPhase
 uniform float uRlPhaseN;        // power-law index n
@@ -118,6 +117,18 @@ float rlMoonsVis(vec3 p) {
     float sep = acos(clamp(dot(c / d, uSunDir), -1.0, 1.0));
     if (sep >= angM + uSunAngRadius) continue;
     vis *= 1.0 - diskOverlapFraction(sep, uSunAngRadius, angM);
+  }
+  // the further shadowing spheres (propeller moonlets near the camera; sv_lighting), with the same cylinder test
+  for (int i = 0; i < MAX_SHADOW_SPH; i++) {
+    if (i >= uShadowSphN) break;
+    vec3 c = uShadowSph[i].xyz - p;
+    float R = uShadowSph[i].w;
+    float along = dot(c, uSunDir);
+    if (along <= -R) continue;
+    vec3 perp = c - along * uSunDir;
+    float rr = R + max(along, 0.0) * uSunAngRadius * 1.5;
+    if (dot(perp, perp) > rr * rr) continue;
+    vis *= sphereSunVisibility(p, uShadowSph[i]);
   }
   return vis;
 }
@@ -239,43 +250,30 @@ RlS rlSampleP(float I, float sub, float fp) {
 
 void rlScaleTau(inout RlS s, float f) { s.t0 *= f; s.t4 *= f; }
 
-// ---------------------------------------------------------------- sub-km radial structure
-// Occultation profiles resolve ~1 km; real rings have structure down to ~10 m (B-ring irregular
-// structure, plateau sub-structure, wave troughs). Multi-octave value noise in radius, 500 m .. 16 m,
-// faded below the footprint; multiplicative and mean-preserving. cellI/cellF: precise level-0 index.
-float rlFineNoise(float cellI, float cellF, float fp) {
-  uint ci = uint(max(cellI, 0.0));
-  float s = 0.0, norm = 0.0;
-  for (int j = -1; j <= 4; j++) {
-    float lam = uRingDr0 * exp2(float(-j));
-    float amp = sqrt(lam / uRingDr0);
-    norm += amp;
-    float wv = clamp((lam / max(fp, 1e-3) - 1.0) * 0.5, 0.0, 1.0);
-    if (wv <= 0.0) continue;
-    uint idx;
-    float loc;
-    if (j < 0) {
-      idx = ci >> 1;
-      loc = (float(ci & 1u) + cellF) * 0.5;
-    } else {
-      float sub = cellF * exp2(float(j));
-      float fl = floor(sub);
-      idx = (ci << uint(j)) + uint(fl);
-      loc = sub - fl;
-    }
-    uint salt = uint(j + 2) * 0x9E3779B9u;
-    float h0 = hashU(pcgHash(idx ^ salt)) * 2.0 - 1.0;
-    float h1 = hashU(pcgHash((idx + 1u) ^ salt)) * 2.0 - 1.0;
-    float u = loc * loc * (3.0 - 2.0 * loc);
-    s += wv * amp * mix(h0, h1, u);
-  }
-  return s / norm;
+// ---------------------------------------------------------------- 2-D optical-depth modulation (sv_ringStructure)
+// The sub-km texture and the propellers (ringStructureTauModStat, RingStream .tauMod / .tauVar) give a mean factor m
+// at the pixel footprint and the variance v of the part below it. The pyramid stores tau_eff(mu) = -mu ln<exp(-tau/mu)>
+// over the footprint; <exp(-M tau/mu)> of the unresolved factor M (independent of the radial structure) is its
+// Laplace transform at s = tau/mu, taken to second order (Gaussian cumulants; the texture is a sum of six octaves,
+// symmetric and nearly Gaussian) and continued linearly with the slope of the floor F = max(m - 3 sqrt(v), 0) beyond
+// the point where the exponentially tilted distribution reaches F (the texture is clamped at 3 sigma):
+//   -ln<exp(-M s)> = s (m - v s / 2)              for v s < m - F
+//                  = F s + (m - F)^2 / (2 v)       beyond                         (C1; -> m s for v -> 0)
+// so the mean transmission at every stored path factor (and the single scattering, built from those transmissions)
+// is the same whether the modulation is resolved or below the footprint -- the mean column (m tau) is unchanged.
+// Against the ensemble of the resolved texture (scripts/test/propellers.mjs prefilter) within 0.2 % where T > 1e-3,
+// +3 % at T ~ 1e-4 (B ring, s = 10). A Gamma model (as the wake path statistics) is right-skewed and loses 2-20 %
+// of the transmission there.
+float rlGaussTauEff(float t, float mu, float m, float v, float F) {
+  float e = m - F;
+  return t * v < e * mu ? t * (m - 0.5 * v * t / mu) : F * t + 0.5 * mu * e * e / v;
 }
-// multiplicative tau factor; amplitude per region (irregular B ring strongest)
-float rlFineFactor(float cellI, float cellF, float fp, float tau, float wake) {
-  if (uRlFineAmp <= 0.0 || fp > 2.0 * uRingDr0 || tau <= 0.0) return 1.0;
-  float A = uRlFineAmp * (0.22 + 0.35 * smoothstep(1.0, 3.0, tau) + 0.1 * wake);
-  return max(0.08, 1.0 + A * rlFineNoise(cellI, cellF, fp));
+void rlApplyTauMod(inout RlS s, float m, float v) {
+  if (v <= 1e-7 * m * m) { rlScaleTau(s, m); return; }
+  float F = max(m - 3.0 * sqrt(v), 0.0);
+  s.t0 = vec4(rlGaussTauEff(s.t0.x, 1.0, m, v, F), rlGaussTauEff(s.t0.y, 0.3, m, v, F), rlGaussTauEff(s.t0.z, 0.09, m, v, F),
+              rlGaussTauEff(s.t0.w, 0.027, m, v, F));
+  s.t4 = rlGaussTauEff(s.t4, 0.0081, m, v, F);
 }
 
 // ---------------------------------------------------------------- phase helpers

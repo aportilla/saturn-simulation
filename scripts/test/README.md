@@ -7,7 +7,7 @@ follow [Adding a tool](#adding-a-tool) so the next session can run it too.
 
 | command | what it checks | runtime* |
 |---|---|---|
-| `npm test` | refs + smoke + physics + counts + seam (incl. handover) + exposure + edges + moonflux + particles + sources against one private dev server; summary table | ~8.5 min |
+| `npm test` | refs + smoke + physics + counts + seam (incl. handover) + exposure + edges + moonflux + particles + propellers + sources against one private dev server; summary table | ~9.5 min |
 | `npm run check:refs` | bibliography ↔ docs sync, no browser: every author–year citation in README / ring-physics.md / data-sources.md has an entry in `src/app/references.ts`, every entry is cited; `-- --online` re-verifies DOIs / arXiv ids | ~1 s (online ~1 min) |
 | `npm run test:sources` | the Sources panel (key G) and every place's Sources line in the explainer: keys, focus, filtering, links | ~20 s |
 | `npm run test:smoke` | every place loads and renders cleanly (errors, fallbacks, NaN / negative pixels) | ~1.5 min |
@@ -19,6 +19,7 @@ follow [Adding a tool](#adding-a-tool) so the next session can run it too.
 | `npm run test:edges` | gap edges perturbed by moonlets and the B-ring edge modes (streamline map): gaps empty, rendered edges = model, near field follows | ~50 s |
 | `npm run test:moonflux` | point-source flux of unresolved moons = resolved brightness (measured shapes + ellipsoid control) | ~10 s |
 | `npm run test:particles` | resolved-particle photometry and shape contract: GLSL vs CPU mirrors, factor LUT, relief area / photometry | ~20 s |
+| `npm run test:propellers` | propeller moonlets and the sub-km τ texture: named positions vs Tiscareno 2010 Table 1, texture statistics, footprint prefilter, GPU τ vs the CPU model, near-field presence and its cost gate, moonlet bodies | ~1 min |
 | `node scripts/shot.mjs …` / `node scripts/shots.mjs …` | screenshots (one / batch spec) | — |
 | `node scripts/img.mjs profile\|mean\|crop\|rotate …` | PNG brightness profiles, region ratios, contrast-stretched zooms, rotate/scale | — |
 
@@ -89,11 +90,13 @@ run caught tiny negative radiances from the F-ring line profiles, since fixed).
    occlusion culling switched off for the comparison): particles of a class in the R0 read-back that are drawn
    and ≥ 0.5 display px in radius, vs a Monte Carlo of n_k(a) τ_macro(r) over the class box, the Gaussian layer
    height, the class's power-law radii and the view frustum with the same ≥ 1 px condition (`--mc 400000`
-   samples). Tolerance 1 ± max(4/√expected, 0.04) for the `--classes 4` classes with the most expected particles
-   (≥ 300). Measured ratios 0.989 … 1.033 (Poisson-consistent).
+   samples), with τ_macro × the 2-D modulation M of `sv_ringStructure` at each sample (sub-km texture, propellers:
+   CPU mirror `structure.tauModAt`; presence follows τ0 J M). Tolerance 1 ± max(4/√expected, 0.04) for the
+   `--classes 4` classes with the most expected particles (≥ 300). Measured ratios 0.997 … 1.031 (Poisson-consistent).
 2. **HUD count line** (`near.count`) starts with `complete` at those places; above the dense B ring
    (`--heights 100,1000,5000` m) it states the status explicitly — `complete…` or `DEFICIT: ~x% …` (measured: a
-   0.3 % deficit at 100 m with the 12M-slot cap binding, complete at 1 and 5 km).
+   9.2 % deficit at 100 m with the 12M-slot cap binding — 0.3 % before the sub-km texture raised the allocation
+   bound by its maximum factor 1.43 in the B-ring core — complete at 1 and 5 km).
 3. **radius sampler**: the per-class radius/box sampler (`RingLod.pieceP/pieceB`, mirrored from `nearRadiusBox`
    in `nearCommon.glsl`) reproduces the target density τmax a⁻ᵠ/(π I₂) in every radius bin: |ratio − 1| ≤ 0.02
    when the slot cap does not bind (measured 2e-5).
@@ -176,6 +179,13 @@ same conditions. Reference (2026-11-07, 1920×1080, render scale 0.5, high / med
 a-ring-1km 171 / 178 / 178, a-ring-30m 104 / 107 / 113, a-ring-inside 120 / 132 / 143, b-ring-inside
 73 / 83 / 94, c-ring-inside 279 / 283 / 290 fps.
 
+**A/B mode** (`--ab-off "<js>" --ab-on "<js>"`, `--rounds 6`, `--ab-settle 400`): the cost of a feature toggle in
+the same page — rounds of off / on in ABBA order, each measured for `--secs`; prints ms per frame off / on and the
+difference ± its standard error. Steadier than comparing fresh pages on a shared GPU. Example (sub-km texture and
+propellers): `--ab-off "s=__sv.pipeline.ctx.structure;s.texture.amp=0;s.propellers.scale=0"` /
+`--ab-on "…amp=1;…scale=1"`; add `;__sv.pipeline.lastModKey='force'` to both and `--ab-settle 3000` to include
+the near-field allocation bound (the local LOD re-fits within 60 frames).
+
 ### exposure — `scripts/test/exposure.mjs` (`--presets id,…`, `--tol EV`, `--settle ms`)
 
 The astronaut is left out of the auto-exposure meter: `AstronautPass` writes `ctx.meterMask` (its visible pixels)
@@ -190,7 +200,8 @@ b-ring-inside, a-ring-1km, shadow, rings-above; 0.10 at under-rings. ~45 s.
 
 The Encke / Keeler gap edges perturbed by Pan / Daphnis and the B-ring outer edge's normal modes through the shared
 streamline map (`sv_ringStructure`, docs/ring-physics.md §8–9), at `t` = 2026-11-08T12:00Z. Seven views look straight
-down (`cam=ring`, sheet regime, `scale=1`, near field and wakes off, sub-km fine noise off): centred on Daphnis (both
+down (`cam=ring`, sheet regime, `scale=1`, near field and wakes off, sub-km texture and propellers off:
+`structure.texture.amp = 0`, `structure.propellers.scale = 0`): centred on Daphnis (both
 edges, encounter region), one wavelength downstream on either side, Pan's outer / inner edge 375 km downstream, and
 the B-ring edge at longitudes 90° / 180° (where the modes move it by +72 / −77 km). The ring-layer
 debug views 7 and 9 give (r, τ, θ) per pixel, compared with the CPU mirror (`__sv.pipeline.ctx.structure`):
@@ -263,6 +274,38 @@ ring; no place) cite exactly the context defaults of `contextSources`; no consol
 screenshots: `node scripts/shots.mjs scripts/test/specs/sources.json <outDir> [--w 390 --h 844]` (explainer lines,
 panel, entry focus, search, topic filter, an unverified entry, help).
 
+### propellers — `scripts/test/propellers.mjs` (`--only positions,texture,prefilter,structure,presence,bodies`)
+The 2-D τ modulation of `sv_ringStructure` (docs/ring-physics.md §11–12): the sub-km texture (`src/rings/ringTexture.ts`
++ `shaders/ringTexture.glsl`) and the propeller moonlets (`src/rings/propellers.ts` + `shaders/ringPropellers.glsl`,
+bodies `PropellerMoonletPass`). CPU mirrors run in the page (`__sv.pipeline.ctx.structure.texture / .propellers`),
+the GLSL through ring-layer and near-field read-backs; t = 2026-11-08T12:00Z.
+
+| section | check | tolerance | measured (2026-11-08) |
+|---|---|---|---|
+| positions | the 11 named giants' longitudes at 2009-06-01 and 2026-11-08 vs an independent propagation of Tiscareno et al. 2010 Table 1 (epoch 2007-01-01 12:00 UTC, + Blériot's sinusoid) | ≤ 1e-9 rad | 1.8e-12 / 1.5e-11 rad |
+| | model radius (flow model Ω = fitted n) − fitted a | ≤ 50 m | −5 … −15 m |
+| | longitude convention: Mimas' SEF longitude at JED 2454256.9 vs the B-ring edge's forced m = 2 minimum + lag (7.2° + 2.9°, mod 180°) | ≤ 5° | 3.4° (Mimas at 13.46°; its equation of centre is 2.2°) |
+| texture | variance of F / the former radial noise (`rlFineFactor`) | 0.85 … 1.15 | 1.024 |
+| | radial correlation length (ACF = ½) / the former's | 0.7 … 1.4 | 190.3 / 190.0 m |
+| | azimuthal / radial correlation length | 5 … 30 | 10.1 (1,923 m) |
+| | trailing streaks: correlation ridge at Δx = +50 m; pitch | Δy < 0; 2 … 20° | −465 m; 6.1° |
+| | correlation at a co-moving point after one coherence time T (12.94 h) / after T/20 | < 0.35 / > 0.8 | −0.017 / 0.988 |
+| prefilter | mean over random footprint centres of the prefiltered transmission (`rlApplyTauMod`) / the ensemble ⟨e^{−Mτ/μ}⟩ (120,000 points): B ring (A 0.62, τ 1.2 and 3), A ring (A 0.32, τ 0.65), μ = 1, 0.3, 0.09, footprints 2 km / 300 m | ± 2 % (T > 1e-3), ± 6 % (1e-4 … 1e-3) | 0.997 … 1.002; 1.031 / 1.043 at T ≈ 1.3e-4 |
+| | mean preserved: E[m(x)], ensemble ⟨M⟩ | 1 ± 0.005 | 0.9988 … 1.0000; 0.9987 |
+| | variance split (var m + E[v]) / var M | 1 ± 0.05 | 1.007 |
+| structure | looking straight down (debug views 7 / 9: r, τ, θ) at a belt-3 propeller (12 km up, footprint 15.5 m) and at Blériot (60 km, 77.6 m), texture off: median τ_GPU / (τ0(a') J M_CPU) | 0.97 … 1.03 | 1.000 / 1.000 |
+| | share of pixels within ± 8 % | ≥ 0.95 | 0.998 / 1.000 |
+| | deepest gap τ / τ0 (gaps present) | ≤ 0.65 | 0.433 / 0.502 |
+| | the belt view with the texture on: median τ_GPU / (τ0 J M_CPU); share within ± 8 %; rms of the modulation GPU / CPU | 0.97 … 1.03; ≥ 0.9; 0.9 … 1.1 | 1.000; 0.998; 0.998 (rms 0.110) |
+| presence | near-field particles ≥ 1 px of the busiest class, 400 m above a belt propeller's outer partial gap, grouped by the CPU M at each particle's drawn position: drawn / expected (counts.mjs Monte Carlo of n_k τ0 M with frustum, layer, radii; 4M samples) — gap (M < 0.75), flank (0.75–0.95), undisturbed / enhanced (≥ 0.95) | 1 ± max(0.08, 4/√n) | 1.002 (3,039) / 0.975 (3,927) / 1.026 (9,970) — presence is decided at the guiding centre, the classification uses the drawn (wake- and epicycle-displaced) position, which moves a few % across the group boundaries |
+| | near-field cost gate (`uRpNearMask`): present particles (count and position checksum) with the CPU class mask vs the enumeration forced for every class, in the presence view and at `a-ring-30m` | identical | identical (inside a belt no class is gated: the gate saves work outside the belts) |
+| bodies | presets `propeller-bleriot`, `propeller-belt`: moonlets drawn (pass stats); opaque distance at the projected centre of the largest-looking body in view − its distance, in units of R | ≥ 1; −1.4 … 0.1 | 1 / 113 drawn; −0.93 / −0.89 |
+| all | console / GL errors, passes ok, NaN / negative pixels (structure views, presets) | none | none |
+
+Screenshots `structure-belt.png`, `structure-bleriot.png`, `presence.png`, `propeller-bleriot.png`,
+`propeller-belt.png`. ~1 min. The texture statistics are deterministic (CPU mirror); the prefilter and presence
+Monte Carlos vary by ~0.3 % / ~2 % between runs.
+
 ## Tools
 
 - `scripts/check-refs.mjs [--online] [--only id,…] [--verbose] [--out DIR]` (`npm run check:refs`, part of `npm test`
@@ -303,6 +346,16 @@ panel, entry focus, search, topic filter, an unverified entry, help).
   `noraz` (clockwise); renders are north-up. `scripts/test/specs/particle-look.json`: before/after views of the resolved particles at render
   scale 1 — A/B ring inside (fov 35 and 12), 30 m above the A ring, each with the astronaut for scale, the relief
   debug view (33: red = ray-marched) and the former Lambert law (32) in the same frame, and medium / low quality.
+  `scripts/test/specs/propellers.json`: Cassini comparisons of the propellers — Earhart as in PIA12790 (lit face,
+  81° below the ring plane, phase 82°, 2008-04-11, 2 km/px), Santos-Dumont as in PIA12791 (unlit, 45° above, phase
+  121°, 2008-08-19), Blériot as in Tiscareno et al. 2010 Fig. 1b (2008-04-12, 1.7 km/px) and a belt propeller as in
+  PIA07792 (SOI, 2004-07-01, 52 m/px), each with and without the propellers (`structure.propellers.scale = 0`),
+  plus the two propeller presets. The first shot defines `window.__pv(o)` (target = a named giant or the largest
+  belt moonlet near a longitude; camera elevation / phase angle / range / km per px solved for the date).
+  `scripts/test/specs/ring-texture.json`: the sub-km τ texture at every scale (render scale 1, 2026-11-08) — the
+  A ring 30 m and 1 km above (presets), 3 / 20 / 100 km oblique and 60 / 300 km straight down at 129,000 km
+  (inside a propeller belt), the B ring 200 km down, and from under the rings — for before/after comparisons of
+  the medium's fine structure.
 - `scripts/img.mjs profile <x0> <x1> <y0> <y1> <step> a.png b.png …` — vertical brightness + texture profile of
   a column strip in several screenshots side by side (find seams); `mean a.png b.png "x0,y0,x1,y1" …` — region
   means and ratio; `crop out.png x0 y0 w h scale gain a.png b.png …` — stacked, upscaled, contrast-stretched

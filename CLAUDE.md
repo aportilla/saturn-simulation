@@ -12,7 +12,7 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
 ## Commands
 - `npm run dev` → http://127.0.0.1:5173 (often already running; check with `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5173/`)
 - `npm run typecheck` (tsc --noEmit) and `npm run build` (typecheck + vite build) — keep both clean
-- **Regression suite** (real GPU, starts its own private Vite server unless `--base` answers; ~8 min):
+- **Regression suite** (real GPU, starts its own private Vite server unless `--base` answers; ~9.5 min):
   `npm test` = `test:smoke` (every preset: console/page/GL errors, pass fallbacks, NaN/negative pixels) +
   `test:physics` (ephemeris, J2–J6 frequencies, particle kinematics vs the exact Hill solution) +
   `test:counts` (drawn particles vs the analytic expectation, HUD "complete") + `test:seam` (near field +
@@ -21,7 +21,9 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
   (the astronaut doesn't change the auto exposure) + `test:edges` (moonlet gap edges and B-ring edge modes: gaps
   empty, rendered edges = streamline model, near field follows) + `test:moonflux` (unresolved-moon point flux =
   resolved brightness, measured shapes) + `test:particles` (resolved-particle regolith law / factor LUT / relief:
-  GLSL vs CPU mirrors, projected-area and photometry contracts; prints new constants when the relief changes).
+  GLSL vs CPU mirrors, projected-area and photometry contracts; prints new constants when the relief changes) +
+  `test:propellers` (named propellers vs Tiscareno 2010 Table 1, sub-km texture statistics and footprint prefilter,
+  GPU τ vs the CPU model, near-field presence follows the modulation, moonlet bodies).
   `npm run test:fps` = informational fps table per preset × quality. Details, tolerances, measured values and the
   shared helpers: `scripts/test/README.md`.
 - **Bibliography**: `npm run check:refs` (no GPU, ~1 s; also first in `npm test`) — every author–year citation in
@@ -41,8 +43,8 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
   - put screenshots in the session scratchpad, not the repo; view PNGs with the Read tool
 - Useful URLs: `/?preset=<place>` (ids in `src/app/presets.ts`: overview, rings-above, edge-on, a-ring-inside,
   a-ring-30m, a-ring-1km, b-ring-inside, c-ring-inside, cassini-division, shadow, under-rings, encke-gap,
-  keeler-gap, f-ring, enceladus, titan, mimas, iapetus, cloud-tops) plus `t=<ISO>` (fix the time for
-  reproducible shots), `hud=0`, `labels=0`, `paused=1`, `warp=`, `fps=0` (uncapped), `scale=` (render scale),
+  keeler-gap, propeller-bleriot, propeller-belt, f-ring, enceladus, titan, mimas, iapetus, cloud-tops) plus
+  `t=<ISO>` (fix the time for reproducible shots), `hud=0`, `labels=0`, `paused=1`, `warp=`, `fps=0` (uncapped), `scale=` (render scale),
   `quality=high|medium|low` (particle render fidelity), `debug=<n>`, feature toggles (`wakes=0`, `nearField=0`,
   `astronaut=0` (the camera-pinned astronaut, key V), …). Full list: ARCHITECTURE.md → "The app".
 - Sandbox pages for one subsystem in isolation: `sandbox/{far,rings,near,moons,ringplot,pipeline,app}.html`
@@ -69,7 +71,7 @@ Session scratchpads are deleted after the session, so anything worth running aga
 `window.__sv = { app, frame, pipeline, clock, world, renderer, camera, anchor, presets, goto(name,{instant}),
 setTime(iso), setWarp(n), info(), toggleCoorbit(), toggleBallistic(), flyTo(name) }`; `window.__svReady` turns
 true 8 frames after loading. `__sv.pipeline.stats()` gives per-pass numbers (particles allocated/drawn, ring
-mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,overlay,rings,post}.inner` — set
+mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,bodies,overlay,rings,post}.inner` — set
 `.enabled = false` to measure a pass's cost. Read HDR radiance with
 `__sv.renderer.readRenderTargetPixels(__sv.pipeline.ctx.hdrRT, x, y, 1, 1, buf)`.
 
@@ -80,6 +82,8 @@ mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,ove
 | ring optical depth, zones (sizes q/aMin/aMax, thickness H, Σ, albedo, wakes, dust), features | `src/rings/ringRegions.ts`, `src/rings/RingProfile.ts`; data `public/data/rings/` |
 | LOD contract (which particles are drawn vs. carried by the medium), self-gravity wakes | `src/rings/RingLod.ts` + `shaders/ringLod.glsl`, `src/rings/WakeField.ts` + `shaders/wakes.glsl` (CPU/GLSL mirrors) |
 | 2-D ring structure (streamline map: moonlet gap edges, normal modes of eccentric edges; hooks for relief and 2-D τ modulation) — every main-ring τ lookup goes through it | `src/rings/RingStructure.ts` + `src/rings/streamlines.ts` + `src/rings/ringModes.ts` (CPU) + `shaders/ringStructure.glsl`; table `public/data/rings/moonlet_response.*` from `scripts/data/rings/moonlet_response.mjs` |
+| sub-km 2-D τ texture (sheared, evolving; footprint prefilter → `rlApplyTauMod` in `rlOptics.glsl`) | `src/rings/ringTexture.ts` + `shaders/ringTexture.glsl` (chunk `sv_ringTexture`, included by `sv_ringStructure`) |
+| propeller moonlets (named giants, belts: positions, partial gaps / lobes / wakes, relief; moonlet bodies) | `src/rings/propellers.ts` + `shaders/ringPropellers.glsl` (chunk `sv_ringPropellers`), `src/render/passes/PropellerMoonletPass.ts` + `src/render/propellers/*`; presets `propeller-bleriot`, `propeller-belt`; Cassini views `scripts/test/specs/propellers.json` |
 | individual ring particles (near field) | `src/render/passes/NearFieldPass.ts`, `src/render/near/*` |
 | particle shape, spin, relief, regolith photometry (+ CPU mirrors) | `src/render/near/nearCommon.glsl` (`nearShape`, `nearOrientation`, `nearRelief`, `nearRegolithFactor`), `nearDraw.frag.glsl`, `NearRegolith.ts`, `NearRelief.ts`, `NearNoise.ts`; `ringRegolithIF` in `src/render/shaders/lighting.glsl` |
 | astronaut companion (camera-pinned, 1.9 m, for scale; lit like the particles) | `src/render/passes/AstronautPass.ts`, `src/render/astronaut/*` |

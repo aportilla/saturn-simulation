@@ -223,6 +223,13 @@ export async function loadPasses(opts: PassLoadOptions = {}): Promise<LoadedPass
     if (near) passes.near = new GuardedPass(near, 'near field', 'NearFieldPass');
   }
 
+  // propeller moonlets (no fallback: the ring structure still holds their propellers)
+  if (!opts.stubs) {
+    const m = await tryImport('propeller moonlets', () => import('../render/passes/PropellerMoonletPass'));
+    const pm = construct('propeller moonlets', m.mod?.PropellerMoonletPass);
+    if (pm) passes.bodies = new GuardedPass(pm, 'propeller moonlets', 'PropellerMoonletPass');
+  }
+
   // camera-pinned astronaut (no fallback: the scene is complete without it)
   if (!opts.stubs) {
     const m = await tryImport('astronaut', () => import('../render/passes/AstronautPass'));
@@ -247,7 +254,7 @@ export async function loadPasses(opts: PassLoadOptions = {}): Promise<LoadedPass
   const postG = realPost ? new GuardedPass(realPost, 'post', 'PostPass', fb) : fb;
   passes.post = postG;
 
-  for (const g of [passes.far, passes.near, passes.overlay, passes.rings, passes.post]) if (g) guards.push(g as GuardedPass);
+  for (const g of [passes.far, passes.near, passes.bodies, passes.overlay, passes.rings, passes.post]) if (g) guards.push(g as GuardedPass);
   return {
     passes,
     guards,
