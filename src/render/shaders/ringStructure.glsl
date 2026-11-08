@@ -16,7 +16,8 @@
 // Sources of xi / zeta: moonlets in gaps (Pan, Daphnis): the universal Hill-problem response table uRsTab at
 // b = |a' - a_moon(t_conj)| / r_H and Hill time t = s / (1.5 b r_H) since conjunction (s = downstream arc); bicubic
 // Hermite interpolation (exact float32 weights via texelFetch: hardware filtering would quantize the weights and
-// make particles near the camera jitter by ~1 m).
+// make particles near the camera jitter by ~1 m). Normal modes of eccentric edges (src/rings/ringModes.ts: the
+// B-ring outer edge), xi = -A g(u) cos(m (theta - varpi(t))), phases precomputed per frame at the frame origin.
 //
 // API (offsets keep float32 precise near the camera: dr = r - uRingR0 (ringDrFromLocal), dth = azimuth offset from
 // the ring-frame origin, atan(l.y, uRingR0 + l.x); fp = radial pixel footprint (m), 0 = full resolution):
@@ -28,6 +29,10 @@
 //                                               J) (the near field displaces its particles, which carry a')
 //   RingSample ringSampleStream(dr, dth, fp)    THE main-ring lookup: profile at a', tau and Sigma x J x tauMod
 //   RingSample ringSampleLocal(l, fp)           the same for a local-frame point (ringLocalFromRel)
+//   RingSample ringSampleLagrangian(aL, fp)     the unperturbed profile at a Lagrangian offset (precise index)
+//   RingSample ringSampleIdxPrecise(I, sub, fp) profile at level-0 index I + sub (integer + small fraction)
+//   float ringSunTransmissionStream(p, fp)      ringSunTransmission through the structure
+//   bool  rsIdentityAt(dr)                      cheap test: no source can displace material near dr
 //   void ringLocalPolar(l, out dr, out dth)
 // Hooks for later work packages (identity now; keep their signatures):
 //   ringStructureRelief(aL, dth)  -> vec3(height, dheight/da', dheight/dS)  bending waves, B-ring-edge structures,
@@ -44,10 +49,16 @@ uniform vec4 uRsTabT;         // (t0, dt, nt, 1 / dt)
 uniform vec4 uRsTabB;         // (b_lo, d ln b, nb, b_in)
 uniform vec4 uRsMl[3 * RS_MOONLETS]; // per moonlet: (a_g - r0, S0 = a_g wrap(phi0 - theta_m), r_H, amplitude),
                                      // (x_epi, x_epi' / kappa, Z cos psi, Z sin psi), (a_g, b_hi r_H, -, -)   [m]
-uniform vec4 uRsCam;          // camera: (xi, zeta, J, 1 = a moonlet zone is within the near field's reach)
+uniform vec4 uRsCam;          // camera: (xi, zeta, J, 1 = a structure zone is within the near field's reach)
 uniform float uRsOn;          // 0: identity map (no table / all amplitudes 0)
 uniform float uRsJFloor;      // floor of dr/da'
 uniform vec2 uRsIdx0;         // level-0 profile index of the ring-frame origin r0 split on the CPU: (integer, fraction)
+// normal modes of eccentric edges (src/rings/ringModes.ts): xi = -A g(u) cos(phase + m dth), u = material (a' - a_e)
+#define RS_MODES 8
+#define RS_FEATURES 2
+uniform vec4 uRsMode[RS_MODES];     // (A [m] (0 = unused), m (phi0 - varpi(t)) [rad], m, 1 / decay length [1/m])
+uniform int uRsModeF[RS_MODES];     // feature of each mode
+uniform vec4 uRsFeat[RS_FEATURES];  // (a_edge - r0 [m], material side (-1: inward of the edge), 1 / gap [1/m], reach [m])
 
 struct RingStream {
   float da;       // a' - r (m)
@@ -162,10 +173,44 @@ void rsMoonlet(int k, float aL, float dth, float fp, bool wantZ, inout vec3 r, i
   z += zz;
 }
 
+// Normal modes of eccentric edges (ringModes.ts featureDisplacement): radial profile g(u) of a mode, u = distance into
+// the material (u < 0: gap side, linear ramp to 0 over the gap); material side exp(-u/L), tapered over the last
+// quarter of the feature's reach. Adds (xi, dxi/da', dxi/dS) to r.
+void rsModes(float aL, float dth, inout vec3 r) {
+  for (int k = 0; k < RS_MODES; k++) {
+    vec4 M = uRsMode[k];
+    if (M.x == 0.0) continue;
+    vec4 F = uRsFeat[uRsModeF[k]];
+    float u = F.y * (aL - F.x);
+    float gapL = 1.0 / F.z;
+    if (u < -gapL || u > F.w) continue;
+    float g, gu;
+    if (u < 0.0) {
+      g = 1.0 + u * F.z;
+      gu = F.z;
+    } else {
+      float e = exp(-u * M.w);
+      float t0 = 0.75 * F.w;
+      float tp = 1.0, dtp = 0.0;
+      if (u > t0) {
+        float x = min(1.0, (u - t0) / (F.w - t0));
+        tp = 1.0 - x * x * (3.0 - 2.0 * x);
+        dtp = x < 1.0 ? -6.0 * x * (1.0 - x) / (F.w - t0) : 0.0;
+      }
+      g = e * tp;
+      gu = -e * tp * M.w + e * dtp;
+    }
+    float psi = M.y + M.z * dth;
+    float c = cos(psi), s = sin(psi);
+    r += vec3(-M.x * g * c, -M.x * gu * F.y * c, M.x * g * M.z * s / (uRingR0 + aL));
+  }
+}
+
 // All sources at Lagrangian offset aL and azimuth offset dth: r = (xi, dxi/da', dxi/dS), z = (zeta, d/da', d/dS)
 void rsEval(float aL, float dth, float fp, bool wantZ, out vec3 r, out vec3 z) {
   r = vec3(0.0);
   z = vec3(0.0);
+  rsModes(aL, dth, r);
   for (int k = 0; k < RS_MOONLETS; k++) rsMoonlet(k, aL, dth, fp, wantZ, r, z);
   if (wantZ) z += ringStructureRelief(aL, dth);
 }
@@ -176,6 +221,10 @@ bool rsIdentityAt(float dr) {
   for (int k = 0; k < RS_MOONLETS; k++) {
     vec4 P0 = uRsMl[3 * k], P2 = uRsMl[3 * k + 2];
     if (P0.w != 0.0 && abs(dr - P0.x) < P2.y + 3.0 * P0.z * max(abs(P0.w), 1.0)) return false;
+  }
+  for (int f = 0; f < RS_FEATURES; f++) {
+    vec4 F = uRsFeat[f];
+    if (F.w > 0.0 && abs(dr - F.x) < F.w + 1.0 / F.z + 2.0e5) return false;   // + the largest edge excursion
   }
   return true;
 }

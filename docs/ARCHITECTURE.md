@@ -142,7 +142,10 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   displaced edges; the ring layer has the same as `rlSampleP`); `ringSunTransmissionStream(p, fp)`. Hooks for later
   work packages, identity now: `ringStructureRelief(aL, dth)` → (height, ∂/∂a', ∂/∂S) (bending waves, B-ring-edge
   structures, relief sources) and `ringStructureTauMod(aL, dth)` (azimuthal texture, propellers). Sources now: the
-  moonlets Pan and Daphnis (Hill-problem response table, `public/data/rings/moonlet_response.*`). The camera's
+  moonlets Pan and Daphnis (Hill-problem response table, `public/data/rings/moonlet_response.*`) and the normal modes
+  of eccentric edges (`src/rings/ringModes.ts` `EDGE_FEATURES`: the B-ring outer edge's four modes; uniforms
+  `uRsMode[8]` = (A, m(φ0 − ϖ(t)), m, 1/L), `uRsModeF[8]` feature index, `uRsFeat[2]` = (a_edge − r0, material side,
+  1/gap, reach)). The camera's
   streamline state is `uRsCam` = (ξ, ζ, J, near-field zone flag). Far-field shaders (`src/render/far/**`) include
   only `sv_ringProfile` (km-scale edge waves are below their footprints).
 * `sv_lighting`: `phaseLambertSphere`, `phaseHG`, `ringPhase(cosα, dust)`, `saturnshine(p, out dir)`,
@@ -170,7 +173,9 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
 ## The ring model (physics)
 * **Radial profile** (`src/rings/RingProfile.ts`): 0.25 km grid, 66,000–139,500 km. Optical depth from
   Cassini occultation data if present, else procedural. Other quantities from the zone table
-  `src/rings/ringRegions.ts` (q, aMin, aMax, H, Σ/τ, albedo, wake, dust).
+  `src/rings/ringRegions.ts` (q, aMin, aMax, H, Σ/τ, albedo, wake, dust). Around eccentric edges with normal modes
+  (`EDGE_FEATURES`) the 2005 snapshot is de-projected at load time to mean (Lagrangian) radii
+  (`RingProfile.deprojectSnapshot`); the live modes move them back (`sv_ringStructure`). ring-physics.md §9.
 * **Particles** (near field): power-law sizes dN/da ∝ a^-q in [aMin, aMax] with column density fixed by τ;
   14 octave classes from 1 mm (zones with aMin < 1 cm draw their mm particles where they are ≥ 1 px, i.e. within
   a few metres). Vertical Gaussian, std = `sigZFrac(a)·H` (small particles ride higher).
@@ -213,7 +218,9 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   are baked into the table; J is clamped at ≤ 5. **Near field:** the particle boxes are Lagrangian — the guiding
   centre is a', presence is tested at τ0(a'), the particle is drawn displaced by ξ(a') − ξ_cam, and the box
   is centred on the camera's Lagrangian position (`uRsCam.x`, `NearFieldPass` uCamOff); the local LOD is configured at
-  the camera's Lagrangian radius (`Pipeline.updateLocalRing`). ζ is computed and exposed (`ringStreamRelief`,
+  the camera's Lagrangian radius (`Pipeline.updateLocalRing`), with the boxes' τ_max taken over the drift the map can
+  cause under a co-orbiting camera (`RingStructure.maxDisplacementNear`), re-fitted on 1 km of camera travel, when the
+  material under the camera changes (ring ↔ gap) or after 20 km of Lagrangian drift. ζ is computed and exposed (`ringStreamRelief`,
   `ringStreamXi`), not yet rendered geometrically (relief work package). Details and numbers: ring-physics.md §8.
 * **Outer rings**: F ring (eccentric, a = 140,221 km), G, E (vertical torus around Enceladus), D — analytic
   in the ring-layer pass (`OUTER_RINGS` in `ringRegions.ts`).

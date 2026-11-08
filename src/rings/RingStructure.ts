@@ -4,7 +4,8 @@
 //   * loads the universal moonlet response table (public/data/rings/moonlet_response.{json,f32}, built by
 //     scripts/data/rings/moonlet_response.mjs) into a float texture,
 //   * owns the shared uniforms (spread through SharedUniforms into every material),
-//   * updates them once per frame from the moons (Pan 618, Daphnis 635) and the ring frame (Pipeline.render), and
+//   * updates them once per frame from the moons (Pan 618, Daphnis 635), the normal modes of eccentric edges
+//     (ringModes.ts EDGE_FEATURES: phases at the ring-frame origin) and the ring frame (Pipeline.render), and
 //   * is the CPU mirror: the camera's Lagrangian position for the near field, tau at the camera for the HUD,
 //     tests (window.__sv.pipeline.ctx.structure).
 // Without the table (load failure) it is the identity map (uRsOn = 0): straight edges, as before.
@@ -17,9 +18,13 @@ import {
   MoonletTable, B_IN, invertStreamlines, moonletDisplacement, moonletFootprintFade, wrapPi,
   type MoonletParams, type MoonletTableMeta, type StreamPoint,
 } from './streamlines';
+import { EDGE_FEATURES, featureDisplacement } from './ringModes';
 
 /** moonlet slots in the shader (uRsMl has 3 vec4 per slot) */
 export const RS_MOONLETS = 2;
+/** normal-mode slots and edge-feature slots in the shader (uRsMode / uRsModeF, uRsFeat) */
+export const RS_MODES = 8;
+export const RS_FEATURES = 2;
 /** reach of the near field around the camera (m): largest particle box + margin (RingLod boxes <= 60 km) */
 const NEAR_REACH = 70e3;
 
@@ -60,6 +65,10 @@ export class RingStructure {
   readonly params: MoonletParams[];
   /** multiplier on the moonlet streamline amplitudes (1 = physical, 0 = straight edges, > 1 for inspection) */
   edgeWaveScale = 1;
+  /** multiplier on the normal modes of eccentric edges (EDGE_FEATURES; 1 = physical, 0 = circular at the mean radii) */
+  edgeModeScale = 1;
+  /** sim time of the last update (s TDB) */
+  t = 0;
   /** the camera's streamline state this frame (Eulerian -> Lagrangian at the camera; xi_cam = -cam.da) */
   readonly cam: StreamPoint = emptyPoint();
   /** ring frame of the last update (r0, phi0) */
@@ -77,6 +86,9 @@ export class RingStructure {
     uRsOn: { value: number };
     uRsJFloor: { value: number };
     uRsIdx0: { value: Vector2 };
+    uRsMode: { value: Vector4[] };
+    uRsModeF: { value: Int32Array };
+    uRsFeat: { value: Vector4[] };
   };
 
   private constructor(table: MoonletTable | null) {
@@ -109,6 +121,9 @@ export class RingStructure {
       uRsOn: { value: 0 },
       uRsJFloor: { value: m?.envelope.jFloor ?? 0.2 },
       uRsIdx0: { value: new Vector2() },
+      uRsMode: { value: Array.from({ length: RS_MODES }, () => new Vector4()) },
+      uRsModeF: { value: new Int32Array(RS_MODES) },
+      uRsFeat: { value: Array.from({ length: RS_FEATURES }, () => new Vector4(1e12, -1, 1e-12, 0)) },
     };
   }
 
@@ -166,6 +181,27 @@ export class RingStructure {
       v[3 * k + 1].set(p.xEpi, p.xEpiDot, p.zCos, p.zSin);
       v[3 * k + 2].set(p.ag, T ? T.meta.bHi * p.rH : 0, 0, 0);
     }
+    // ---- normal modes of eccentric edges: per mode the phase m (phi0 - varpi(t)) at the ring-frame origin (double)
+    this.t = f.t;
+    let km = 0;
+    const md = u.uRsMode.value, mf = u.uRsModeF.value, fv = u.uRsFeat.value;
+    for (let fi = 0; fi < RS_FEATURES; fi++) {
+      const ft = fi < EDGE_FEATURES.length ? EDGE_FEATURES[fi] : null;
+      if (!ft || this.edgeModeScale === 0) {
+        fv[fi].set(1e12, -1, 1e-12, 0);
+        continue;
+      }
+      fv[fi].set(ft.aEdge - this.r0, ft.material, 1 / ft.gap, ft.reach);
+      for (const mode of ft.modes) {
+        if (km >= RS_MODES) break;
+        const phase = wrapPi(mode.m * (this.phi0 - mode.varpi0 - mode.omegaP * (f.t - ft.epoch)));
+        md[km].set(mode.amp * this.edgeModeScale, phase, mode.m, 1 / mode.decay);
+        mf[km] = fi;
+        km++;
+      }
+      on = true;
+    }
+    for (; km < RS_MODES; km++) md[km].set(0, 0, 0, 1);
     u.uRsOn.value = on ? 1 : 0;
     // the camera's streamline state (double precision)
     const c = f.ring.camLocal;
@@ -173,10 +209,17 @@ export class RingStructure {
     const dth = Math.atan2(c.y, this.r0 + c.x);
     this.streamAt(dr, dth, 0, true, this.cam);
     this.nearActive = false;
-    if (on && T) {
+    if (on) {
       const aL = dr + this.cam.da;
-      for (const p of this.params) {
-        if (p.amp !== 0 && Math.abs(aL - p.agMinusR0) < T.meta.bHi * p.rH + NEAR_REACH) this.nearActive = true;
+      if (T) {
+        for (const p of this.params) {
+          if (p.amp !== 0 && Math.abs(aL - p.agMinusR0) < T.meta.bHi * p.rH + NEAR_REACH) this.nearActive = true;
+        }
+      }
+      if (this.edgeModeScale !== 0) {
+        for (const ft of EDGE_FEATURES) {
+          if (Math.abs(aL - (ft.aEdge - this.r0)) < ft.reach + ft.gap + NEAR_REACH) this.nearActive = true;
+        }
       }
     }
     u.uRsCam.value.set(-this.cam.da, this.cam.zeta, this.cam.J, this.nearActive ? 1 : 0);
@@ -186,6 +229,15 @@ export class RingStructure {
   /** All sources at Lagrangian offset aL = a' - r0 (m) and azimuth offset dth from the ring-frame origin. */
   readonly evalAt = (aL: number, dth: number, fp: number, wantZ: boolean, o: number[]): void => {
     for (let i = 0; i < 6; i++) o[i] = 0;
+    // normal modes of eccentric edges
+    if (this.edgeModeScale !== 0) {
+      for (const ft of EDGE_FEATURES) {
+        featureDisplacement(ft, this.r0 + aL, this.phi0 + dth, this.t, this._m);
+        o[0] += this.edgeModeScale * this._m[0];
+        o[1] += this.edgeModeScale * this._m[1];
+        o[2] += this.edgeModeScale * this._m[2];
+      }
+    }
     const T = this.table;
     if (!T) return;
     for (const p of this.params) {
@@ -229,6 +281,25 @@ export class RingStructure {
   tauAtSEF(tau0Km: (rKm: number) => number, r: number, theta: number): number {
     const s = this.streamAtSEF(r, theta);
     return tau0Km((r + s.da) / 1000) * s.J * s.tauMod;
+  }
+
+  /**
+   * Upper bound of |xi| (m) for material within the near field's reach of the Eulerian radius r: how far the
+   * streamline map can move the material under a co-orbiting camera (near-field allocation margin).
+   */
+  maxDisplacementNear(r: number): number {
+    let d = 0;
+    if (this.edgeModeScale !== 0) {
+      for (const ft of EDGE_FEATURES) {
+        if (Math.abs(r - ft.aEdge) < ft.reach + ft.gap + NEAR_REACH) d += Math.abs(this.edgeModeScale) * ft.modes.reduce((s, m) => s + m.amp, 0);
+      }
+    }
+    if (this.table) {
+      for (const p of this.params) {
+        if (p.amp !== 0 && Math.abs(r - this.r0 - p.agMinusR0) < this.table.meta.bHi * p.rH + NEAR_REACH) d += 1.5 * p.rH * Math.abs(p.amp);
+      }
+    }
+    return d;
   }
 
   /** The camera's Lagrangian radius (m): the material around it has the profile values of this radius. */

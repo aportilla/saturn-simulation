@@ -1,25 +1,30 @@
 #!/usr/bin/env node
-// Moonlet-perturbed gap edges (Keeler gap: Daphnis, Encke gap: Pan) through the shared streamline map
-// (sv_ringStructure / src/rings/streamlines.ts). Looks straight down on the gaps with the far-field sheet, reads
-// back the rendered optical depth per pixel (ring-layer debug view 7 = (r 1e-6, I/F, tau), view 9 = (.., theta)) and
-// compares it with the CPU mirror of the model (window.__sv.pipeline.ctx.structure):
-//   1. gap empty: pixels whose Lagrangian radius a'(r, theta) lies inside the unperturbed gap, > 1.5 km from its edges,
-//      have tau <= 0.05 and at most 0.01 above the profile's own tau0(a') J there (gap floor <= 0.015, dusty Encke-gap
-//      ringlets <= 0.025; the old Eulerian lookup put tau ~ 0.5 A-ring slivers along the moonlet's orbit);
-//   2. ring material: tau_rendered / (tau0(a') J) over pixels > 1.5 km inside the ring, median 1 +- 0.05;
+// Gap edges perturbed by moonlets (Keeler gap: Daphnis, Encke gap: Pan) and the B-ring edge's normal modes, through
+// the shared streamline map (sv_ringStructure / src/rings/streamlines.ts, ringModes.ts). Looks straight down with the
+// far-field sheet, reads back the rendered optical depth per pixel (ring-layer debug view 7 = (r 1e-6, I/F, tau),
+// view 9 = (.., theta)) and compares it with the CPU mirror of the model (window.__sv.pipeline.ctx.structure):
+//   1. gap empty: pixels whose Lagrangian radius a'(r, theta) lies inside the unperturbed gap, > max(1.5 km, 3
+//      footprints) from its edges, have tau <= 0.05 and at most 0.01 above the profile's own tau0(a') J there (gap
+//      floor <= 0.015, dusty Encke-gap ringlets <= 0.025; the old Eulerian lookup put tau ~ 0.5 A-ring slivers along
+//      the moonlet's orbit);
+//   2. ring material: tau_rendered / (tau0(a') J) away from the edges, median 1 +- 0.05 (+- 0.15 for km footprints,
+//      which prefilter the structured B ring);
 //   3. edge displacement: per azimuth bin the rendered edge (half-level crossing) minus the unperturbed edge radius
 //      vs the model xi(a'_edge, theta): RMS <= max(0.25 km, 1.5 footprints), max <= 0.75 km + 2 footprints, and the
-//      range (peak-to-peak) of the rendered displacement within 0.85..1.15 of the model's where that is >= 1 km;
+//      range (peak-to-peak) of the rendered displacement within 0.85..1.15 of the model's where that is >=
+//      max(1 km, 5 footprints);
 //   4. the peak displacement of the outer Keeler edge in the first ~80 km behind Daphnis within 2.5 .. 4.0 km (the Hill
 //      response at b = 3.5: asymptotic epicycle 3.53 km, first excursion ~3.1-3.2 km; linear theory 2.76 km);
-//   5. no NaN / negative pixels in sceneRT / hdrRT (normal render), no console / GL errors, passes ok;
-//   6. near-crest: 30 m above material the map has moved ~2.8 km into the unperturbed gap: near-field particles are
+//   5. B-ring outer edge (views b-edge-90 / b-edge-180 at 3,000 km): the de-projected profile has its edge at the mean
+//      radius 117,568 km and |rendered displacement| / model is 0.9 .. 1.1 (checks 1-3 apply as well);
+//   6. no NaN / negative pixels in sceneRT / hdrRT (normal render), no console / GL errors, passes ok;
+//   7. near-crest: 30 m above material the map has moved ~2.8 km into the unperturbed gap: near-field particles are
 //      drawn (>= 1000 >= 1 px; the boxes are Lagrangian) and vanish with straight edges (edgeWaveScale 0: the camera
 //      is then over the gap), and near field + medium / medium alone in the lower half is 0.8 .. 1.25 -- checked
 //      once nearDraw.vert.glsl lights particles through sv_ringStructure (ringSampleLocal), informational before.
-// The sub-km fine-structure noise is switched off for checks 1-4 (uRlFineAmp = 0), the near field too (sheet only).
-// usage: node scripts/test/edges.mjs [--base URL] [--out DIR] [--views keeler-0,keeler-out,keeler-in,encke-out,encke-in,near-crest]
-//        [--t ISO] [--w 1280 --h 720]
+// The sub-km fine-structure noise is switched off for checks 1-5 (uRlFineAmp = 0), the near field too (sheet only).
+// usage: node scripts/test/edges.mjs [--base URL] [--out DIR] [--t ISO] [--w 1280 --h 720]
+//        [--views keeler-0,keeler-out,keeler-in,encke-out,encke-in,b-edge-90,b-edge-180,near-crest]
 import { join } from 'node:path';
 import { fmt, openApp, problems, renderTargetScan, sleep, table, waitFrames, withHarness } from './lib.mjs';
 
@@ -29,14 +34,20 @@ const GAPS = {
   635: { name: 'Daphnis', gap: 'Keeler', edgesKm: [136_483, 136_523] },
   618: { name: 'Pan', gap: 'Encke', edgesKm: [133_424, 133_745] },
 };
-// moon, centre radius ('moon' | 'inner' | 'outer' edge), downstream arc of the view centre (km; side by `side`),
-// camera height (km). yaw 90: azimuth runs horizontally (the wide axis), radius vertically.
+// Moonlet views: moon, centre radius ('moon' | 'inner' | 'outer' edge), downstream arc of the view centre (km; side by
+// `side`). B-ring edge views (normal modes, src/rings/ringModes.ts): centre radius / longitude. Camera height (km);
+// yaw 90: azimuth runs horizontally (the wide axis), radius vertically. `gapKm`: the gap's catalogued boundaries
+// (refined to the profile's half-level crossings), `measure`: which of them carry modelled displacements.
 const VIEWS = [
-  { id: 'keeler-0', moon: 635, at: 'moon', side: 0, sDownKm: 0, hKm: 100 },
-  { id: 'keeler-out', moon: 635, at: 'moon', side: 1, sDownKm: 160, hKm: 100 },
-  { id: 'keeler-in', moon: 635, at: 'moon', side: -1, sDownKm: 160, hKm: 100 },
-  { id: 'encke-out', moon: 618, at: 'outer', side: 1, sDownKm: 375, hKm: 300 },
-  { id: 'encke-in', moon: 618, at: 'inner', side: -1, sDownKm: 375, hKm: 300 },
+  { id: 'keeler-0', moon: 635, at: 'moon', side: 0, sDownKm: 0, hKm: 100, gapKm: GAPS[635].edgesKm, measure: ['inner', 'outer'] },
+  { id: 'keeler-out', moon: 635, at: 'moon', side: 1, sDownKm: 160, hKm: 100, gapKm: GAPS[635].edgesKm, measure: ['inner', 'outer'] },
+  { id: 'keeler-in', moon: 635, at: 'moon', side: -1, sDownKm: 160, hKm: 100, gapKm: GAPS[635].edgesKm, measure: ['inner', 'outer'] },
+  { id: 'encke-out', moon: 618, at: 'outer', side: 1, sDownKm: 375, hKm: 300, gapKm: GAPS[618].edgesKm, measure: ['outer'] },
+  { id: 'encke-in', moon: 618, at: 'inner', side: -1, sDownKm: 375, hKm: 300, gapKm: GAPS[618].edgesKm, measure: ['inner'] },
+  // the B-ring outer edge (Huygens gap: B-ring edge at the mean radius 117,568 km .. the Huygens ringlet, 117,822 km
+  // in the profile) where the 2026-11-08 modes move it out by ~72 km (90 deg) and in by ~77 km (180 deg)
+  { id: 'b-edge-90', rKm: 117_568, lonDeg: 90, hKm: 3000, gapKm: [117_568, 117_822], measure: ['inner'] },
+  { id: 'b-edge-180', rKm: 117_568, lonDeg: 180, hKm: 3000, gapKm: [117_568, 117_822], measure: ['inner'] },
 ];
 
 await withHarness('edges', { usage: 'node scripts/test/edges.mjs [--base URL] [--out DIR] [--views id,..] [--t ISO]' }, async ({ args, out, rep, base, browser }) => {
@@ -55,15 +66,22 @@ await withHarness('edges', { usage: 'node scripts/test/edges.mjs [--base URL] [-
 
   const rows = [];
   for (const v of VIEWS.filter((x) => want.includes(x.id))) {
-    const m = moons[v.moon];
-    const G = GAPS[v.moon];
-    const rC = v.at === 'moon' ? m.r : v.at === 'inner' ? G.edgesKm[0] * 1e3 : G.edgesKm[1] * 1e3;
-    const phi = m.phi - (v.side * v.sDownKm * 1e3) / m.r;
+    let rC, phi, rRef;
+    if (v.moon) {
+      const m = moons[v.moon];
+      rC = v.at === 'moon' ? m.r : v.at === 'inner' ? v.gapKm[0] * 1e3 : v.gapKm[1] * 1e3;
+      phi = m.phi - (v.side * v.sDownKm * 1e3) / m.r;
+      rRef = m.r;
+    } else {
+      rC = v.rKm * 1e3;
+      phi = (v.lonDeg * Math.PI) / 180;
+      rRef = rC;
+    }
     const params = { ...common, cam: 'ring', r: rC.toFixed(1), phi: ((phi * 180) / Math.PI).toFixed(7), z: (-v.hKm * 1e3).toFixed(0), yaw: 90, pitch: 89.5, fov: 50 };
     const { page, errs } = await openApp(browser, base, params, { settle: 2500 });
     try {
       const scan = await renderTargetScan(page);
-      const res = await page.evaluate(async (edgesKm, moonId) => {
+      const res = await page.evaluate(async (edgesKm, measure, rm) => {
         const sv = window.__sv;
         const frames = (n) => new Promise((res) => { let k = 0; const f = () => (++k >= n ? res() : requestAnimationFrame(f)); requestAnimationFrame(f); });
         const rl = sv.pipeline.passes.rings.inner;
@@ -95,6 +113,11 @@ await withHarness('edges', { usage: 'node scripts/test/edges.mjs [--base URL] [-
           return rKm;
         };
         const eIn = edgeAt(edgesKm[0], -1) * 1e3, eOut = edgeAt(edgesKm[1], 1) * 1e3;
+        // radial footprint of the readback: the radial extent of the frame over its rows ~ the pixel size on the ring
+        let r0 = Infinity, r1 = -Infinity;
+        for (let i = 0; i < w * h; i++) { const r = b7[i * 4] * 1e6; if (r > 1e8) { r0 = Math.min(r0, r); r1 = Math.max(r1, r); } }
+        const fpM = (r1 - r0) / h;
+        const dEdgeMin = Math.max(1500, 3 * fpM);
         // per-pixel comparison
         let nGap = 0, gapMax = 0, gapExcess = 0, gap99 = [], ratios = [], nan = 0;
         const sp = { da: 0, J: 1, drda: 1, tauMod: 1, zeta: 0, slopeR: 0, slopeT: 0 };
@@ -103,20 +126,20 @@ await withHarness('edges', { usage: 'node scripts/test/edges.mjs [--base URL] [-
           for (let x = 0; x < w; x += 2) {
             const k = (y * w + x) * 4;
             const r = b7[k] * 1e6, tau = b7[k + 2], th = b9[k + 2];
-            if (!(r > 1.2e8)) continue;
+            if (!(r > 1e8)) continue;
             if (!Number.isFinite(tau) || !Number.isFinite(th)) { nan++; continue; }
             st.streamAtSEF(r, th, 0, false, sp);
             const aL = r + sp.da;
             const dEdge = Math.min(Math.abs(aL - eIn), Math.abs(aL - eOut));
             const inGap = aL > eIn && aL < eOut;
-            if (inGap && dEdge > 1500) {
+            if (inGap && dEdge > dEdgeMin) {
               nGap++;
               gapMax = Math.max(gapMax, tau);
               gap99.push(tau);
               // material beyond what the profile itself has at this Lagrangian radius (dusty gap ringlets are real)
               gapExcess = Math.max(gapExcess, tau - tauKm(aL / 1e3) * sp.J);
             }
-            if (!inGap && dEdge > 1500) {
+            if (!inGap && dEdge > dEdgeMin) {
               const exp = tauKm(aL / 1e3) * sp.J;
               if (exp > 0.1) ratios.push(tau / exp);
             }
@@ -127,33 +150,29 @@ await withHarness('edges', { usage: 'node scripts/test/edges.mjs [--base URL] [-
         ratios.sort((a, b) => a - b);
         const q = (arr, p) => (arr.length ? arr[Math.min(arr.length - 1, Math.floor(p * arr.length))] : NaN);
         // edge displacement per azimuth bin: rendered half-level crossing vs model xi at the edge streamline
-        let th0 = Infinity, th1 = -Infinity, r0 = Infinity, r1 = -Infinity;
-        for (const s of samples) {
-          th0 = Math.min(th0, s[1]); th1 = Math.max(th1, s[1]);
-          r0 = Math.min(r0, s[0]); r1 = Math.max(r1, s[0]);
-        }
-        const rMoon = sv.frame.moons.find((mm) => mm.id === moonId);
-        const rm = Math.hypot(rMoon.pos.x, rMoon.pos.y);
+        let th0 = Infinity, th1 = -Infinity;
+        for (const s of samples) { th0 = Math.min(th0, s[1]); th1 = Math.max(th1, s[1]); }
         const nb = Math.max(8, Math.min(160, Math.round(((th1 - th0) * rm) / 2000)));
         const bins = Array.from({ length: nb }, () => []);
         for (const s of samples) {
           const i = Math.min(nb - 1, Math.floor(((s[1] - th0) / (th1 - th0)) * nb));
           bins[i].push(s);
         }
-        // radial footprint of the readback (the radial extent over the sampled rows ~ the pixel size on the ring)
-        const fpKm = (r1 - r0) / h / 1e3;
+        const fpKm = fpM / 1e3;
+        const win = Math.max(8000, 30 * fpM), ringA = Math.max(2000, 3 * fpM), ringB = Math.max(5000, 8 * fpM), gapA = Math.max(1500, 3 * fpM);
         const edges = [];
         for (const [eL, dir, name] of [[eIn, -1, 'inner'], [eOut, 1, 'outer']]) {
+          if (!measure.includes(name)) continue;
           const diffs = [], xr = [], xm = [];
           for (let i = 0; i < nb; i++) {
-            const pts = bins[i].filter((s) => Math.abs(s[0] - eL) < 8000).sort((a, b) => a[0] - b[0]);
-            if (pts.length < 20) continue;
             const thB = th0 + ((i + 0.5) / nb) * (th1 - th0);
             const xiM = st.xiAtSEF(eL, thB);
             const eM = eL + xiM;
+            const pts = bins[i].filter((s) => Math.abs(s[0] - eM) < win).sort((a, b) => a[0] - b[0]);
+            if (pts.length < 20) continue;
             // ring level beyond the model edge, gap level before it
-            const ringPts = pts.filter((s) => dir * (s[0] - eM) > 2000 && dir * (s[0] - eM) < 5000).map((s) => s[2]);
-            const gapPts = pts.filter((s) => dir * (eM - s[0]) > 1500 && dir * (eM - s[0]) < 5000).map((s) => s[2]);
+            const ringPts = pts.filter((s) => dir * (s[0] - eM) > ringA && dir * (s[0] - eM) < ringB).map((s) => s[2]);
+            const gapPts = pts.filter((s) => dir * (eM - s[0]) > gapA && dir * (eM - s[0]) < ringB).map((s) => s[2]);
             if (ringPts.length < 3 || gapPts.length < 3) continue;
             const med = (a) => a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)];
             const half = 0.5 * (med(ringPts) + med(gapPts));
@@ -178,7 +197,7 @@ await withHarness('edges', { usage: 'node scripts/test/edges.mjs [--base URL] [-
           edges.push({ name, bins: diffs.length, rmsKm: rms / 1e3, maxKm: maxD / 1e3, rangeModelKm: range(xm) / 1e3, rangeRenderedKm: range(xr) / 1e3, peakModelKm: peak(xm) / 1e3, peakRenderedKm: peak(xr) / 1e3 });
         }
         return { w, h, nan, nGap, gapMax, gapExcess, gap99: q(gap99, 0.99), nRing: ratios.length, ratioMed: q(ratios, 0.5), ratio05: q(ratios, 0.05), ratio95: q(ratios, 0.95), fpKm, eInKm: eIn / 1e3, eOutKm: eOut / 1e3, edges };
-      }, GAPS[v.moon].edgesKm, v.moon);
+      }, v.gapKm, v.measure, rRef);
       await page.screenshot({ path: join(out, `${v.id}.png`) });
       const pr = await problems(page, errs);
       rep.check(`${v.id}: clean (errors, GL, passes)`, pr.length === 0, pr.slice(0, 3).join(' | ') || 'none');
@@ -188,13 +207,17 @@ await withHarness('edges', { usage: 'node scripts/test/edges.mjs [--base URL] [-
         rep.range(`${v.id}: max tau inside the gap (> 1.5 km from the streamline edges)`, res.gapMax, 0, 0.05);
         rep.range(`${v.id}: max tau inside the gap above the profile's own tau0(a') J there`, res.gapExcess, -1, 0.01);
       }
-      if (res.nRing > 50) rep.range(`${v.id}: median tau_rendered / (tau0(a') J) in the ring`, res.ratioMed, 0.95, 1.05);
+      // (km footprints prefilter the structured B ring: the transmission-preserving tau_eff of a mix is below the mean)
+      const rtol = res.fpKm < 1 ? 0.05 : 0.15;
+      if (res.nRing > 50) rep.range(`${v.id}: median tau_rendered / (tau0(a') J) in the ring`, res.ratioMed, 1 - rtol, 1 + rtol);
       const fp = Math.max(res.fpKm, 0.05);
       for (const e of res.edges) {
         if (e.bins < 6) continue;
         rep.range(`${v.id}: ${e.name} edge RMS(rendered - model)`, e.rmsKm, 0, Math.max(0.25, 1.5 * fp), ' km');
         rep.range(`${v.id}: ${e.name} edge max |rendered - model|`, e.maxKm, 0, 0.75 + 2 * fp, ' km');
-        if (e.rangeModelKm >= 1) rep.range(`${v.id}: ${e.name} edge displacement range rendered / model`, e.rangeRenderedKm / e.rangeModelKm, 0.85, 1.15);
+        // (only where the model's range is well above the measurement noise of ~1 footprint)
+        if (e.rangeModelKm >= Math.max(1, 5 * fp)) rep.range(`${v.id}: ${e.name} edge displacement range rendered / model`, e.rangeRenderedKm / e.rangeModelKm, 0.85, 1.15);
+        if (v.id.startsWith('b-edge')) rep.range(`${v.id}: |edge displacement| from the mean radius, rendered / model`, e.peakRenderedKm / Math.max(e.peakModelKm, 1e-3), 0.9, 1.1);
         if (v.id === 'keeler-0' && e.name === 'outer') rep.range('keeler-0: peak outer-edge displacement (first ~80 km behind Daphnis)', e.peakRenderedKm, 2.5, 4.0, ' km');
         rows.push([v.id, e.name, e.bins, fmt(e.peakModelKm, 2), fmt(e.peakRenderedKm, 2), fmt(e.rangeModelKm, 2), fmt(e.rangeRenderedKm, 2), fmt(e.rmsKm, 3), fmt(e.maxKm, 3)]);
       }

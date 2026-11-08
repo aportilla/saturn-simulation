@@ -112,6 +112,8 @@ export class Pipeline {
   private lastAnchorId = -1;
   private lastWakesOn = true;
   private lastLocalRKm = -1;
+  private lastLocalRKmL = -1;
+  private lastLocalMacro = false;
   ready = false;
 
   constructor(readonly renderer: WebGLRenderer, passes: PipelinePasses) {
@@ -197,18 +199,25 @@ export class Pipeline {
     const pa = f.canvasPixelAngle;
     c.lod.setPixelAngle(pa);
     const anchorChanged = f.ring.anchorId !== this.lastAnchorId;
-    // the material around the camera is that of its Lagrangian (streamline) radius: near a moonlet-perturbed gap
-    // edge it differs from the Eulerian one by xi (km); the near-field boxes are Lagrangian (nearUpdate.glsl)
-    const rKm = (f.ring.r0 + f.ring.camLocal.x + c.structure.cam.da) / 1000;
-    const movedFar = Math.abs(rKm - this.lastLocalRKm) > 1.0; // reconfigure each km of radial travel
+    const rKmE = (f.ring.r0 + f.ring.camLocal.x) / 1000;
+    const movedFar = Math.abs(rKmE - this.lastLocalRKm) > 1.0; // reconfigure each km of radial travel
+    // The material around the camera is that of its Lagrangian (streamline) radius (sv_ringStructure: gap-edge waves,
+    // B-ring edge modes; the near-field boxes are Lagrangian, nearUpdate.glsl). The map moves material under a
+    // co-orbiting camera (km near the Keeler gap, +-75 km at the B-ring edge), so the boxes' tau_max covers that drift
+    // and the allocation is re-fitted only when the material under the camera changes (ring <-> gap) or drifted far.
+    const rKm = rKmE + c.structure.cam.da / 1000;
+    const local = c.profile.local(rKm * 1000);
+    const drifted = local.macroscopic !== this.lastLocalMacro || Math.abs(rKm - this.lastLocalRKmL) > 20;
     const camZ = f.ring.camLocal.z;
-    if (anchorChanged || movedFar || c.lod.needsRealloc(pa, camZ)) {
-      const local = c.profile.local(rKm * 1000);
-      // each size class is generated at the max tau over the radial span of its own box
-      c.lod.configure(local, (halfWidth) => c.profile.maxTauKm(rKm, halfWidth / 1000), camZ, { pixelAngle: pa, maxSlots: this.policy.maxSlots });
+    if (anchorChanged || movedFar || drifted || c.lod.needsRealloc(pa, camZ)) {
+      const driftKm = c.structure.maxDisplacementNear(rKmE * 1000) / 1000;
+      // each size class is generated at the max tau over the radial span of its own box (+ the possible drift)
+      c.lod.configure(local, (halfWidth) => c.profile.maxTauKm(rKm, halfWidth / 1000 + driftKm), camZ, { pixelAngle: pa, maxSlots: this.policy.maxSlots });
       c.wakes.configure(local, f.ring);
       this.lastAnchorId = f.ring.anchorId;
-      this.lastLocalRKm = rKm;
+      this.lastLocalRKm = rKmE;
+      this.lastLocalRKmL = rKm;
+      this.lastLocalMacro = local.macroscopic;
     }
     // the near field is active while the camera is within the distance its largest particles can be drawn at
     const nearAllowed = f.settings.nearField && Math.abs(f.camPos.z) < c.lod.maxReach && c.lod.totalParticles > 0;

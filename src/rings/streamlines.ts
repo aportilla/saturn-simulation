@@ -14,8 +14,8 @@
 //     from the moonlet; xi = sign * r_H * K(b, t) / b^2, zeta = [Z cos(psi_c) Wc(b, t) - Z sin(psi_c) Ws(b, t)] / b^3,
 //     psi_c = the moonlet's vertical phase at the particle's conjunction, a_moon(t_conj) its radius then (its own
 //     epicycle).
-//   * (hooks for later work packages: relief = mid-plane height and slope, tauMod = 2-D optical-depth modulation;
-//     normal modes of eccentric edges and ringlets would add terms to xi.)
+//   * normal modes of eccentric edges (src/rings/ringModes.ts, added by RingStructure.evalAt);
+//   * (hooks for later work packages: relief = mid-plane height and slope, tauMod = 2-D optical-depth modulation.)
 // Precision: all inputs are offsets (m) from the ring-frame origin r0 / the moonlet, so the float32 GPU version
 // stays precise near the camera.
 

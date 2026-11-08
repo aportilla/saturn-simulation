@@ -12,6 +12,7 @@
 // mu = MU_REF: tauEff = -MU_REF * ln(mean(exp(-tau/MU_REF))) (radial prefiltering for distant views).
 import { DataTexture, FloatType, NearestFilter, RGBAFormat, ClampToEdgeWrapping } from 'three';
 import { RING_FEATURES, RING_ZONES, zoneParamsAtKm, describeRadiusKm, type RingZone, type ZoneParams } from './ringRegions';
+import { EDGE_FEATURES, snapshotDisplacement } from './ringModes';
 import { dataUrl } from '../core/assets';
 
 export const PROFILE_R_MIN_KM = 66_000;
@@ -213,10 +214,43 @@ export class RingProfile {
       }
       p.tau[i] = tau;
     }
+    if (data) p.deprojectSnapshot();
     p.fillDerived();
     p.buildTextures();
     console.info(`[RingProfile] ${n} samples @ ${PROFILE_DR_KM} km, source: ${p.source}`);
     return p;
+  }
+
+  /**
+   * The occultation is a snapshot (RSS Rev 7 egress, 2005-123): eccentric edges with normal modes (EDGE_FEATURES,
+   * ringModes.ts) were caught displaced at its longitude. The renderer's profile is LAGRANGIAN (sv_ringStructure moves
+   * the streamlines back with the live modes), so around each feature the snapshot is de-projected:
+   *   tau0(a') = tau_snap(a' + xi_s(a')) (1 + dxi_s/da')      (surface density conserved)
+   * with xi_s the feature's displacement field at the snapshot (scaled to the measured snapshot edge).
+   */
+  private deprojectSnapshot(): void {
+    const snap = Float32Array.from(this.tau);
+    const at = (rKm: number) => {
+      const fi = (rKm - PROFILE_R_MIN_KM) / PROFILE_DR_KM;
+      const i0 = Math.floor(fi);
+      if (i0 < 0 || i0 + 1 >= this.n) return 0;
+      const f = fi - i0;
+      return snap[i0] * (1 - f) + snap[i0 + 1] * f;
+    };
+    const s = [0, 0];
+    for (const ft of EDGE_FEATURES) {
+      // the feature's zone in a': material side out to `reach`, gap side out to `gap`
+      const loKm = (ft.material < 0 ? ft.aEdge - ft.reach : ft.aEdge - ft.gap) / 1000;
+      const hiKm = (ft.material < 0 ? ft.aEdge + ft.gap : ft.aEdge + ft.reach) / 1000;
+      const i0 = Math.max(0, Math.floor((loKm - PROFILE_R_MIN_KM) / PROFILE_DR_KM));
+      const i1 = Math.min(this.n - 1, Math.ceil((hiKm - PROFILE_R_MIN_KM) / PROFILE_DR_KM));
+      for (let i = i0; i <= i1; i++) {
+        const aKm = PROFILE_R_MIN_KM + i * PROFILE_DR_KM;
+        snapshotDisplacement(ft, aKm * 1000, s);
+        this.tau[i] = Math.max(0, at(aKm + s[0] / 1000) * (1 + s[1]));
+      }
+    }
+    this.source += ' (eccentric edges de-projected to mean radii: src/rings/ringModes.ts)';
   }
 
   private fillDerived(): void {

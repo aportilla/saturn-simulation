@@ -66,7 +66,9 @@ B-ring core. Gaps, ringlets, plateaus, density waves and sharp edges are where t
 radial profile a 2-D streamline map moves the material: Pan and Daphnis raise waves on the Encke- and Keeler-gap
 edges (forced epicycles from integrations of Hill's problem, wavelength 3π × the distance to the moonlet, ~1.5 km
 at the Encke edges, 2–3.5 km at the Keeler edges, crowding the streamlines into denser crests, damped over a few
-wavelengths), seen identically by the medium, the particles and the astronaut's lighting. Per-zone
+wavelengths), seen identically by the medium, the particles and the astronaut's lighting. The B ring's outer edge
+sits at its mean radius and moves with its four measured normal modes (the Mimas 2:1 forced m = 2 plus free m = 1,
+2, 3 modes; up to ~150 km peak to peak). Per-zone
 particle size distributions (power laws, e.g. A ring 2 cm–5 m, B ring 5 cm–2 m, C ring 4 mm–10 m), layer
 thickness (C 5 m, A 10 m, B 10–15 m), surface density calibrated to density waves, albedo and colour. The
 implied ring mass, 1.34×10¹⁹ kg, matches Cassini's measured 1.54 ± 0.49×10¹⁹ kg. Details and references:
@@ -140,8 +142,9 @@ Full provenance, formats and accuracy: [`docs/data-sources.md`](docs/data-source
 
 ## Known limitations
 
-* Density and bending waves render as concentric ripples (no spiral phase); eccentric ringlets and edges other than
-  the moonlet-gap edges are a 2005 snapshot.
+* Density and bending waves render as concentric ripples (no spiral phase); the eccentric ringlets (Titan, Maxwell,
+  Huygens) and the A ring's outer edge are still a 2005 snapshot; the B-ring edge modes are a fit centred on 2007 whose
+  free modes may have evolved since, and the modes' structure inside the ring is schematic.
 * Moonlet gap edges: the vertical waves Daphnis raises (~0.5 km in the model, ~1 km seen by Cassini) are computed but
   not yet drawn as relief or shadows; the edge's azimuthal bunching, other perturbers (e.g. Prometheus on the Keeler
   outer edge) and the Encke-gap ringlets are not modelled. Near-field particles on displaced edge material are lit

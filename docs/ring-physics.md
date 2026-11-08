@@ -60,7 +60,9 @@ opaque at low elevation than the real ring, which is more transparent along the 
 features are a snapshot at the 2005-123 RSS longitude: Titan ringlet 77,885–77,913 km (mean 77,867–77,890),
 Maxwell ringlet 87,483–87,550 (mean 87,480–87,539), Huygens ringlet 117,822–117,842 (mean 117,806–117,824),
 B-ring edge 117,650 (mean 117,570, Mimas 2:1 m = 2 mode ±~75 km; Nicholson et al. 2014a), A-ring edge 136,769
-(Janus/Epimetheus 7:6, m = 7). (3) Density waves become concentric ripples, since the profile is axisymmetric.
+(Janus/Epimetheus 7:6, m = 7). **The B-ring edge is now de-projected at load time to its mean radius and moved by
+its normal modes (§9)**; the ringlets and the A-ring edge are still the snapshot. (3) Density waves become
+concentric ripples, since the profile is axisymmetric.
 Their real pitch is tiny, so locally this is right. (4) In the A ring the 1 km-scale ±10–15 % τ texture is real
 but mostly not axisymmetric (ingress/egress correlation < 0.35 at < 2 km scales).
 
@@ -171,7 +173,7 @@ from the PDS Rings Node "Vital statistics" table.
 | Bond gap / ringlet | 88,681–88,723 / 88,702–88,718 (τ̄ 0.85) | 88,686–88,723 / 88,702–88,719 |
 | Dawes ringlet / gap | 90,132–90,203 / 90,203–90,219 | 90,138–90,200 / 90,200–90,221 |
 | B-ring regions | B1 91,975–99,000; B2 –104,000; B3 –110,000; B4 –116,500; B5 –117,570 | Colwell et al. 2009 |
-| B-ring outer edge | 117,650 | 117,570 (mean; m = 2 ±~75 km) |
+| B-ring outer edge | 117,650 (snapshot; rendered: mean 117,568 ± the §9 modes) | 117,570 (mean; m = 2 ±~75 km) |
 | Huygens gap / ringlet / Strange ringlet | 117,650–117,930 / 117,822–117,842 / 117,908–117,911 | 117,500–117,930 / 117,806–117,824 / 117,907–117,909 |
 | Herschel gap (ringlet) | 118,192–118,284 (118,233–118,262) | 118,188–118,284 (118,234–118,263) |
 | Russell, Jeffreys, Kuiper | 118,589–118,628, 118,932–118,967, 119,400–119,406 | 118,590–118,628, 118,930–118,967, 119,402–119,406 |
@@ -330,8 +332,9 @@ shadows): that is the relief work package. (The previous fake shadow multiplier 
 * Inside the gap (b < 3) ξ is linear across it between the two sides (keeps r(a') monotonic; no material).
 
 **Validation** (`npm run test:edges`): looking down on the gaps, the rendered sheet τ per pixel matches the CPU mirror
-(median τ/(τ0(a')J) = 1.000), the gaps hold τ ≤ 0.015 (profile floor) where the old Eulerian lookup put τ ≈ 0.5
-slivers, and the rendered edges follow the model ξ(a'_edge, θ) to 50–80 m RMS (Keeler, 0.13 km footprint) and
+(median τ/(τ0(a')J) = 1.000), the gaps hold only the profile's own gap material (τ ≤ 0.015 in the Keeler gap, dusty
+ringlets ≤ 0.025 in the Encke gap; ≤ 0.009 above τ0(a')J) where the old Eulerian lookup put τ ≈ 0.5 slivers, and
+the rendered edges follow the model ξ(a'_edge, θ) to 50–80 m RMS (Keeler, 0.13 km footprint) and
 0.16–0.39 km (Encke, 0.39 km footprint); peak outer-Keeler-edge displacement in the first 80 km behind Daphnis
 2.71 km (model 2.76 km at the moonlet's radius on 2026-11-08). Near-field particles appear over displaced material and
 vanish with straight edges.
@@ -343,6 +346,54 @@ perturbed edge) beyond the damping envelope. The near-field particles are lit wi
 (Eulerian) position until `nearDraw.vert.glsl` samples through `ringSampleLocal` (particle work package), which makes
 displaced edge material too bright (×2.4 at a crest, test:edges near-crest; ×1.1 with the change).
 
+## 9. Normal modes of eccentric edges: the B-ring outer edge (`src/rings/ringModes.ts`)
+
+The same streamline map carries **normal modes** of sharp edges: r = a' − Σ_k A_k g_k(a') cos(m_k(θ − ϖ_k(t))),
+ϖ_k(t) = ϖ0_k + Ω_p,k (t − t0), ϖ the longitude of a radial **minimum** (Spitale & Porco 2010: "λ = ϖ at the
+minimum", "one minimum locked to Mimas"); θ = inertial J2000 ring longitude (= SEF azimuth). The B-ring outer edge
+uses the four-mode fit of **Spitale & Porco 2010 (AJ 140, 1747), Table 2** (Cassini ISS images; central epoch JED
+2454256.9 = 2007-06-09, a0 = 117,568 ± 4 km, RMS 7.9 km):
+
+| mode | e (a e) | ϖ0 | Ω_p (°/day) | cavity / zone (S&P) | decay length used |
+|---|---|---|---|---|---|
+| m = 1 free | 1.78×10⁻⁴ (20.9 km) | 73° | 5.098 | 253 km (ILR 117,314.9 km) | 253 km |
+| m = 2 forced (Mimas 2:1 ILR) | 2.94×10⁻⁴ (34.6 km) | 7.2° (lags Mimas by 2.9°) | 381.9835 (= n_Mimas, fixed) | resonance half-width 60–90 km | 173 km |
+| m = 2 free | 3.17×10⁻⁴ (37.3 km) | 123.1° | 382.0731 | 30 km (ILR 117,537.7 km) | 186 km |
+| m = 3 free | 1.00×10⁻⁴ (11.8 km) | 23.8° | 507.700 | 24 km (ILR 117,544.2 km) | 59 km |
+
+The forced and free m = 2 beat every 5.5 yr; the edge spans 117,491–117,640 km on 2026-11-08 (peak-to-peak up to
+~150 km over 2005–2030). **Radial profile** (schematic): into the material g = exp(−u/L) (tapered to 0 at 1,000 km),
+across the Huygens gap a linear ramp to 0 at the Huygens ringlet (238 km). The decay lengths are the cavities
+lengthened to L ≥ 5A: a kinematic streamline edge with the cavity widths would cross streamlines (free m = 2: 37 km
+over 30 km — strongly nonlinear in reality), so each mode is capped at |∂ξ/∂a'| ≤ 0.2 (all four ≤ 0.68; min ∂r/∂a' =
+0.33 over 2005–2030, J ≤ 3). The edge position (what images and occultations measure) is the fitted one; the interior
+structure of the modes is not.
+
+**De-projection of the snapshot** (`RingProfile.deprojectSnapshot`). The RSS Rev 7 egress profile crossed the edge at
+ring longitude 60.317° on 2005-123T08:09:48.7 UTC (CORSS_8001 table: ring event time, J2000 ring longitude) with the
+edge at 117,649.2 km. Within the feature's zone (117,568 − 1,000 … + 238 km) the loaded profile is replaced by the
+Lagrangian one, τ0(a') = τ_snap(a' + ξ_s(a')) (1 + ∂ξ_s/∂a') (surface density conserved), with ξ_s the modes' field
+at that instant. The S&P model, extrapolated 2.1 yr back from its epoch, puts the edge there at +49.8 km (m=1 −2.7,
+forced m=2 +27.2, free m=2 +20.4, m=3 +5.0 km) while the occultation shows +81.2 km: a 31 km (4σ) discrepancy,
+plausibly the free modes' evolution or modes missing from the four-mode fit (Nicholson et al. 2014a fit more).
+ξ_s is therefore the model field scaled by 81.2/49.8, so that the mean radius of the rendered edge is the measured
+117,568 km (it is: test:edges finds the de-projected edge at 117,568.00 km), and the rendered edge follows the S&P
+modes everywhere (rendered vs model 1–3 % in test:edges b-edge views). Consequence: at the snapshot's own time and
+longitude the rendered edge is 31 km inside the RSS edge.
+
+**Not yet modelled (remaining milestone-2 work).** The other eccentric features are still the 2005 snapshot:
+* A-ring outer edge (136,770 km): Janus/Epimetheus 7:6 ILR, m = 7, ~10–15 km, pattern speed = the dominant
+  co-orbital's mean motion, switching at the 4-yr swaps, plus free modes m = 5…18 (Spitale & Porco 2009, AJ 138,
+  1520; El Moutamid et al. 2016, Icarus 279, 125). Needs those papers' amplitudes / phases per swap epoch.
+* Titan ringlet (77,880 km; m = 1 locked to Titan by the 1:0 apsidal resonance, Ω_p = n_Titan), Maxwell ringlet
+  (87,510 km; freely precessing m = 1 plus m = 2), both from Nicholson et al. 2014b (Icarus 241, 373, tables of a,
+  ae, ϖ0, Ω_p per edge); Huygens ringlet (117,815 km; m = 1 and m = 2, French et al. 2016, Icarus 274, 131).
+  A ringlet needs a second feature type (material between two edges whose eccentricities differ: the width
+  variation W(θ) = W0 + Δ(ae) cos(…) follows from e(a') linear across the ringlet, J from the map), with gap ramps on
+  both sides; snapshot − mean offsets for the de-projection are in §2 caveat (2).
+The machinery is generic: add an `EdgeFeature` (modes, decay, gap, snapshot geometry) to `EDGE_FEATURES` (≤ 2
+features / 8 modes in the shader: `RS_FEATURES`, `RS_MODES`).
+
 ## References
 
 Afigbo, V. M., et al. 2025, JGR Planets (Kronoseismology VII; arXiv:2502.19265) · Albers, N., et al. 2012,
@@ -353,7 +404,8 @@ Icarus 190, 127 · Colwell, J. E., et al. 2009, in *Saturn from Cassini-Huygens*
 et al. 2010, AJ 140, 1569 · Cooke, M. L. 1991, PhD thesis, Cornell · Cuzzi, J. N., Scargle, J. D. 1985, ApJ 292, 276 ·
 Cuzzi, J. N., et al. 2009, in *Saturn from
 Cassini-Huygens*, 459 · Dones, L., Cuzzi, J. N., Showalter, M. R. 1993, Icarus 105, 184 · Doyle, L. R., Dones, L.,
-Cuzzi, J. N. 1989, Icarus 80, 104 · Esposito, L. W., et al. 2022, EGU22-6601 · Filacchione, G., et al. 2014, Icarus
+Cuzzi, J. N. 1989, Icarus 80, 104 · El Moutamid, M., et al. 2016, Icarus 279, 125 · Esposito, L. W., et al. 2022,
+EGU22-6601 · Filacchione, G., et al. 2014, Icarus
 241, 45 · French, R. G., Nicholson, P. D. 2000, Icarus 145, 502 · French, R. G., Salo, H., McGhee, C. A., Dones, L. 2007,
 Icarus 189, 493 ·
 French, R. G., et al. 2016, Icarus 274, 131 · Goldreich, P., Tremaine, S. 1980, ApJ 241, 425 · Harbison, R. A.,
@@ -370,7 +422,8 @@ composition of Saturn's rings*, Space Sci. Rev. (arXiv:2311.17344) · Morishima,
 2024) · Nicholson, P. D., Hedman, M. M. 2010, Icarus 206, 410 · Nicholson, P. D., et al. 2014a, Icarus 227, 152
 (B-ring edge) · Nicholson, P. D., et al. 2014b, Icarus 241, 373 (C ring) · PDS Rings Node, *Vital statistics for
 Saturn's rings* (pds-rings.seti.org/saturn/saturn_rings_table.html) · Porco, C. C., et al. 2007, Science 318, 1602 ·
-Showalter, M. R., Cuzzi, J. N., Marouf, E. A., Esposito, L. W. 1986, Icarus 66, 297 · Tajeddine, R., et al. 2017,
+Showalter, M. R., Cuzzi, J. N., Marouf, E. A., Esposito, L. W. 1986, Icarus 66, 297 · Spitale, J. N., Porco, C. C.
+2009, AJ 138, 1520 · Spitale, J. N., Porco, C. C. 2010, AJ 140, 1747 · Tajeddine, R., et al. 2017,
 ApJS 232, 28 · Tiscareno, M. S., et al. 2007, Icarus 189,
 14 · Tiscareno, M. S., et al. 2013, Icarus 224, 201 · Tiscareno, M. S., Harris, B. E. 2018, Icarus 312, 157 ·
 Weiss, J. W., Porco, C. C., Tiscareno, M. S. 2009, AJ 138, 272 · Wisdom, J., Tremaine, S. 1988, AJ 95, 925 ·
