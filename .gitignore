@@ -1,5 +1,6 @@
-node_modules/
+node_modules
 dist/
+__pycache__/
 .DS_Store
 *.log
 # raw downloads (processed outputs live in public/data)
