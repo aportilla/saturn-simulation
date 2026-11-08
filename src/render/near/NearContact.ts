@@ -8,17 +8,18 @@
 // the shadow-map casters, the astronaut's received shadows through ctx.nearShadow) sees the same positions.
 //
 // WHO (the contact set): present particles (R0 w != 0, drawn or not) with weight
-//   w_i = smoothstep(RHO_LO, RHO_HI, a / (s * renderPixelAngle))      resolved: 2 -> 4 render px radius
-//       x (1 - smoothstep(TAU_VIS_LO, TAU_VIS_HI, tau_los))             not statistically occluded
-//       x (1 - smoothstep(e0, e1, out))                                 near the view frustum
-// An overlap is only visible if both particles are resolved (its depth is at most the smaller one's diameter, and
-// a typical overlap of ~0.3 radii of a 2 px particle is sub-pixel), so pairs are corrected with min(w_i, w_j); the
-// fades make every correction continuous in time. tau_los: slab-model optical depth from the camera to the
-// particle's near side with a conservative path tau (the lowest macroscopic tau within the contact range x the
-// emptiest wake-gap density x 0.8, as the update pass's cull) - direction-independent. out: the centre's distance
-// outside the view frustum; the set is the frustum dilated by the influence reach M (two contact distances of the
-// largest particles: everything that can push a visible particle within the iterations), fading out over F beyond
-// it - but never beyond the coverage of R0 (the update pass keeps out-of-view particles within rb + mw, mw = the
+//   w_i = smoothstep(rhoLo, rhoHi, a / (s * renderPixelAngle))        resolved: 3 -> 6 render px radius
+//       x (1 - smoothstep(tauVisLo, tauVisHi, tau_los))                 not statistically occluded: tau 4 -> 5
+//       x (1 - smoothstep(e1 - F, e1, out))                             near the view frustum
+// An overlap is at most the smaller particle's diameter deep and typically ~0.3 of its radius, i.e. about one pixel
+// of silhouette at 3 px radius: below that it is invisible, so pairs are corrected with min(w_i, w_j); the fades
+// make every correction continuous in time. tau_los: slab-model optical depth from the camera to the particle's
+// near side with a conservative path tau (the lowest macroscopic tau within the contact range x the emptiest
+// wake-gap density x 0.8, as the update pass's cull) - direction-independent; at tau 4-5 only e^-tau = 2-0.7 % of
+// a particle is seen. out: the centre's distance outside the view frustum; e1 = rb + min(M a + F, mw): the frustum
+// dilated by M = 4 x the largest semi-axis / a (two of the particle's own contact distances: a smaller particle
+// yields to a larger one, so only particles about that close can push a visible one), fading out over F = half
+// of it - but never beyond the coverage of R0 (the update pass keeps out-of-view particles within rb + mw, mw = the
 // wake margin of ~3 wake wavelengths; with wakes off (mw = 0) the fade moves to [0, rb] at the view's edge).
 //
 // CONTACT DISTANCE: the sum of the two drawn base shapes' radial extents along the centre line n,
@@ -32,25 +33,35 @@
 //   1. list: the near-field HistoPyramid (NearCompaction: the draw lists' atlases, rebuilt with the contact
 //      classifier first) compacts the contact set; a pass materializes it into list textures (analytic position, R0
 //      slot, signed a, weight, M'), in slot order (largest classes first: a truncated list loses the smallest).
-//   2. ROUNDS x:
-//      a. hash grid of the round's start positions: one level per size class (octave), cell = the class's largest
-//         diameter (2 x max semi-axis x aHi), 2^n buckets of CT_K entries (position + list index + level); entry m
-//         of a bucket = the (m+1)-th smallest list index hashed there, filled by CT_K point passes (depth test on
-//         the index; a vertex skips itself once the previous entry reached it) - deterministic, no atomics;
+//   2. ROUNDS (3) x:
+//      a. hash grid of the round's start positions: one level per size class (octave from 1 mm); cell = the class's
+//         largest diameter (2 x max semi-axis x aHi), or larger where the class is sparse (cbrt(cellFill / mid-plane
+//         number density): a search then scans few, mostly occupied cells); 2^n buckets (>= 2 x the list capacity) of
+//         16 R32UI entries (list index + 1 in 21 bits, an 11-bit tag of the cell hash above) in 4 x 4 texel blocks.
+//         Filled by ONE point pass with stencil routing (Purcell et al. 2003): every list entry draws a 4 x 4 px
+//         point over its bucket's block, whose stencil holds 15 - slot; the test passes at 15 and every fragment
+//         increments, so the k-th entry of a bucket in primitive (= list) order lands in slot k - 1 - deterministic,
+//         no atomics; a 17th entry is dropped (rare: the test counts it).
 //      b. neighbour search: each particle scans its own level and every larger one (the cells within its extent +
-//         the level's largest extent; an entry counts only in its own cell and level, so shared buckets never count
-//         twice) and keeps the CT_NB candidates with the smallest surface gap d - rho_i - rho_j below GAP_MARGIN x
-//         (rho_i + rho_j) (overlaps first; the margin admits pairs the iterations can close);
-//      c. ITERATIONS / ROUNDS Jacobi iterations over the neighbour lists: per overlapping pair (penetration delta =
-//         rho_i + rho_j - d > 0) the correction c = min(w_i, w_j) x share x delta along n, share = m_j / (m_i + m_j)
-//         (m ~ a^3) within a size class, 1 for the smaller particle of a pair from different classes (>= ~1/2 the
-//         size: small particles yield to boulders; the larger one never sees the pair), x += omega sum c n / max(1,
-//         soft count) (pairs with delta < 0.1 rho_min count delta / (0.1 rho_min): continuous).
-//      The second round re-searches after the first moves (a boulder leaving its own overlap pushes into particles
-//      it did not touch before).
-//      Displacement bound: |x - x_analytic| <= CLAMP_K x D_i, D_i = the largest pair correction c the particle has
-//      needed so far (a particle without an initial overlap can still yield to a neighbour pushed into it): nothing
-//      moves farther than overlaps require.
+//         the level's largest extent + the margin; an entry counts only if tag, cell and level match, so shared
+//         buckets never count twice) and keeps the CT_NB = 8 candidates with the smallest normalized surface gap
+//         g = (d - rho_i - rho_j) / (2 min(rho_i, rho_j)) below gapMargin = 0.5 (overlaps first; the margin admits
+//         pairs the iterations can close), with their gaps at the round's start;
+//      c. ITERATIONS / ROUNDS Jacobi iterations (12 in all) over the neighbour lists: per overlapping pair
+//         (penetration delta = rho_i + rho_j - d > 0) the correction c = e x share x delta along n, with
+//         e = min(w_i, w_j) x (1 - embedding fade) x listing weight; share = m_j / (m_i + m_j) (m ~ a^3) within a size
+//         class, 1 for the smaller particle of a pair from different classes (small particles yield to boulders; the
+//         larger one never lists the pair); x += omega sum c n / max(1, soft count), omega = 1 (pairs with
+//         delta < 0.1 rho_min count delta / (0.1 rho_min): continuous). Embedding fade: a smaller particle lying
+//         entirely inside a larger one (delta / rho_min 2 -> 2.5) is hidden and left alone - ejecting it would move
+//         it by up to the larger radius into a cascade of new contacts that changes chaotically with the analytic
+//         positions. Listing weight 1 - smoothstep(gapMargin / 2, gapMargin, g at the round's start): a pair enters
+//         the list continuously.
+//      Later rounds re-search after the moves (a boulder leaving its own overlap pushes into particles it did not
+//      touch before).
+//      Displacement bound: |x - x_analytic| <= clampK (4) x D_i, D_i = the largest pair correction of the particle in
+//      the first iteration (its own initial overlaps), raised by contacts that appear later only up to yieldBound
+//      (0.5) x a_i: nothing moves farther than overlaps require, and pushes cannot cascade far through a dense packing.
 //   3. scatter: one point per moved list entry writes the final position back to its R0 texel. Drawn flags are
 //      kept, except that a present particle whose displacement moved it into the view frustum (the update pass's
 //      sphere test failed at the analytic position and passes now) is drawn (count contract: every particle >= 1 px
@@ -60,8 +71,9 @@
 // Regression check: scripts/test/contact.mjs (overlaps before / after, displacement bound, temporal smoothness,
 // counts, cost).
 import {
-  BufferGeometry, FloatType, GLSL3, LessDepth, Mesh, NearestFilter, NoBlending, Points, RawShaderMaterial,
-  RedIntegerFormat, RGBAFormat, UnsignedIntType, WebGLRenderTarget, type IUniform, type WebGLRenderer,
+  AlwaysStencilFunc, BufferGeometry, EqualStencilFunc, FloatType, GLSL3, IncrementStencilOp, Mesh, NearestFilter, NoBlending,
+  Points, RawShaderMaterial, RedIntegerFormat, ReplaceStencilOp, RGBAFormat, UnsignedIntType, WebGLRenderTarget,
+  type IUniform, type WebGLRenderer,
 } from 'three';
 import { fullscreenGeometry, fsCamera, FS_VERT } from '../fullscreen';
 import { LOD_CLASSES, type RingLod } from '../../rings/RingLod';
@@ -70,16 +82,18 @@ import type { WakeField } from '../../rings/WakeField';
 import type { FrameState } from '../../core/FrameState';
 import { NEAR_PYR_GLSL, type NearCompaction } from './NearCompaction';
 
-/** width of the contact list and hash-grid textures */
+/** width of the contact list textures */
 export const CT_W = 2048;
-const CT_W_LOG2 = 11;
-/** entries per hash bucket (grid layers; mean fill <= 0.5, but a cell in a dense wake core can hold ~8) */
-export const CT_K = 8;
+/** hash buckets: 4 x 4 texel blocks of an R32UI texture CT_W wide (512 buckets per block row): 16 entries each */
+export const CT_SLOTS = 16;
+const CT_BPR_LOG2 = 9;
 /** neighbour-list texels per particle (4 entries each) and the list length */
 const CT_NB_T = 2;
 export const CT_NB = CT_NB_T * 4;
 /** list capacity limit: a grid entry packs the list index + 1 into 21 bits */
 export const CT_MAX = (1 << 21) - CT_W;
+/** bucket limit: 4 texel rows per 512 buckets within the max texture height (16384) */
+const CT_MAX_BUCKETS = 1 << 21;
 const CT_MIN_ROWS = 32;
 
 /** Hash grid: level, cell and bucket of a particle, entry packing (shared by the grid build and the search). */
@@ -87,16 +101,17 @@ const GRID_GLSL = /* glsl */ `
 #define CT_W ${CT_W}
 #define CT_NB ${CT_NB}
 uniform float uCtInvCell[LOD_CLASSES];   // 1 / grid cell size of each level (m^-1)
-uniform int uCtMask;                     // buckets - 1 (buckets: a power of two, CT_W per texture row)
+uniform int uCtMask;                     // buckets - 1 (a power of two)
 // grid level = size class (octave from 1 mm, sv_ringLod)
 int ctLevel(float a) { return clamp(int(floor(log2(a * 1000.0))), 0, LOD_CLASSES - 1); }
 ivec3 ctCell(vec3 p, int L) { return ivec3(floor(p * uCtInvCell[L])); }
 uint ctCellHash(ivec3 c, int L) {
   return pcgHash(uint(c.x) * 73856093u ^ uint(c.y) * 19349663u ^ uint(c.z) * 83492791u ^ uint(L + 1) * 2654435761u);
 }
+// texel of the bucket's first entry: entries 0..15 fill its 4 x 4 block row by row
 ivec2 ctBucket(uint h) {
   uint b = h & uint(uCtMask);
-  return ivec2(int(b & ${CT_W - 1}u), int(b >> ${CT_W_LOG2}u));
+  return 4 * ivec2(int(b & ${(1 << CT_BPR_LOG2) - 1}u), int(b >> ${CT_BPR_LOG2}u));
 }
 // grid entry (R32UI): list index + 1 in the low 21 bits (0 = empty), an 11-bit tag of (level, cell) above, so that
 // entries of other cells sharing the bucket are skipped without touching their data
@@ -193,18 +208,21 @@ void main() {
   oS = vec4(M[2][2], M[0][1], M[0][2], M[1][2]);
 }`;
 
-/** Grid build, layer m: one point per list entry into its bucket's texel (the smallest index wins the depth test). */
+/**
+ * Grid build: one 4 x 4 px point per list entry over its bucket's block. Stencil routing (Purcell et al. 2003): the
+ * stencil of every block holds 15 - slot (slot = (x & 3) + 4 (y & 3), written as 4 bit planes); the test passes at 15
+ * and every fragment increments (saturating), so the k-th particle that reaches a bucket (primitive order = list
+ * index order: deterministic) lands in slot k - 1 and the 17th and later are dropped (the test counts them).
+ * (A blitted pristine stencil would save the 4 pattern passes, but on ANGLE/Metal a stencil blitFramebuffer leaves
+ * the following stencil-tested draws without any output.)
+ */
 const GRID_VS = /* glsl */ `
-precision highp usampler2D;
 uniform sampler2D tCP;      // the round's start positions (xyz)
 uniform sampler2D tCM;      // (signed a, ...)
-uniform usampler2D tGPrev;  // the previous layer (m > 0)
-uniform int uLayer;
-uniform ivec2 uGSize;       // grid texture size (CT_W, rows)
+uniform ivec2 uGSize;       // grid texture size (px)
 flat out uint vE;
-flat out float vJ;
 void main() {
-  gl_PointSize = 1.0;
+  gl_PointSize = 4.0;
   gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
   int j = gl_VertexID;
   ivec2 tj = ctTexel(j);
@@ -212,30 +230,27 @@ void main() {
   if (a == 0.0) return;
   int L = ctLevel(a);
   uint h = ctCellHash(ctCell(texelFetch(tCP, tj, 0).xyz, L), L);
-  ivec2 bt = ctBucket(h);
-  if (uLayer > 0) {
-    // placed in an earlier entry of the bucket: the entries hold its smallest indices in increasing order
-    uint v = texelFetch(tGPrev, bt, 0).r;
-    if (v == 0u || j <= ctEntryIndex(v)) return;
-  }
   vE = ctPack(j, h);
-  vJ = float(j);
-  gl_Position = vec4((vec2(bt) + 0.5) / vec2(uGSize) * 2.0 - 1.0, 0.0, 1.0);
+  gl_Position = vec4((vec2(ctBucket(h)) + 2.0) / vec2(uGSize) * 2.0 - 1.0, 0.0, 1.0);
 }`;
 const GRID_FS = /* glsl */ `
 precision highp float;
 precision highp int;
 flat in uint vE;
-flat in float vJ;
+layout(location = 0) out uvec4 o;
+void main() { o = uvec4(vE, 0u, 0u, 0u); }`;
+
+/** Routing pattern, bit plane uBit (stencil write mask 1 << uBit, REPLACE with 0xff): kept where 15 - slot has the bit. */
+const STENCIL_BITS_FS = /* glsl */ `
+precision highp float;
+precision highp int;
+uniform int uBit;
 layout(location = 0) out uvec4 o;
 void main() {
-  o = uvec4(vE, 0u, 0u, 0u);
-  gl_FragDepth = (vJ + 0.5) * (1.0 / 16777216.0);   // exact in the 24-bit depth buffer for indices < 2^24
+  ivec2 p = ivec2(gl_FragCoord.xy) & 3;
+  if ((((15 - p.x - 4 * p.y) >> uBit) & 1) == 0) discard;
+  o = uvec4(0u);
 }`;
-
-const layerUniforms = Array.from({ length: CT_K }, (_, m) => `uniform usampler2D tG${m};`).join('\n');
-// entry m of bucket texel bt (m is the same for the whole warp: a uniform branch chain, one fetch)
-const layerFetch = `uint ctEntry(int m, ivec2 bt) {\n${Array.from({ length: CT_K }, (_, m) => `  ${m ? 'else ' : ''}if (m == ${m}) return texelFetch(tG${m}, bt, 0).r;`).join('\n')}\n  return 0u;\n}`;
 
 /** Neighbour search: the CT_NB candidates with the smallest surface gap (list indices + 1, 0 = none). */
 const SEARCH_FRAG = /* glsl */ `
@@ -243,7 +258,7 @@ precision highp usampler2D;
 uniform sampler2D tCP;    // the round's start positions (xyz)
 uniform sampler2D tCM;    // (signed a, weight, M'00, M'11)
 uniform sampler2D tCS;    // (M'22, M'01, M'02, M'12)
-${layerUniforms}
+uniform usampler2D tG;    // hash grid (4 x 4 entry blocks)
 uniform vec4 uCtSr;       // (gap margin / contact distance, largest semi-axis / a, -, -)
 uniform ivec2 uCtLv;      // grid levels present (lowest, highest)
 uniform float uCtAHi[LOD_CLASSES];   // largest radius of each level (m)
@@ -291,7 +306,7 @@ void ctCand(int j, int L, ivec3 cell, float reach) {
   float g = (d - ri - rj) / (2.0 * min(ri, rj));
   if (g < uCtSr.x) ctKeep(j, g);
 }
-${layerFetch}
+uint ctEntry(int m, ivec2 bt) { return texelFetch(tG, bt + ivec2(m & 3, m >> 2), 0).r; }
 void main() {
   ivec2 c = ivec2(gl_FragCoord.xy);
   oN0 = vec4(0.0);
@@ -321,7 +336,7 @@ void main() {
           ivec3 cell = ivec3(ix, iy, iz);
           uint h = ctCellHash(cell, L), tag = ctTag(h);
           ivec2 bt = ctBucket(h);
-          for (int m = 0; m < ${CT_K}; m++) {
+          for (int m = 0; m < ${CT_SLOTS}; m++) {
             uint e = ctEntry(m, bt);
             if (e == 0u) break;
             if ((e >> 21u) == tag) ctCand(ctEntryIndex(e), L, cell, reach);   // (else: another cell's entry)
@@ -517,10 +532,11 @@ export class NearContact {
 
   /** last read-back contact-set size (entries in the list, before truncation to the capacity) */
   count = 0;
-  /** entries processed this frame (draw range) and the list capacity */
+  /** entries processed this frame (draw range) and the list capacity; hash buckets and their capacity */
   drawn = 0;
   cap = 0;
   buckets = 0;
+  readonly slotsPerBucket = CT_SLOTS;
   /** whether the contact step ran this frame */
   ran = false;
   /** target holding the last run's result (tests / debugging): (final position, bound D_i) */
@@ -530,6 +546,7 @@ export class NearContact {
   private readonly l1Mat: RawShaderMaterial;
   private readonly matMat: RawShaderMaterial;
   private readonly gridMat: RawShaderMaterial;
+  private readonly stBitsMat: RawShaderMaterial;
   private readonly srMat: RawShaderMaterial;
   private readonly itMat: RawShaderMaterial;
   private readonly scMat: RawShaderMaterial;
@@ -539,7 +556,8 @@ export class NearContact {
   private cRT: WebGLRenderTarget | null = null;
   private pRT: WebGLRenderTarget[] = [];
   private nRT: WebGLRenderTarget | null = null;
-  private gRT: WebGLRenderTarget[] = [];
+  /** hash grid: R32UI entries in 4 x 4 blocks + the routing stencil */
+  private gRT: WebGLRenderTarget | null = null;
   private readback: { pbo: WebGLBuffer; fence: WebGLSync } | null = null;
   private readonly readBuf = new Float32Array(4);
   private stale = true;
@@ -571,20 +589,26 @@ export class NearContact {
     this.matMat = fsMat(classify + NEAR_PYR_GLSL + MATERIALIZE_FRAG, {
       ...shared, ...tables, ...sel, ...grid, ...pyr.uniforms(), uClsSpinW: spinW, uCtN: { value: 0 },
     });
-    const layers: Record<string, IUniform> = {};
-    for (let m = 0; m < CT_K; m++) layers[`tG${m}`] = { value: null };
     const list = () => ({ tCP: { value: null }, tCM: { value: null }, tCS: { value: null } });
     this.srMat = fsMat(MIN_HEADER + GRID_GLSL + SEARCH_FRAG, {
-      ...grid, ...layers, ...list(), uCtSr: { value: [0.5, 1, 0, 0] }, uCtLv: this.lvU, uCtAHi: this.aHiU,
+      ...grid, ...list(), tG: { value: null }, uCtSr: { value: [0.5, 1, 0, 0] }, uCtLv: this.lvU, uCtAHi: this.aHiU,
     });
     this.itMat = fsMat(MIN_HEADER + GRID_GLSL + ITERATE_FRAG, {
       ...grid, ...list(), tCP0: { value: null }, tCN0: { value: null }, tCN1: { value: null }, tCG0: { value: null }, tCG1: { value: null },
       uCtIt: { value: [1, 4, 0.5, 1] }, uCtEmb: { value: [2, 2.5, 0.5] },
     });
+    // stencil routing: test == 15, every fragment increments (the written texel leaves 15, the next one reaches it)
     this.gridMat = new RawShaderMaterial({
       glslVersion: GLSL3, vertexShader: MIN_HEADER + GRID_GLSL + GRID_VS, fragmentShader: GRID_FS,
-      uniforms: { ...grid, tCP: { value: null }, tCM: { value: null }, tGPrev: { value: null }, uLayer: { value: 0 }, uGSize: { value: [CT_W, 1] } },
-      depthTest: true, depthWrite: true, depthFunc: LessDepth, blending: NoBlending,
+      uniforms: { ...grid, tCP: { value: null }, tCM: { value: null }, uGSize: { value: [CT_W, 1] } },
+      depthTest: false, depthWrite: false, blending: NoBlending,
+      stencilWrite: true, stencilFunc: EqualStencilFunc, stencilRef: 15, stencilFuncMask: 0xff, stencilWriteMask: 0xff,
+      stencilFail: IncrementStencilOp, stencilZFail: IncrementStencilOp, stencilZPass: IncrementStencilOp,
+    });
+    this.stBitsMat = new RawShaderMaterial({
+      glslVersion: GLSL3, vertexShader: FS_VERT, fragmentShader: STENCIL_BITS_FS, uniforms: { uBit: { value: 0 } },
+      depthTest: false, depthWrite: false, colorWrite: false, blending: NoBlending,
+      stencilWrite: true, stencilFunc: AlwaysStencilFunc, stencilRef: 0xff, stencilWriteMask: 1, stencilZPass: ReplaceStencilOp,
     });
     this.scMat = new RawShaderMaterial({
       glslVersion: GLSL3, vertexShader: common + GRID_GLSL + SCATTER_VS, fragmentShader: SCATTER_FS,
@@ -609,33 +633,34 @@ export class NearContact {
     this.cap = rows * CT_W;
     this.cRT?.dispose();
     this.nRT?.dispose();
-    for (const t of [...this.pRT, ...this.gRT]) t.dispose();
+    this.gRT?.dispose();
+    for (const t of this.pRT) t.dispose();
     this.cRT = floatRT(CT_W, rows, 3);
     this.pRT = [floatRT(CT_W, rows), floatRT(CT_W, rows)];
     this.nRT = floatRT(CT_W, rows, 2 * CT_NB_T);   // neighbour indices + their round-start gaps
-    // buckets: the next power of two >= twice the capacity (mean fill <= 0.5 of CT_K entries, clustered cells
-    // included; R32UI, 4 bytes per entry: a compact table for the random access of the search)
+    // buckets: the next power of two >= twice the capacity (mean fill <= 0.5 of 16 entries, clustered cells included;
+    // R32UI, 4 bytes per entry: a compact table for the random access of the search)
     let b = 1 << 16;
-    while (b < 2 * this.cap && b < 2 * CT_MAX) b *= 2;
+    while (b < 2 * this.cap && b < CT_MAX_BUCKETS) b *= 2;
     this.buckets = b;
     this.maskU.value = b - 1;
-    const gRows = b / CT_W;
-    this.gRT = Array.from({ length: CT_K }, () => new WebGLRenderTarget(CT_W, gRows, {
-      type: UnsignedIntType, format: RedIntegerFormat, internalFormat: 'R32UI', minFilter: NearestFilter, magFilter: NearestFilter,
-      depthBuffer: true, stencilBuffer: false, generateMipmaps: false,
-    }));
-    // allocate the integer targets now: three.js binds a float placeholder for a target never rendered to, and an
-    // unsigned sampler on it drops the draw (GL_INVALID_OPERATION)
+    const gRows = (b >> CT_BPR_LOG2) * 4;
+    // (depth + stencil: three.js attaches DEPTH24_STENCIL8; the depth is unused)
+    this.gRT = new WebGLRenderTarget(CT_W, gRows, {
+      type: UnsignedIntType, format: RedIntegerFormat, internalFormat: 'R32UI',
+      minFilter: NearestFilter, magFilter: NearestFilter, depthBuffer: true, stencilBuffer: true, generateMipmaps: false,
+    });
+    // cleared now: three.js binds a float placeholder for a target never rendered to, and the unsigned sampler of the
+    // search on it drops the draw (GL_INVALID_OPERATION)
     const gl = r.getContext() as WebGL2RenderingContext;
     const prev = r.getRenderTarget();
-    for (const g of this.gRT) {
-      r.setRenderTarget(g);
-      r.state.buffers.color.setMask(true);
-      gl.clearBufferuiv(gl.COLOR, 0, this.zero4);
-    }
+    r.setRenderTarget(this.gRT);
+    r.state.buffers.color.setMask(true);
+    gl.clearBufferuiv(gl.COLOR, 0, this.zero4);
     r.setRenderTarget(prev);
+    (this.gridMat.uniforms.uGSize.value as number[])[0] = CT_W;
     (this.gridMat.uniforms.uGSize.value as number[])[1] = gRows;
-    for (let m = 0; m < CT_K; m++) this.srMat.uniforms[`tG${m}`].value = this.gRT[m].texture;
+    this.srMat.uniforms.tG.value = this.gRT.texture;
     const c = this.cRT.textures;
     for (const mat of [this.gridMat, this.srMat, this.itMat, this.scMat]) mat.uniforms.tCM.value = c[1];
     for (const mat of [this.srMat, this.itMat]) mat.uniforms.tCS.value = c[2];
@@ -737,23 +762,28 @@ export class NearContact {
     (iu.uCtEmb.value as number[])[2] = this.yieldBound;
     (this.gridPts.geometry as BufferGeometry).setDrawRange(0, n);
     const gl = r.getContext() as WebGL2RenderingContext;
+    const g = this.gRT!;
     let src = cRT.textures[0];
     const rounds = Math.max(1, Math.round(this.rounds));
     const iters = Math.max(rounds, Math.round(this.iterations));
     let done = 0, out = 0;
     for (let rd = 0; rd < rounds; rd++) {
-      gu.tCP.value = src;
-      for (let m = 0; m < CT_K; m++) {
-        const g = this.gRT[m];
-        r.setRenderTarget(g);
-        r.state.buffers.color.setMask(true);
-        gl.clearBufferuiv(gl.COLOR, 0, this.zero4);
-        r.clear(false, true, false);
-        gu.uLayer.value = m;
-        gu.tGPrev.value = this.gRT[m > 0 ? m - 1 : 1].texture;   // (layer 0: unused, but an integer texture)
-        this.gridMat.uniformsNeedUpdate = true;
-        r.render(this.gridPts, fsCamera);
+      // hash grid of the round's start positions: entries and stencil cleared, the routing pattern (15 - slot) drawn
+      // as 4 bit planes, then one routed point pass
+      r.setRenderTarget(g);
+      r.state.buffers.color.setMask(true);
+      gl.clearBufferuiv(gl.COLOR, 0, this.zero4);
+      r.clear(false, false, true);
+      this.fs.material = this.stBitsMat;
+      for (let bit = 0; bit < 4; bit++) {
+        this.stBitsMat.uniforms.uBit.value = bit;
+        this.stBitsMat.stencilWriteMask = 1 << bit;
+        this.stBitsMat.uniformsNeedUpdate = true;
+        r.render(this.fs, fsCamera);
       }
+      gu.tCP.value = src;
+      this.gridMat.uniformsNeedUpdate = true;
+      r.render(this.gridPts, fsCamera);
       if (this.stage === 3) return false;
       su.tCP.value = src;
       this.srMat.uniformsNeedUpdate = true;
@@ -839,8 +869,9 @@ export class NearContact {
   dispose(): void {
     this.cRT?.dispose();
     this.nRT?.dispose();
-    for (const t of [...this.pRT, ...this.gRT]) t.dispose();
-    for (const m of [this.l1Mat, this.matMat, this.gridMat, this.srMat, this.itMat, this.scMat]) m.dispose();
+    this.gRT?.dispose();
+    for (const t of this.pRT) t.dispose();
+    for (const m of [this.l1Mat, this.matMat, this.gridMat, this.stBitsMat, this.srMat, this.itMat, this.scMat]) m.dispose();
   }
 }
 

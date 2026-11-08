@@ -4,7 +4,8 @@
 // are drawn, and smoothly in time.
 //
 // usage: node scripts/test/contact.mjs [--base URL] [--out DIR] [--views b-inside,a-inside,a-30m] [--w 1280 --h 720]
-//                                      [--fps] [--fps-secs 2] [--no-temporal]
+//                                      [--no-temporal] [--cost [--cost-views b-default,a-default,b-inside,a-inside]
+//                                      [--reps 3] [--trials 12]]
 //
 // Per view (paused, t fixed, render scale 1, astronaut off) the contact list (analytic positions, R0 slots, weights,
 // contact shapes), the result and R0 are read back and checked against an independent CPU evaluation in the page:
@@ -26,7 +27,10 @@
 //    displacement field x - x_analytic must not jump: "pops" = particles whose displacement changes by more than
 //    max(5 x their analytic motion, 1 render px) <= the view's limit; t + 1 s and t + 10 s reported (p99 / max change in
 //    px); warp +-1000x (running): no NaN, residual within 1.5x the paused limit.
-// 5. cost (--fps, informational): uncapped fps with contact on / off alternating in the same page (2 s windows x 4).
+// 5. cost (--cost, informational): the contact step's own GPU time - the captured frame's step re-run between
+//    synchronous 1-pixel read-backs, min over trials (robust when other agents share the GPU), with the list
+//    compaction / materialization / first grid + search split - at the default view (render scale 0.5, fov 60:
+//    b-default, a-default) and the close-ups; plus uncapped fps with contact on / off alternating in one page.
 // Measured values: scripts/test/README.md ("contact").
 import { pathToFileURL } from 'node:url';
 import { fmt, openApp, sleep, table, waitFrames, withHarness } from './lib.mjs';
@@ -183,7 +187,7 @@ export function analyzeInPage() {
     const w = Math.imul(((st >>> ((st >>> 28) + 4)) ^ st) >>> 0, 277803737) >>> 0;
     return ((w >>> 22) ^ w) >>> 0;
   };
-  const K = C.gRT.length, mask = C.buckets - 1, fill = new Map(), invCell = C.invCellU.value;
+  const K = C.slotsPerBucket, mask = C.buckets - 1, fill = new Map(), invCell = C.invCellU.value;
   let overflow = 0, maxFill = 0;
   for (const j of ids) {
     const a = Math.abs(P0[j * 4 + 3]), L = Math.min(13, Math.max(0, Math.floor(Math.log2(Math.fround(a * 1000))))), ic = invCell[L];
@@ -275,6 +279,84 @@ export function fieldInPage() {
   return out;
 }
 
+/**
+ * GPU time (ms) of the contact step alone for each configuration (contact properties, e.g. { stage: 1 } = up to the
+ * list compaction): the frame's arguments are captured, the step is re-run `reps` times between synchronous 1-pixel
+ * read-backs (gl.finish does not wait in Chrome), min over `trials`. Runs in the page; the app's own contact step is
+ * held meanwhile.
+ */
+export async function costInPage(confs, reps, trials) {
+  const sv = window.__sv, C = (sv.pipeline.passes.near?.inner ?? sv.pipeline.passes.near)?.contact;
+  if (!C) return { error: 'near.contact not found' };
+  const orig = C.run.bind(C);
+  let args = null, hold = false;
+  C.run = (fr) => { args = fr; return hold ? false : orig(fr); };
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  if (!args) { C.run = orig; return { error: 'the contact step did not run' }; }
+  const fr = { ...args, layoutChanged: false }, px = new Float32Array(4);
+  const sync = () => sv.renderer.readRenderTargetPixels(fr.r0RT, 0, 0, 1, 1, px);
+  const keys = ['stage', 'rounds', 'iterations'], keep = Object.fromEntries(keys.map((k) => [k, C[k]]));
+  hold = true;
+  const times = [];
+  try {
+    for (const c of confs) {
+      Object.assign(C, keep, c);
+      for (let i = 0; i < 6; i++) { orig(fr); sync(); await new Promise((r) => setTimeout(r, 20)); }
+      let best = Infinity;
+      for (let t = 0; t < trials; t++) {
+        sync();
+        const t0 = performance.now();
+        for (let i = 0; i < reps; i++) orig(fr);
+        sync();
+        best = Math.min(best, (performance.now() - t0) / reps);
+        await new Promise((r) => setTimeout(r, 15));
+      }
+      times.push(best);
+    }
+  } finally {
+    Object.assign(C, keep);
+    hold = false;
+    C.run = orig;
+  }
+  return { times, count: C.count };
+}
+
+/**
+ * Whole-frame time (ms) with the contact step off and on: the pipeline renders the current (paused) frame `reps`
+ * times between synchronous 1-pixel read-backs, off and on interleaved within every trial, min over `trials` of
+ * each. Catches costs the step causes elsewhere in the frame; the app's own frame loop is held meanwhile.
+ */
+export async function frameCostInPage(reps, trials) {
+  const sv = window.__sv, P = sv.pipeline, near = P.passes.near?.inner ?? P.passes.near, C = near?.contact;
+  if (!C) return { error: 'near.contact not found' };
+  const orig = P.render.bind(P), px = new Float32Array(4);
+  let hold = true;
+  P.render = (f) => (hold ? undefined : orig(f));
+  const sync = () => sv.renderer.readRenderTargetPixels(near.r0RT, 0, 0, 1, 1, px);
+  const was = C.enabled, best = { off: Infinity, on: Infinity };
+  try {
+    for (const on of [false, true]) { C.enabled = on; for (let i = 0; i < 4; i++) { orig(sv.frame); sync(); } }
+    for (let t = 0; t < trials; t++) {
+      for (const on of t % 2 ? [true, false] : [false, true]) {
+        C.enabled = on;
+        orig(sv.frame);
+        sync();
+        const t0 = performance.now();
+        for (let i = 0; i < reps; i++) orig(sv.frame);
+        sync();
+        const ms = (performance.now() - t0) / reps;
+        if (on) best.on = Math.min(best.on, ms); else best.off = Math.min(best.off, ms);
+      }
+      await new Promise((r) => setTimeout(r, 15));
+    }
+  } finally {
+    C.enabled = was;
+    hold = false;
+    P.render = orig;
+  }
+  return best;
+}
+
 // ------------------------------------------------------------------------------------------------ node side
 const setContact = (page, on) => page.evaluate((on) => { (window.__sv.pipeline.passes.near.inner ?? window.__sv.pipeline.passes.near).contact.enabled = on; }, on);
 const analyze = (page) => page.evaluate(analyzeInPage);
@@ -305,8 +387,9 @@ const compareFields = (page, a, b, pxMin) => page.evaluate((a, b, pxMin) => {
 
 // (the in-page functions above are exported for tuning scripts; the test runs only when executed directly)
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await withHarness('contact', {
-  bool: ['fps', 'no-temporal'],
-  usage: 'node scripts/test/contact.mjs [--base URL] [--out DIR] [--views b-inside,a-inside,a-30m] [--fps] [--fps-secs 2] [--no-temporal]',
+  bool: ['cost', 'no-temporal'],
+  uncapped: process.argv.includes('--cost'),
+  usage: 'node scripts/test/contact.mjs [--base URL] [--out DIR] [--views b-inside,a-inside,a-30m] [--no-temporal] [--cost [--cost-views ids] [--reps 3] [--trials 12]]',
 }, async ({ args, rep, base, browser }) => {
   const views = args.list('views', Object.keys(VIEWS));
   const rows = [], trows = [];
@@ -382,12 +465,32 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await withHar
   rep.data.table = rows;
   rep.data.temporal = trows;
 
-  // ---- cost (informational): contact on / off alternating in one page
-  if (args.flag('fps')) {
-    const secs = args.num('fps-secs', 2);
+  // ---- cost (informational): the contact step's own GPU time (robust to other GPU users) and an fps A/B
+  if (args.flag('cost')) {
+    const crows = [];
+    const costViews = { ...VIEWS, 'b-default': { preset: 'b-ring-inside' }, 'a-default': { preset: 'a-ring-inside' } };
+    for (const id of args.list('cost-views', ['b-default', 'a-default', 'b-inside', 'a-inside'])) {
+      const v = costViews[id];
+      if (!v) continue;
+      const { page } = await openApp(browser, base, { ...BASE, preset: v.preset, fov: v.fov, scale: v.scale }, { settle: 3500 });
+      try {
+        const st = await page.evaluate(costInPage, [{ stage: 1 }, { stage: 2 }, { stage: 4, rounds: 1 }, {}], args.num('reps', 3), args.num('trials', 12));
+        if (st.error) { rep.check(`${id}: cost`, false, st.error); continue; }
+        const fc = await page.evaluate(frameCostInPage, args.num('reps', 3), args.num('trials', 12));
+        if (fc.error) { rep.check(`${id}: frame cost`, false, fc.error); continue; }
+        const [l, m, s1, full] = st.times;
+        crows.push([id, st.count, fmt(l, 2), fmt(m - l, 2), fmt(s1 - m, 2), fmt(full, 2), fmt(fc.off, 2), fmt(fc.on, 2), fmt(fc.on - fc.off, 2)]);
+        rep.data[`cost-${id}`] = { ...st, frame: fc };
+      } finally {
+        await page.close();
+      }
+    }
+    console.log(`\n[cost] ms, min over trials of repeated runs between synchronous 1-px read-backs: the contact step alone (cumulative stages), and whole frames with the step off / on (interleaved):\n${table(['view', 'list', 'list compaction', 'materialize', 'first grid + search', 'whole step', 'frame off', 'frame on', 'frame diff'], crows)}`);
+    rep.data.cost = crows;
+    // frame-rate A/B in one page (uncapped app; the browser may still sync to the display - informational)
     const frows = [];
-    for (const id of views) {
-      const v = VIEWS[id];
+    for (const id of args.list('cost-views', ['b-default', 'a-default'])) {
+      const v = costViews[id];
       if (!v) continue;
       const { page } = await openApp(browser, base, { ...BASE, preset: v.preset, fov: v.fov, scale: v.scale, fps: 0 }, { settle: 3000 });
       try {
@@ -396,23 +499,20 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await withHar
           const on = k % 2 === 0;
           await setContact(page, on);
           await sleep(500);
-          const n = await page.evaluate((secs) => new Promise((res) => {
+          fps[on ? 'on' : 'off'].push(await page.evaluate((secs) => new Promise((res) => {
             const t0 = performance.now();
             let c = 0;
             const tick = () => { c++; if (performance.now() - t0 < secs * 1000) requestAnimationFrame(tick); else res(c / ((performance.now() - t0) / 1000)); };
             requestAnimationFrame(tick);
-          }), secs);
-          fps[on ? 'on' : 'off'].push(n);
+          }), 2));
         }
         const med = (x) => [...x].sort((p, q) => p - q)[Math.floor(x.length / 2)];
-        const fOn = med(fps.on), fOff = med(fps.off);
-        frows.push([id, fmt(fOff, 1), fmt(fOn, 1), fmt(1000 / fOn - 1000 / fOff, 2)]);
-        rep.data[`fps-${id}`] = fps;
+        frows.push([id, fmt(med(fps.off), 1), fmt(med(fps.on), 1), fmt(1000 / med(fps.on) - 1000 / med(fps.off), 2)]);
       } finally {
         await page.close();
       }
     }
-    console.log(`\n[cost] uncapped fps, contact off / on alternating (${secs} s windows, median of 4 each; the GPU may be shared):\n${table(['view', 'fps off', 'fps on', 'ms per frame'], frows)}`);
-    rep.data.cost = frows;
+    console.log(`\n[cost] fps, contact off / on alternating in one page (2 s windows, median of 4; the GPU may be shared):\n${table(['view', 'fps off', 'fps on', 'ms per frame'], frows)}`);
+    rep.data.fps = frows;
   }
 });
