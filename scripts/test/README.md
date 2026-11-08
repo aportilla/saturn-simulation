@@ -252,12 +252,13 @@ code.
    axes near the orbit normal for large particles): 0.987 edge-on … 1.026 from above for a ≥ 0.6 m (NR_ISO 0.8;
    0.92 … 1.14 with the full shape spread).
 
-### contact — `scripts/test/contact.mjs` (`--views b-inside,a-inside,a-30m`, `--no-temporal`, `--cost [--cost-views …] [--reps 3] [--trials 12]`)
+### contact — `scripts/test/contact.mjs` (`--views b-inside,a-inside,a-30m,b-preset`, `--no-temporal`, `--cost [--cost-views …] [--reps 3] [--trials 12]`)
 The contact step of the near field (`src/render/near/NearContact.ts`, contract in ARCHITECTURE.md → "Near-field frame
 and contact contract"). Views (paused, `t=2026-11-08T12:00:00Z`, render scale 1, astronaut off): `b-inside` =
-b-ring-inside at fov 35 (cassini-compare b-inside), `a-inside` = a-ring-inside at fov 35, `a-30m` = a-ring-30m. Per
-view the contact list (analytic positions, R0 slots, weights, contact shapes), the result, the bound D_i and R0 are
-read back and evaluated on the CPU in the page:
+b-ring-inside at fov 35 (cassini-compare b-inside), `a-inside` = a-ring-inside at fov 35, `a-30m` = a-ring-30m,
+`b-preset` = b-ring-inside at its fov 60 (other particle boxes than at fov 35: the camera lies inside a 1.8 m boulder;
+no temporal part). Per view the contact list (analytic positions, R0 slots, weights, contact shapes), the result, the
+bound D_i and R0 are read back and evaluated on the CPU in the page:
 1. **overlaps**: all pairs closer than their contact distance (the shader's ρ_i + ρ_j along the centre line), by a CPU
    multi-level grid search over the list, at the analytic and at the resolved positions. *Resolved pair* = both at
    weight 1 (≥ 6 render px radius, not occluded); *hidden* = the smaller one entirely inside the larger (left alone by
@@ -269,7 +270,8 @@ read back and evaluated on the CPU in the page:
    first iteration) for ≥ 99.8 % of the particles with overlaps (the GPU search missed nothing that matters); hash
    bucket overflow (CPU simulation of the grid) ≤ 0.1 % of the list.
 3. **write-back**: R0 at every list slot = the resolved position; present particles unchanged; drawn (R0 w > 0)
-   with contact on − off = exactly the particles moved into view, ≤ 0.1 %; the HUD's ≥ 1 px count changes ≤ 0.1 %.
+   with contact on − off = exactly the particles moved into view, ≤ 0.1 %; the HUD's ≥ 1 px count changes ≤ 0.1 %;
+   bodies around the camera (not drawn) have contact weight 0 (b-preset: 1 such body).
 4. **temporal**: the same paused frame twice is bit-identical; one frame later (t + 1/30 s) "pops" (displacement
    change > max(5 × the analytic motion, 1 render px)) / matched particles ≤ 2e-4 (B) / 1e-4 (A); +1 s and +10 s
    reported; warp ±1000 running: no NaN, residual ratio ≤ 1.5 × the paused limit.
@@ -284,6 +286,7 @@ Measured 2026-11-08 (deterministic, identical in every run):
 | b-inside | 48.9k | 13.3k | 3672 → 469 (378): 0.128 | 0.938 → 0.639 | 6.5 a (bound 1.0000) | 37 | 1 (3.1 px) |
 | a-inside | 11.9k | 3.2k | 829 → 79 (55): 0.095 | 0.881 → 0.736 | 3.6 a | 5 | 0 (0.38 px) |
 | a-30m | 4.1k | 0.84k | 336 → 17 (16): 0.051 | 0.862 → 0.561 | 2.9 a | 3 | 0 (0.00 px) |
+| b-preset | 29.5k | 7.7k | 2344 → 310 (240): 0.132 | 0.945 → 0.765 | 5.4 a | 22 | — |
 
 All overlapping resolved pairs (incl. shallow ones within the tolerance and hidden ones): b-inside 5568 → 3719 (hidden
 1423 → 1015), a-inside 1205 → 698, a-30m 402 → 203. GPU-missed 0, bucket overflow 0 (max bucket fill 5–8 of 16).

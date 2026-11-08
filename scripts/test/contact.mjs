@@ -3,7 +3,7 @@
 // analytic positions are removed among the particles that are visibly resolved, without changing which particles
 // are drawn, and smoothly in time.
 //
-// usage: node scripts/test/contact.mjs [--base URL] [--out DIR] [--views b-inside,a-inside,a-30m] [--w 1280 --h 720]
+// usage: node scripts/test/contact.mjs [--base URL] [--out DIR] [--views b-inside,a-inside,a-30m,b-preset] [--w 1280 --h 720]
 //                                      [--no-temporal] [--cost [--cost-views b-default,a-default,b-inside,a-inside]
 //                                      [--reps 3] [--trials 12]]
 //
@@ -22,8 +22,9 @@
 //    neighbour search missed nothing that matters). Hash-grid bucket overflow (CPU simulation of the GPU hash) <= 0.1 %.
 // 3. write-back: R0 at every list entry's slot = its resolved position, the drawn flag kept or set where the
 //    displacement moved a present particle into the view (counted); drawn-particle counts (R0 w > 0 and the HUD's
-//    >= 1 px list) with contact on vs off differ only by those particles (<= 0.1 %); present particles unchanged.
-// 4. temporal (unless --no-temporal): the same frame again -> bit-identical; one frame later at 1x time (t + 1/30 s) the
+//    >= 1 px list) with contact on vs off differ only by those particles (<= 0.1 %); present particles unchanged;
+//    bodies around the camera (not drawn) have contact weight 0 (b-preset: the camera inside a 1.8 m boulder).
+// 4. temporal (unless --no-temporal; not for b-preset): the same frame again -> bit-identical; one frame later at 1x time (t + 1/30 s) the
 //    displacement field x - x_analytic must not jump: "pops" = particles whose displacement changes by more than
 //    max(5 x their analytic motion, 1 render px) <= the view's limit; t + 1 s and t + 10 s reported (p99 / max change in
 //    px); warp +-1000x (running): no NaN, residual within 1.5x the paused limit.
@@ -43,6 +44,8 @@ const VIEWS = {
   'b-inside': { preset: 'b-ring-inside', fov: 35, scale: 1, what: 'B ring mid-layer (cassini-compare b-inside)', resid: 0.2, free: 0.012, pops: 2e-4 },
   'a-inside': { preset: 'a-ring-inside', fov: 35, scale: 1, what: 'A ring mid-plane, wakes (cassini-compare a-inside)', resid: 0.12, free: 0.012, pops: 1e-4 },
   'a-30m': { preset: 'a-ring-30m', scale: 1, what: '30 m above the lit A ring (wake crests from above)', resid: 0.12, free: 0.012, pops: 1e-4 },
+  // the preset itself (fov 60: other particle boxes than at fov 35): the camera lies inside a 1.8 m boulder there
+  'b-preset': { preset: 'b-ring-inside', scale: 1, what: 'B ring preset, fov 60 (the camera inside a boulder)', resid: 0.2, free: 0.012, pops: 2e-4, temporal: false },
 };
 const BASE = { t: '2026-11-08T12:00:00Z', hud: 0, labels: 0, paused: 1, astronaut: 0 };
 
@@ -171,6 +174,14 @@ export function analyzeInPage() {
   };
   let resolved = 0, crowdedN = 0;
   for (const j of ids) { if (M[j * 4 + 1] >= 0.999) resolved++; if (crowded(j)) crowdedN++; }
+  // bodies around the camera (not drawn: the camera is a ghost) must take no part in contacts
+  let camInside = 0, camInsideW = 0;
+  for (const j of ids) {
+    const x = P0[j * 4], y = P0[j * 4 + 1], z = P0[j * 4 + 2], d = Math.hypot(x, y, z), a = Math.abs(P0[j * 4 + 3]);
+    if (d > 0 && (d * Math.sqrt(quad(j, x / d, y / d, z / d))) / a >= 1) continue;
+    camInside++;
+    if (M[j * 4 + 1] > 0) camInsideW++;
+  }
   // displacement vs bound (positions are float32: allow 4 ulps of the coordinates), GPU search completeness
   const clampK = C.clampK;
   let moved = 0, maxDispA = 0, maxDispBound = 0, missed = 0, withD = 0;
@@ -225,7 +236,7 @@ export function analyzeInPage() {
     }
   }
   return {
-    n: ids.length, count: C.count, cap: C.cap, buckets: C.buckets, iterations: C.iterations, resolved, crowded: crowdedN, nan,
+    n: ids.length, count: C.count, cap: C.cap, buckets: C.buckets, iterations: C.iterations, resolved, crowded: crowdedN, nan, camInside, camInsideW,
     before: summarize(before), after: summarize(after), pairsBefore: before.i.length, pairsAfter: after.i.length,
     moved, maxDispA, maxDispBound, missed, withD, overflow, maxFill, wbBad, flipped, checked,
     pixelAngle: pa, ext,
@@ -391,7 +402,7 @@ const compareFields = (page, a, b, pxMin) => page.evaluate((a, b, pxMin) => {
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await withHarness('contact', {
   bool: ['cost', 'no-temporal'],
   uncapped: process.argv.includes('--cost'),
-  usage: 'node scripts/test/contact.mjs [--base URL] [--out DIR] [--views b-inside,a-inside,a-30m] [--no-temporal] [--cost [--cost-views ids] [--reps 3] [--trials 12]]',
+  usage: 'node scripts/test/contact.mjs [--base URL] [--out DIR] [--views b-inside,a-inside,a-30m,b-preset] [--no-temporal] [--cost [--cost-views ids] [--reps 3] [--trials 12]]',
 }, async ({ args, rep, base, browser }) => {
   const views = args.list('views', Object.keys(VIEWS));
   const rows = [], trows = [];
@@ -425,11 +436,12 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await withHar
       rep.range(`${id}: hash-bucket overflow / list entries`, s.overflow / Math.max(s.n, 1), 0, 0.001);
       rep.check(`${id}: R0 write-back = resolved positions`, s.wbBad === 0 && s.checked >= s.n, `${s.wbBad} mismatches in ${s.checked} slots`);
       rep.check(`${id}: present particles unchanged`, off.present === on.present, `${off.present} -> ${on.present}`);
+      rep.check(`${id}: bodies around the camera take no part (weight 0)`, s.camInsideW === 0, `${s.camInside} around the camera, ${s.camInsideW} with weight > 0`);
       rep.check(`${id}: drawn (R0) change = particles moved into view`, on.drawn - off.drawn === s.flipped, `${on.drawn - off.drawn} vs ${s.flipped}`);
       rep.range(`${id}: drawn change / drawn`, Math.abs(on.drawn - off.drawn) / Math.max(off.drawn, 1), 0, 0.001);
       if (off.listDrawn !== null) rep.range(`${id}: HUD >= 1 px count change / count`, Math.abs(on.listDrawn - off.listDrawn) / Math.max(off.listDrawn, 1), 0, 0.001);
 
-      if (!args.flag('no-temporal')) {
+      if (!args.flag('no-temporal') && v.temporal !== false) {
         // same frame twice -> identical; one frame later (1/30 s at 1x) -> no jumps; 1 s, 10 s reported
         await storeField(page, 't0');
         await waitFrames(page, 3);
