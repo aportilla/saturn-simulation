@@ -198,28 +198,28 @@ float nearReliefH(vec3 u, vec4 rp, int layers) {
   if (layers >= 4 && rp.w > 0.0) h += (rp.w * NR_AC2) * nearClastV(u * NR_FC2 + rp.xyz * 0.5 + 2.7);
   return h;
 }
-// Absolute-scale regolith texture (shading normal only): embedded pebbles / small aggregates (cellular field,
-// NR_LP cells) and grain clumps (gradient noise, NR_LG), rms slopes NR_SP / NR_SG (amplitude = slope / (rms
-// gradient of the texture x frequency): textures' rms gradients 6.0 (clast) and 1.38 (noise) per lattice unit),
-// each faded in where its features span >= 1.5-3 px (fp: pixel footprint on the surface, m) and where the
-// particle (radius aM, m) is >= 3-6 features across. Returns (value, gradient) like nearRelief.
+// Absolute-scale regolith texture (shading normal only): embedded pebbles / small aggregates (NR_LP cells) and
+// grain clumps (NR_LG cells), both granular (cellular field), rms slopes NR_SP / NR_SG (amplitude = slope / (rms
+// gradient of the texture, 6.0 per lattice unit, x frequency)), each faded in where its features span >= 2-4 px
+// (fp: pixel footprint on the surface, m) and where the particle (radius aM, m) is >= 3-6 features across.
+// Returns (value, gradient) like nearRelief.
 #define NR_LP 0.04
 #define NR_SP 0.25
-#define NR_LG 0.008
-#define NR_SG 0.18
+#define NR_LG 0.01
+#define NR_SG 0.15
 vec4 nearRegolithTexture(vec3 u, vec4 rp, float aM, float fp) {
   vec4 g = vec4(0.0);
   float fP = aM * (1.0 / NR_LP);
-  float wP = smoothstep(1.5, 3.0, NR_LP / fp) * smoothstep(3.0, 6.0, fP);
+  float wP = smoothstep(2.0, 4.0, NR_LP / fp) * smoothstep(3.0, 6.0, fP);
   if (wP > 0.0) {
     vec4 c = nearClastT(u * fP + rp.zxy * 0.5 + 4.1);
     g += (wP * NR_SP / (6.0 * fP)) * vec4(c.x, c.yzw * fP);
   }
   float fG = aM * (1.0 / NR_LG);
-  float wG = smoothstep(1.5, 3.0, NR_LG / fp) * smoothstep(3.0, 6.0, fG);
+  float wG = smoothstep(2.0, 4.0, NR_LG / fp) * smoothstep(3.0, 6.0, fG);
   if (wG > 0.0) {
-    vec4 n = nearNoiseT(u * fG + rp.yzx + 7.7);
-    g += (wG * NR_SG / (1.38 * fG)) * vec4(n.x, n.yzw * fG);
+    vec4 c = nearClastT(u.yzx * fG + rp.yzx * 0.5 + 6.3);
+    g += (wG * NR_SG / (6.0 * fG)) * vec4(c.x, c.wyz * fG);
   }
   return g;
 }

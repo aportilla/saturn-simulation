@@ -246,7 +246,7 @@ export interface PhotometryResult {
  * smooth ellipsoids (for which the LUT factor holds up to the ellipsoid / sphere difference) quantify what the
  * resolved relief adds to the photometry the medium assumes.
  */
-export function measureReliefPhotometry({ bodies = 24, res = 40, alphasDeg = [5, 20, 40, 60, 90, 120, 150], wc = 1, w = 0.95, a = 1.5, seed = 3, bumpLayers = 2 } = {}): PhotometryResult {
+export function measureReliefPhotometry({ bodies = 24, res = 40, alphasDeg = [5, 20, 40, 60, 90, 120, 150], wc = 1, w = 0.95, a = 1.5, seed = 3, bumpLayers = 3 } = {}): PhotometryResult {
   const t0 = performance.now();
   const K = reliefConstants();
   const rnd = mulberry32(seed);
@@ -302,7 +302,7 @@ export function measureReliefPhotometry({ bodies = 24, res = 40, alphasDeg = [5,
           const ng = norm([yb[0] / D[0], yb[1] / D[1], yb[2] / D[2]]);
           const m0 = dot(ng, s);
           if (m0 > 0) sm[ia] += regolithIF(m0, Math.max(dot(ng, v), 0.02), cg, w) * dA;
-          // analytic path: coarse layers as a normal perturbation (sprites < 18 px), visible-normal clamp
+          // analytic path: coarse layers as a normal perturbation (3 layers: sprites 14 .. ~40 px), visible-normal clamp
           const hf = reliefFull(body, wc, yb[0], yb[1], yb[2], K, bumpLayers);
           const gu = dot(hf.slice(1), yb);
           const n = visible(norm([(yb[0] - (hf[1] - gu * yb[0])) / D[0], (yb[1] - (hf[2] - gu * yb[1])) / D[1], (yb[2] - (hf[3] - gu * yb[2])) / D[2]]), v);
@@ -371,9 +371,9 @@ export const RELIEF_PHOT_ALPHAS = [0, 20, 40, 60, 80, 100, 120, 140, 160];
 export const RELIEF_PHOT_WCS = [0, 0.5, 1];
 export const RELIEF_PHOT = {
   bump: [
-    [1.001, 1.004, 1.000, 1.001, 1.008, 0.991, 1.001, 0.957, 0.944],
-    [1.002, 1.014, 1.007, 1.005, 1.002, 0.978, 0.960, 0.872, 0.743],
-    [1.005, 1.039, 1.029, 1.020, 0.997, 0.959, 0.898, 0.772, 0.669],
+    [1.001, 1.006, 1.002, 1.002, 1.005, 0.988, 0.992, 0.927, 0.868],
+    [1.002, 1.016, 1.009, 1.006, 1.001, 0.976, 0.955, 0.859, 0.721],
+    [1.005, 1.040, 1.030, 1.021, 0.997, 0.956, 0.894, 0.766, 0.652],
   ],
   march: [
     [0.997, 0.999, 0.997, 0.999, 1.004, 0.998, 1.005, 0.953, 0.985],

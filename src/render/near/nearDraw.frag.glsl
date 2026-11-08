@@ -59,11 +59,12 @@ void main() {
   float spx = vAx.w;                      // sprite size (px; 4096 for quads)
   float amp = vDisp.x;
   bool relief = uNearQuality > 1.5 && uDebug != 31;
-  // relief layers of the march (cost) and of the shading normal, by on-screen size: the marched surface's normal
-  // uses its own geometric layers (+ the low-slope detail layer when large), so no normal faces away from where the
-  // geometry is visible; the analytic ellipsoid gets the coarse layers as a normal perturbation
-  int geoL = spx > 48.0 ? 4 : 2;
-  int nrmL = amp > 0.0 ? (spx > 48.0 ? 5 : geoL) : (spx > 18.0 ? 4 : 2);
+  // relief layers of the march (cost) and of the shading normal, by on-screen size (a layer's features span >= ~2
+  // px: n2 above ~14 px sprites, c2 above ~22, n3 above ~40): the marched surface's normal uses its own geometric
+  // layers (+ the low-slope detail layer when large), so no normal faces away from where the geometry is visible;
+  // the analytic ellipsoid gets the coarse layers as a normal perturbation
+  int geoL = spx > 48.0 ? 4 : 3;
+  int nrmL = amp > 0.0 ? (spx > 40.0 ? 5 : geoL) : (spx > 14.0 ? 3 : 2);
   float tl;
   if (amp <= 0.0) {
     float disc = Bh * Bh - A * (C0 - 1.0);
@@ -122,9 +123,9 @@ void main() {
   vec3 ngb = normalize((u - amp * gt) / vAx.xyz);    // geometric normal (base ellipsoid / marched surface)
   // + the absolute-scale regolith texture where it is resolved (pixel footprint on the surface)
   float aM = (vAx.x + vAx.y + vAx.z) * (1.0 / 3.0);
-  if (relief && spx > 48.0) {
+  if (relief && spx > 7.0) {
     vec3 ngw = nearQRot(vQ, ngb);
-    vec4 rt = nearRegolithTexture(u, vRel, aM, (b + tl) * uPixelAngle / max(abs(dot(ngw, rd)), 0.3));
+    vec4 rt = nearRegolithTexture(u, vRel, aM, (b + tl) * uPixelAngle / max(abs(dot(ngw, rd)), 0.15));
     gt += (rt.yzw - dot(rt.yzw, u) * u) * (vDisp.y / pr);
   }
   vec3 nb = normalize((u - gt) / vAx.xyz);           // body-frame shading normal (D^-1 grad F)
