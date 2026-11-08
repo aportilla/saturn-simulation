@@ -101,7 +101,10 @@ clouds, ringshine on the night side. Rendered geometric albedo matches observati
 
 **Moons.** 28 moons fitted to JPL Horizons (worst error 0.008° over 2020–2035; Janus/Epimetheus swaps,
 Trojans, Mimas–Tethys resonance), IAU shapes, measured albedos and colours, librations, Hyperion's chaotic
-rotation integrated from Euler's equations. Cassini global maps for Mimas, Enceladus, Tethys, Dione, Rhea,
+rotation integrated from Euler's equations. The small inner moons — Pan, Daphnis, Atlas, Prometheus, Pandora,
+Epimetheus, Janus — have their real Cassini shapes (PDS shape models, ray-marched with self-shadowing): Pan's
+"ravioli" and Atlas's "flying saucer" equatorial ridges, Daphnis's thin ridge, the irregular shepherds and
+co-orbitals. Cassini global maps for Mimas, Enceladus, Tethys, Dione, Rhea,
 Iapetus and Phoebe; procedural features elsewhere; Titan's haze. Unresolved moons are drawn as point sources with
 their exact flux.
 
@@ -127,6 +130,8 @@ docs/         ARCHITECTURE.md (contracts), ring-physics.md, data-sources.md
 
 * Ring occultations — Cassini RSS and UVIS via the NASA PDS Ring-Moon Systems Node (public domain, NASA).
 * Ephemerides — JPL Horizons (NASA/JPL); body shapes from NAIF `pck00011` (IAU 2015).
+* Small-moon shape models — Thomas, Joseph & Ansty (2018), Saturn Small Moon Shape Models V1.0, NASA PDS Small
+  Bodies Node, doi:10.26033/ewy3-jy61 (Cassini ISS; public domain, NASA).
 * Stars — Yale Bright Star Catalogue, 5th ed. (Hoffleit & Warren 1991), via CDS / NASA ADC (public domain).
 * Moon maps — USGS Astrogeology and NASA Photojournal mosaics (NASA/JPL-Caltech/Space Science Institute, LPI;
   public domain).
@@ -141,5 +146,6 @@ Full provenance, formats and accuracy: [`docs/data-sources.md`](docs/data-source
   not modelled.
 * Daphnis's orbit is extrapolated (Horizons coverage ends in 2018); Hyperion's actual present-day orientation is
   unknowable (chaotic rotation).
-* Moon outlines are ellipsoids; Saturn has no global map (none exists in the public domain), so its clouds are
-  procedural.
+* Only the seven small inner moons have measured shapes, and only at the models' ~2° resolution (finer relief is
+  procedural); the other moons are ellipsoids (PDS models of Telesto, Calypso, Helene and Hyperion exist but are not
+  used yet). Saturn has no global map (none exists in the public domain), so its clouds are procedural.

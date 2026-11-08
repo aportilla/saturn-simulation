@@ -1,4 +1,6 @@
-// Moons for the far-field renderer: triaxial-ellipsoid ray intersection with analytic limb coverage,
+// Moons for the far-field renderer: triaxial-ellipsoid ray intersection with analytic limb coverage, or - for the
+// small moons with measured shapes (Pan, Daphnis, Atlas, Prometheus, Pandora, Epimetheus, Janus; src/moons/shapes.ts)
+// - a sphere-traced march of the star-shaped radius map with refined hits, limb coverage and self-shadowing;
 // procedural or texture-mapped albedo, crater bump mapping, airless-body photometry (lunar-Lambert +
 // opposition surge + roughness, see moonModel.ts), shadows (Saturn, rings, other moons), Saturnshine and
 // ringshine. Titan: opaque haze body + single-scattering upper-haze shell with a detached layer.
@@ -15,6 +17,13 @@ uniform vec4 uMoonExtra[MAX_MOONS];  // x: bump, y: texture u at lon 0, z: +1 ea
 uniform vec4 uMoonRing[MAX_MOONS];   // ringshine irradiance vector (W/m^2, SEF), w: 0
 uniform highp sampler2DArray uMoonTex;
 uniform float uMoonTexW;             // texture width (texels) for LOD selection
+// Measured shapes: two layers per moon (base: gradient for lat >= 0, base + 1: lat < 0 - they differ only on an
+// equatorial crest, MoonShape.gradientFields), texel (i, j) at east longitude -pi + i*step, latitude -pi/2 + j*step;
+// .r = radius / rMax, .gba = tangential gradient of the radius (rMax units per radian, body xyz). Bilinear in
+// (lon, lat) = MoonShape.radiusAlong (the camera uses the same function).
+uniform highp sampler2DArray uShapeTex;
+uniform vec4 uShapeGrid;             // width, height, step (rad), 0
+uniform vec4 uMoonShape[MAX_MOONS];  // x: layer (-1 = ellipsoid), y: rMax (m), z: smooth-ridge half-width (rad), w: march step factor
 
 #define MAT_MIMAS 1
 #define MAT_ENCELADUS 2
@@ -29,6 +38,48 @@ uniform float uMoonTexW;             // texture width (texels) for LOD selection
 
 vec3 qrot(vec4 q, vec3 v) { return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v); }
 vec3 qrotInv(vec4 q, vec3 v) { return qrot(vec4(-q.xyz, q.w), v); }
+
+// ---- measured shapes ------------------------------------------------------------------------------
+// Radius map texel at the body-frame direction d (any length): .r = r / rMax, .gba = tangential gradient.
+vec4 shapeFetch(float layer, vec3 d) {
+  float rxy = length(d.xy);
+  float lon = rxy > 0.0 ? atan(d.y, d.x) : 0.0;
+  float lat = atan(d.z, rxy);
+  vec2 xy = vec2(lon + PI, lat + 0.5 * PI) / uShapeGrid.z + 0.5;
+  return textureLod(uShapeTex, vec3(xy / uShapeGrid.xy, layer + (d.z < 0.0 ? 1.0 : 0.0)), 0.0);
+}
+// Tangential part of the gradient at the unit direction u and the outward normal n = normalize(u - grad r / r).
+vec3 shapeTangentGrad(vec3 u, vec4 S) { return S.gba - u * dot(S.gba, u); }
+vec3 shapeNormal(vec3 u, vec4 S) { return normalize(u - shapeTangentGrad(u, S) / S.r); }
+
+// Sun visibility of a point p (camera-relative, on the surface, geometric normal nG) of shaped moon i through its own
+// topography - ridges, crater walls, the far end of an elongated body near the terminator: soft-shadow march toward
+// the Sun to the bounding sphere. The edge is softened over the solar disk and ~a pixel / a quarter texel.
+float shapeSunVisibility(int i, vec3 p, vec3 nG, float t) {
+  vec4 sh = uMoonShape[i];
+  vec4 q = uMoonQuat[i];
+  vec3 pb = qrotInv(q, p - uMoonPosR[i].xyz) / sh.y;
+  vec3 nb = qrotInv(q, nG);
+  vec3 sb = qrotInv(q, uSunDir);
+  float texA = uShapeGrid.z;
+  float rho0 = length(pb);
+  float fpU = t * uPixelAngle / sh.y;
+  float soft0 = fpU + 0.25 * texA * rho0;
+  vec3 o = pb + nb * max(0.5 * texA * rho0, fpU);    // start above the C0 surface (smooth normals vs. facets)
+  float bb = dot(o, sb);
+  float sExit = -bb + sqrt(max(bb * bb - dot(o, o) + 1.0, 0.0));
+  float vis = 1.0, s = 0.0;
+  for (int k = 0; k < 48; k++) {
+    vec3 x = o + sb * s;
+    float rho = length(x);
+    float f = rho - shapeFetch(sh.x, x).r;
+    vis = min(vis, clamp(0.5 + f / (soft0 + 2.0 * uSunAngRadius * s), 0.0, 1.0));
+    if (vis <= 0.0) break;
+    s += max(f * sh.w, 0.3 * texA * rho);
+    if (s >= sExit) break;
+  }
+  return vis * vis * (3.0 - 2.0 * vis);
+}
 
 vec3 dirLatLon(float latDeg, float lonEDeg) {
   float la = latDeg * PI / 180.0, lo = lonEDeg * PI / 180.0;
@@ -87,28 +138,40 @@ MoonSurf moonSurface(int i, vec3 u, float fpR) {
   vec3 g = vec3(0.0);      // 3-D slope (crater octaves)
   vec3 gT = vec3(0.0);     // tangential slope (named features)
   float ca = 0.0;          // crater albedo modulation
+  // measured shape: its geometry already holds the global form and the largest craters, but not the bowls of craters
+  // a few grid steps across ("morphology of small craters is not reliably included", PDS notes; 2 deg grid), so the
+  // procedural craters start there - octave F = 4 (diameters <= 0.26/F rad = 3.8 deg) on the cratered shepherds and
+  // co-orbitals, F = 8 (<= 1.9 deg) on the smooth ring moons with ridges - fade in crater by crater with their pixel
+  // size (no sub-pixel aliasing into dots), and there are no fake lumps
+  bool shaped = uMoonShape[i].x >= 0.0;
   // ---- crater octaves (LOD: cells larger than ~5 pixels)
   float floorDark = mat == MAT_HYPERION ? 0.55 : (mat == MAT_PHOEBE ? 0.1 : (mat == MAT_IAPETUS ? 0.15 : 0.05));
   float cdens = density;
   if (mat == MAT_ENCELADUS) cdens *= smoothstep(-0.35, 0.35, u.z) * 0.9 + 0.1 * smoothstep(0.3, 0.9, abs(u.y));
   if (mat == MAT_HYPERION) cdens = 0.95;
+  // smooth equatorial ridges of accreted ring material (Pan, Atlas, Daphnis): nearly crater-free
+  float ridgeW = uMoonShape[i].z;
+  if (shaped && ridgeW > 0.0) cdens *= mix(0.12, 1.0, smoothstep(0.75 * ridgeW, 1.25 * ridgeW, abs(lat)));
   if (cdens > 0.0) {
-    float F = mat == MAT_HYPERION ? 4.0 : 2.0;
+    float F = mat == MAT_HYPERION ? 4.0 : (shaped ? (ridgeW > 0.0 ? 8.0 : 4.0) : 2.0);
     for (int o = 0; o < 8; o++) {
       float cell = 1.0 / F;
-      float w = clamp(log2(cell / (5.0 * fpR)) + 1.0, 0.0, 1.0);
+      // ellipsoids: octaves with cells > ~5 px; measured shapes: each crater fades in between ~0.75 and 1.5 px radius
+      // (lattice units: one pixel = fpR * F), the octave ends when even its largest craters (0.13 cell) are smaller
+      float rFade = shaped ? 0.75 * fpR * F : 0.0;
+      float w = shaped ? (0.13 > rFade ? 1.0 : 0.0) : clamp(log2(cell / (5.0 * fpR)) + 1.0, 0.0, 1.0);
       if (w <= 0.0) break;
       float h1 = 0.0, a1 = 0.0;
       vec3 g1 = vec3(0.0);
-      craterOctave(u * F, seed * 7u + uint(o), cdens, floorDark, h1, g1, a1);
+      craterOctave(u * F, seed * 7u + uint(o), cdens, floorDark, rFade, h1, g1, a1);
       h += w * h1 / F;
       g += w * g1;
       ca += w * a1;
       F *= 2.0;
     }
   }
-  // ---- low-frequency lumpiness for small / irregular bodies
-  if (mat == MAT_SMALL || mat == MAT_HYPERION || mat == MAT_PHOEBE) {
+  // ---- low-frequency lumpiness for small / irregular bodies (ellipsoids only)
+  if (!shaped && (mat == MAT_SMALL || mat == MAT_HYPERION || mat == MAT_PHOEBE)) {
     // height ~ 8% of the radius in broad lumps (3 octaves); slope = A * 2.2 * grad(fbm) ~ 0.2-0.4
     vec3 e = vec3(0.03, 0.0, 0.0);
     float oc = clamp(log2(0.25 / max(fpR, 1e-5)), 0.0, 3.0);
@@ -272,6 +335,7 @@ vec3 moonShadePoint(int i, vec3 p, vec3 nG, vec3 u, vec3 rd, float t, float fpR)
   float term = smoothstep(-0.03, 0.03, mu0g);
   if (mu0 > 0.0 && term > 0.0) {
     float vis = saturnSunVisibility(p) * farMoonsSunVisibility(p, i);
+    if (vis > 0.0 && uMoonShape[i].x >= 0.0) vis *= shapeSunVisibility(i, p, nG, t);
     if (vis > 0.0) {
       float T = ringSunTransmission(p, ringShadowFootprint(p, nG, rd, t));
       L += moonIF(s.alb, mu0, mu, cosA, s) * (uSunE * INV_PI) * vis * T * term;
@@ -400,6 +464,113 @@ vec3 titanShade(int i, vec3 rd, out vec3 T, out float cov, out float tHit) {
 // ---- generic moon tracing ------------------------------------------------------------------------
 struct MoonTrace { vec3 L; vec3 T; float cov; float dist; };
 
+// Measured (star-shaped) shape: march F(p) = |p| - r(p/|p|) along the ray inside the bounding sphere (body frame,
+// units of rMax; p = qc + sigma db, camera at sigma = b, so far cameras keep full precision). Steps F * marchStep are
+// safe (Lipschitz bound of the map); a floor of 0.3 texel / half a pixel bounds the cost of grazing rays. The first
+// crossing is refined by guarded secant steps. Limb coverage mirrors the ellipsoid's analytic AA: a missing ray
+// covers 0.5 - (closest perpendicular gap in pixels), a grazing ray 0.5 + (deepest penetration in pixels) - unless
+// it hits the body again behind (ridge in front of the core: covered).
+const int SHAPE_MAX_STEPS = 128;
+MoonTrace traceShapedMoon(int i, vec3 rd) {
+  MoonTrace m;
+  m.L = vec3(0.0); m.T = vec3(1.0); m.cov = 0.0; m.dist = SKY_DIST;
+  vec4 sh = uMoonShape[i];
+  float layer = sh.x, Rm = sh.y, kStep = sh.w;
+  vec3 c = uMoonPosR[i].xyz;
+  vec4 q = uMoonQuat[i];
+  vec3 ob = qrotInv(q, -c) / Rm;
+  vec3 db = normalize(qrotInv(q, rd));
+  float b = dot(ob, db);
+  vec3 qc = ob - b * db;
+  float r2 = dot(qc, qc);
+  float px = gAAPix;
+  float Rs = 1.0 + 0.5 * px * length(ob) + 1e-5;   // + half a pixel of AA reach
+  if (r2 >= Rs * Rs) return m;
+  float h = sqrt(Rs * Rs - r2);
+  float sA = max(-h, b), sB = h;
+  if (sB <= sA) return m;
+  float texA = uShapeGrid.z;
+  int state = 0;                 // 0: before the first hit, 1: inside it, 2: out again
+  float s = sA, sPrev = sA, fPrev = 1.0;
+  float minPx = 1e9, sMin = sA, sHit = sA, depthPx = 0.0;
+  bool covered = false;
+  for (int k = 0; k < SHAPE_MAX_STEPS; k++) {
+    vec3 p = qc + s * db;
+    float rho = length(p);
+    vec4 S = shapeFetch(layer, p);
+    float f = rho - S.r;
+    float tU = max(s - b, 1e-9);
+    vec3 g = shapeTangentGrad(p / rho, S);
+    float gPx = f * inversesqrt(1.0 + dot(g, g) / (S.r * S.r)) / (tU * px);   // normal distance (pixels)
+    if (state == 0) {
+      if (f > 0.0) {
+        if (gPx < minPx) { minPx = gPx; sMin = s; }
+      } else {
+        float a0 = sPrev, a1 = s, f0 = fPrev, f1 = f;
+        for (int r = 0; r < 6; r++) {
+          float sm = clamp(a0 + (a1 - a0) * f0 / (f0 - f1), mix(a0, a1, 0.1), mix(a0, a1, 0.9));
+          vec3 pm = qc + sm * db;
+          float fm = length(pm) - shapeFetch(layer, pm).r;
+          if (fm > 0.0) { a0 = sm; f0 = fm; } else { a1 = sm; f1 = fm; }
+        }
+        sHit = a0 + (a1 - a0) * f0 / (f0 - f1);
+        state = 1;
+        depthPx = -gPx;
+        if (depthPx >= 0.5) { covered = true; break; }
+      }
+    } else if (state == 1) {
+      if (f <= 0.0) {
+        depthPx = max(depthPx, -gPx);
+        if (depthPx >= 0.5) { covered = true; break; }
+      } else state = 2;
+    } else if (f <= 0.0) {
+      covered = true;
+      break;
+    }
+    sPrev = s; fPrev = f;
+    s += max(abs(f) * kStep, max(0.3 * texA * rho, 0.5 * tU * px));
+    if (s >= sB) break;
+  }
+  float cov;
+  vec3 pb;                       // shading point (body frame, rMax units)
+  float tU;
+  if (state == 0) {
+    cov = clamp(0.5 - minPx, 0.0, 1.0);
+    if (cov <= 0.0) return m;
+    vec3 u0 = normalize(qc + sMin * db);
+    pb = u0 * shapeFetch(layer, u0).r;            // closest approach, projected onto the surface
+    tU = sMin - b;
+  } else {
+    cov = covered ? 1.0 : clamp(0.5 + depthPx, 0.5, 1.0);
+    pb = qc + sHit * db;
+    tU = sHit - b;
+  }
+  vec3 u = normalize(pb);
+  vec3 nb = shapeNormal(u, shapeFetch(layer, u));
+  vec3 nG = qrot(q, nb);
+  vec3 p = c + qrot(q, pb * Rm);                   // camera-relative point
+  float t = tU * Rm;
+  if (uFarDebug >= 30 && uFarDebug <= 34) {
+    // debug views (?debug=30..34): body-frame normal as colour / self-shadow sun visibility on the lit side /
+    // geometric cos(incidence) / march outcome (red: miss within AA reach, green: covered hit, blue: grazing hit) /
+    // external shadows: r = Saturn, g = other moons, b = ring transmission
+    vec3 dc = uFarDebug == 30 ? 0.5 + 0.5 * nb
+      : uFarDebug == 31 ? vec3(dot(nG, uSunDir) > 0.0 ? shapeSunVisibility(i, p, nG, t) : 0.0)
+      : uFarDebug == 32 ? vec3(max(dot(nG, uSunDir), 0.0))
+      : uFarDebug == 34 ? vec3(saturnSunVisibility(p), farMoonsSunVisibility(p, i), ringSunTransmission(p, ringShadowFootprint(p, nG, rd, t)))
+      : (state == 0 ? vec3(1.0, 0.0, 0.0) : covered ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0));
+    m.L = cov * dc; m.cov = cov; m.T = vec3(1.0 - cov); m.dist = t;
+    return m;
+  }
+  float mu = max(dot(nG, -rd), 0.05);
+  float fpR = t * uPixelAngle / mu / uMoonPosR[i].w;
+  m.L = cov * moonShadePoint(i, p, nG, u, rd, t, fpR);   // premultiplied by coverage
+  m.cov = cov;
+  m.T = vec3(1.0 - cov);
+  m.dist = t;
+  return m;
+}
+
 MoonTrace traceMoon(int i, vec3 rd) {
   MoonTrace m;
   m.L = vec3(0.0); m.T = vec3(1.0); m.cov = 0.0; m.dist = SKY_DIST;
@@ -410,6 +581,7 @@ MoonTrace traceMoon(int i, vec3 rd) {
     m.T = T; m.cov = cov; m.dist = th;
     return m;
   }
+  if (uMoonShape[i].x >= 0.0) return traceShapedMoon(i, rd);
   vec3 c = uMoonPosR[i].xyz;
   vec4 q = uMoonQuat[i];
   vec3 R = uMoonRadii[i].xyz;

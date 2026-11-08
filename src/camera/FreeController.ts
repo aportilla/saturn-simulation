@@ -15,7 +15,8 @@ import type { FrameState } from '../core/FrameState';
 import { RingAnchor } from '../core/RingAnchor';
 import { evalFrame, findMoon, type FrameRef } from './frames';
 import { axis, type InputFrame } from './Input';
-import { clamp, ellipsoidRadiusAlong, lookQuat, rotZQuat, saturnAltitude, saturnNormal, wrapPi } from './math';
+import { clamp, lookQuat, rotZQuat, saturnAltitude, saturnNormal, wrapPi } from './math';
+import { moonSurfaceRadius } from '../moons/shapes';
 
 export const SPEED_MIN = 1e-3;
 export const SPEED_MAX = 1e5;
@@ -280,7 +281,7 @@ export class FreeController {
     } else {
       const d = this.local.length();
       _n.copy(this.local).divideScalar(Math.max(d, 1e-9));
-      const R = ellipsoidRadiusAlong(_n, m.radii);
+      const R = moonSurfaceRadius(m, _n);   // measured shape (ridges) or ellipsoid
       const minD = R + Math.max(5, 2e-4 * m.meanRadius);
       if (d < minD) this.local.copy(_n).multiplyScalar(minD);
     }

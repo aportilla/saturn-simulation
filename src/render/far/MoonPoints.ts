@@ -1,8 +1,10 @@
 // Sub-pixel moons as point sources of the correct total brightness.
-//  1. flux pass (fragment shader, fully parallel): a 64 x 32 float target, texel (k, i) = the radiance of
-//     disk sample k of moon i times its solid angle, i.e. the moon's disk is integrated with 64 sunflower-
-//     sampled rays through the SAME surface shading as the resolved renderer (albedo map / procedural
-//     surface, photometry and phase, Saturn / ring / moon shadows, Saturnshine, Titan's haze);
+//  1. flux pass (fragment shader, fully parallel): a 256 x 32 float target, texel (k, i) = the radiance of
+//     disk sample k of moon i times its solid angle, i.e. the moon's bounding disk is integrated with 64
+//     sunflower-sampled rays (256 for measured shapes, whose irregular silhouettes fill less of the disk: the
+//     sampling error of the hit fraction stays ~<5%) through the SAME surface shading as the resolved renderer
+//     (albedo map / procedural surface, measured shape, photometry and phase, Saturn / ring / moon / self
+//     shadows, Saturnshine, Titan's haze);
 //  2. one GL point per moon: the vertex shader sums its row (irradiance at the camera), applies the main-ring
 //     transmission when the moon lies beyond the ring plane, and the fragment shader spreads it with a
 //     pixel-integrated Gaussian PSF (pixel radiance = E w / Omega_pix).
@@ -21,7 +23,8 @@ import { FAR_SATURN_GLSL } from './glsl/saturn';
 import { FAR_MOONS_GLSL } from './glsl/moons';
 import { FAR_PSF_GLSL } from './glsl/sky';
 
-const NS = 64;
+const NS = 64;          // disk samples per moon (ellipsoids, Titan)
+const NS_SHAPE = 256;   // measured shapes; the flux target is NS_SHAPE wide, unused texels are 0
 
 const FLUX_FRAG = /* glsl */ `
 ${FAR_HEADER}
@@ -36,20 +39,24 @@ void main() {
   int i = int(gl_FragCoord.y);
   o = vec4(0.0);
   if (i >= uMoonCount || uMoonRing[i].w >= 0.999) return;
+  bool shaped = uMoonShape[i].x >= 0.0;
+  int ns = shaped ? ${NS_SHAPE} : ${NS};
+  if (k >= ns) return;
   vec3 c = uMoonPosR[i].xyz;
   float d = length(c);
   if (dot(uWorldToCam * c, vec3(0.0, 0.0, -1.0)) <= 0.0) return;
   int mat = int(uMoonRadii[i].w + 0.5);
   vec3 R = uMoonRadii[i].xyz;
-  float Rb = mat == MAT_TITAN ? R.x + TI_HTOP : max(R.x, max(R.y, R.z));
+  // bounding radius: the disk sampled must contain the whole silhouette (measured shapes: rMax, incl. ridges)
+  float Rb = mat == MAT_TITAN ? R.x + TI_HTOP : (shaped ? uMoonShape[i].y : max(R.x, max(R.y, R.z)));
   vec3 cn = c / d;
   vec3 e1 = normalize(cross(cn, abs(cn.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0)));
   vec3 e2 = cross(cn, e1);
-  float rr = Rb * sqrt((float(k) + 0.5) / float(${NS}));
+  float rr = Rb * sqrt((float(k) + 0.5) / float(ns));
   float an = float(k) * 2.39996323;
   vec3 dir = normalize(c + e1 * (rr * cos(an)) + e2 * (rr * sin(an)));
   MoonTrace m = traceMoon(i, dir);
-  o = vec4(m.L * (PI * Rb * Rb / float(${NS})) / (d * d), 1.0);
+  o = vec4(m.L * (PI * Rb * Rb / float(ns)) / (d * d), 1.0);
 }`;
 
 const VERT = /* glsl */ `
@@ -63,6 +70,7 @@ precision highp sampler2D;
 ${FAR_PSF_GLSL}
 uniform vec4 uMoonRadii[MAX_MOONS];
 uniform vec4 uMoonRing[MAX_MOONS];
+uniform vec4 uMoonShape[MAX_MOONS];
 uniform sampler2D tFlux;
 uniform float uExposure;
 in float aIndex;
@@ -86,7 +94,11 @@ void main() {
   vec2 ndc = tp / vec2(uTanHalfFov * uAspect, uTanHalfFov);
   if (abs(ndc.x) > 1.05 || abs(ndc.y) > 1.05) return;
   vec3 E = vec3(0.0);
-  for (int k = 0; k < ${NS}; k++) E += texelFetch(tFlux, ivec2(k, i), 0).rgb;
+  int ns = uMoonShape[i].x >= 0.0 ? ${NS_SHAPE} : ${NS};
+  for (int k = 0; k < ${NS_SHAPE}; k++) {
+    if (k >= ns) break;
+    E += texelFetch(tFlux, ivec2(k, i), 0).rgb;
+  }
   // main-ring transmission if the line of sight crosses the ring plane before the moon
   vec3 cn = c / d;
   if (abs(cn.z) > 1e-6) {
@@ -99,7 +111,7 @@ void main() {
   }
   E *= wPt;
   vec3 R = uMoonRadii[i].xyz;
-  float Rb = int(uMoonRadii[i].w + 0.5) == 6 ? R.x + 900e3 : max(R.x, max(R.y, R.z));
+  float Rb = int(uMoonRadii[i].w + 0.5) == 6 ? R.x + 900e3 : (uMoonShape[i].x >= 0.0 ? uMoonShape[i].y : max(R.x, max(R.y, R.z)));
   float om = pixelSolidAngle(tp);
   float thPx = Rb / d / uPixelAngle;
   vSig = sqrt(0.36 + 0.25 * thPx * thPx);
@@ -139,7 +151,7 @@ export class MoonPoints {
   private flux: FullscreenPass;
 
   constructor(uniforms: Record<string, { value: any }>) {
-    this.fluxRT = new WebGLRenderTarget(NS, MAX_MOONS, {
+    this.fluxRT = new WebGLRenderTarget(NS_SHAPE, MAX_MOONS, {
       type: FloatType, format: RGBAFormat, depthBuffer: false, stencilBuffer: false, generateMipmaps: false,
       minFilter: NearestFilter, magFilter: NearestFilter,
     });

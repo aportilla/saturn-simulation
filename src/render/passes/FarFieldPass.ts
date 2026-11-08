@@ -9,10 +9,11 @@
 //   (late, from PostPass) sub-pixel moons as points into hdrRT          -> far/MoonPoints.ts, far/lateHooks.ts
 // See src/render/far/* for the physical models.
 import {
-  AlwaysDepth, DataArrayTexture, DataTexture, Matrix3, RawShaderMaterial, RGBAFormat, UnsignedByteType, Vector3,
-  Vector4,
+  AlwaysDepth, ClampToEdgeWrapping, DataArrayTexture, DataTexture, FloatType, LinearFilter, Matrix3, RawShaderMaterial,
+  RepeatWrapping, RGBAFormat, UnsignedByteType, Vector3, Vector4,
 } from 'three';
 import type { FrameState, MoonState } from '../../core/FrameState';
+import type { MoonShape } from '../../moons/shapes';
 import type { PipelineContext, RenderPass } from '../Pipeline';
 import { FullscreenPass } from '../fullscreen';
 import { DEG, MAX_MOONS } from '../../core/constants';
@@ -134,6 +135,10 @@ export class FarFieldPass implements RenderPass {
   private lateHook: LateHdrHook;
   private lastExposure = 0.25;
   private texStatus = 'none';
+  /** measured shapes (MoonState.shape) packed into uShapeTex: base layer per shape (two layers each) */
+  private shapeLayers = new Map<MoonShape, number>();
+  private shapesSeen = new Set<MoonShape>();
+  private shapeTex: DataArrayTexture | null = null;
 
   constructor(private readonly opts: FarFieldOptions = {}) {
     this.lateHook = (f, ctx) => this.renderLate(f, ctx);
@@ -184,6 +189,9 @@ export class FarFieldPass implements RenderPass {
       uMoonRing: { value: v4() },
       uMoonTex: { value: dummyArr },
       uMoonTexW: { value: 1 },
+      uShapeTex: { value: dummyArr },
+      uShapeGrid: { value: new Vector4(1, 1, 1, 0) },
+      uMoonShape: { value: Array.from({ length: MAX_MOONS }, () => new Vector4(-1, 0, 0, 0)) },
       uStarTex: { value: null },
       uStarsOn: { value: 1 },
       uGalRot: { value: gal },
@@ -295,10 +303,12 @@ export class FarFieldPass implements RenderPass {
     const color = u.uMoonColor.value as Vector4[];
     const extra = u.uMoonExtra.value as Vector4[];
     const ring = u.uMoonRing.value as Vector4[];
+    const shapeU = u.uMoonShape.value as Vector4[];
     const n = Math.min(f.moons.length, MAX_MOONS);
     const rel = this.tmpV;
     const camV = this.tmpV2;
     let nRes = 0;
+    this.syncShapes(f.moons, n);
     // ringshine vectors: one moon per frame (they move slowly relative to the ring illumination)
     if (n > 0) {
       const k = this.rsNext++ % n;
@@ -320,10 +330,16 @@ export class FarFieldPass implements RenderPass {
       const col = mi.knownColor ? look.color : m.color;
       color[i].set(col[0], col[1], col[2], look.craters);
       extra[i].set(look.bump, tex ? tex.u0 : 0, tex ? tex.dir : 1, tex ? tex.gain : 1);
+      // measured shape (else the ellipsoid radii)
+      const shape = m.shape && !isTitan ? m.shape : null;
+      const layer = shape ? this.shapeLayers.get(shape) : undefined;
+      if (shape && layer !== undefined) shapeU[i].set(layer, shape.rMax, (look.smoothRidgeDeg ?? 0) * DEG, shape.marchStep);
+      else shapeU[i].set(-1, 0, 0, 0);
       // resolved weight
       rel.copy(m.pos).sub(f.camPos);
       const d = rel.length();
-      const Rres = isTitan ? m.radii.x + TITAN_BODY_DH : Math.max(m.radii.x, m.radii.y, m.radii.z);
+      const Rres = isTitan ? m.radii.x + TITAN_BODY_DH
+        : shape && layer !== undefined ? shape.rMax : Math.max(m.radii.x, m.radii.y, m.radii.z);
       const thPx = Rres / Math.max(d, 1) / f.pixelAngle;
       let w = smooth01(1.0, 2.5, thPx);
       if (w > 0) {
@@ -346,7 +362,7 @@ export class FarFieldPass implements RenderPass {
       const rs = this.rsVec[i];
       ring[i].set(rs.x, rs.y, rs.z, w);
     }
-    for (let i = n; i < MAX_MOONS; i++) ring[i].w = 0;
+    for (let i = n; i < MAX_MOONS; i++) { ring[i].w = 0; shapeU[i].set(-1, 0, 0, 0); }
     // keep the MAX_RESOLVED apparently largest moons resolved; the rest fall back to points
     if (nRes > MAX_RESOLVED) {
       // partial selection sort (n <= 32): largest first
@@ -366,6 +382,59 @@ export class FarFieldPass implements RenderPass {
     for (let k = 0; k < nRes; k++) idx[k] = this.resList[k].i;
     u.uResCount.value = nRes;
     this.resolved = nRes;
+  }
+
+  /**
+   * Pack the measured shape maps of the moons (MoonState.shape, src/moons/shapes.ts) into one RGBA32F array
+   * texture, two layers per shape (2l: gradient for northern samples, 2l + 1: southern; MoonShape.gradientFields):
+   * per texel radius / rMax and the tangential radius gradient / rMax (bilinear on the GPU = the CPU's
+   * MoonShape.radiusAlong). Runs when a new shape appears (normally once, after the moon system loads).
+   */
+  private syncShapes(moons: MoonState[], n: number): void {
+    let fresh = false;
+    for (let i = 0; i < n; i++) {
+      const s = moons[i].shape;
+      if (s && !this.shapesSeen.has(s)) { fresh = true; break; }
+    }
+    if (!fresh) return;
+    const all: MoonShape[] = [];
+    for (let i = 0; i < n; i++) {
+      const s = moons[i].shape;
+      if (s && !all.includes(s)) all.push(s);
+    }
+    for (const s of all) this.shapesSeen.add(s);
+    const g = all[0].grid;
+    const list = all.filter((s) => s.grid.width === g.width && s.grid.height === g.height && s.grid.step === g.step);
+    const W = g.width, H = g.height, cnt = W * H;
+    const data = new Float32Array(4 * cnt * 2 * list.length);
+    list.forEach((s, l) => {
+      const { north, south } = s.gradientFields();
+      const inv = 1 / s.rMax;
+      [north, south].forEach((grad, h) => {
+        for (let k = 0; k < cnt; k++) {
+          const o = 4 * ((2 * l + h) * cnt + k);
+          data[o] = s.r[k] * inv;
+          data[o + 1] = grad[3 * k] * inv;
+          data[o + 2] = grad[3 * k + 1] * inv;
+          data[o + 3] = grad[3 * k + 2] * inv;
+        }
+      });
+    });
+    const tex = new DataArrayTexture(data, W, H, 2 * list.length);
+    tex.format = RGBAFormat;
+    tex.type = FloatType;
+    tex.minFilter = LinearFilter;
+    tex.magFilter = LinearFilter;
+    tex.wrapS = RepeatWrapping;
+    tex.wrapT = ClampToEdgeWrapping;
+    tex.generateMipmaps = false;
+    tex.needsUpdate = true;
+    this.shapeTex?.dispose();
+    this.shapeTex = tex;
+    this.shapeLayers.clear();
+    list.forEach((s, l) => this.shapeLayers.set(s, 2 * l));
+    this.u.uShapeTex.value = tex;
+    (this.u.uShapeGrid.value as Vector4).set(W, H, g.step, 0);
   }
 
   render(f: FrameState, ctx: PipelineContext): void {
@@ -396,6 +465,7 @@ export class FarFieldPass implements RenderPass {
       stars: `${this.stars?.count ?? 0} (${this.stars?.source ?? '-'})`,
       moons: `${this.resolved} resolved`,
       maps: this.texStatus,
+      shapes: `${this.shapeLayers.size} measured`,
     };
     if (this.timer?.available) s.gpu = `${this.timer.ms.toFixed(2)} ms (+late ${this.lateTimer?.ms.toFixed(2)})`;
     return s;
@@ -407,6 +477,7 @@ export class FarFieldPass implements RenderPass {
     this.stars.dispose();
     this.ringshine.dispose();
     this.moonPts.dispose();
+    this.shapeTex?.dispose();
   }
 }
 

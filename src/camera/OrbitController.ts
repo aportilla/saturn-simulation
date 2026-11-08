@@ -5,7 +5,8 @@ import { Quaternion, Vector3 } from 'three';
 import type { FrameState } from '../core/FrameState';
 import { evalFrame, findMoon, type FrameRef } from './frames';
 import { axis, type InputFrame } from './Input';
-import { clamp, ellipsoidRadiusAlong, lookQuat, saturnRadiusAt } from './math';
+import { clamp, lookQuat, saturnRadiusAt } from './math';
+import { moonSurfaceRadius } from '../moons/shapes';
 
 export const MAX_DISTANCE = 1e11;
 const EL_LIMIT = (89.5 * Math.PI) / 180;
@@ -63,7 +64,7 @@ export class OrbitController {
     return out.set(ce * Math.cos(this.az), ce * Math.sin(this.az), Math.sin(this.el));
   }
 
-  /** Surface radius of the target in the camera's direction (m). */
+  /** Surface radius of the target in the camera's direction (m): measured shape (ridges included) or ellipsoid. */
   surfaceRadius(f: FrameState): number {
     const m = findMoon(f, this.target);
     if (!m) {
@@ -74,7 +75,7 @@ export class OrbitController {
     this.offsetDir(_d).applyQuaternion(_q); // SEF
     _qi.copy(m.orient).invert();
     _d.applyQuaternion(_qi); // body frame
-    return ellipsoidRadiusAlong(_d, m.radii);
+    return moonSurfaceRadius(m, _d);
   }
 
   minAltitude(f: FrameState): number {

@@ -36,6 +36,13 @@ export interface MoonLook {
   /** bump strength multiplier */
   bump: number;
   seed: number;
+  /**
+   * Half-width (deg latitude) of a smooth, crater-free equatorial ridge of accreted ring material, applied with a
+   * measured shape (src/moons/shapes.ts): Pan, Atlas (Charnoz et al. 2007; Thomas et al. 2013: Atlas's ridge is
+   * smoother than its higher latitudes; Buratti et al. 2019) and Daphnis. Taken from the shape models' ridge
+   * profiles (r(lat) rises above the core within about +-15 / 20 / 10 deg).
+   */
+  smoothRidgeDeg?: number;
 }
 
 const L = (mat: MoonMat, color: [number, number, number], phot: MoonPhotometry, craters: number, bump: number, seed: number, pGeom?: number): MoonLook =>
@@ -53,9 +60,11 @@ export const MOON_LOOKS: Record<string, MoonLook> = {
   iapetus: L(MoonMat.Iapetus, [1.04, 1.0, 0.92], PHOT_ICY, 0.8, 1.0, 17, 0.6),
   hyperion: L(MoonMat.Hyperion, [1.16, 1.0, 0.81], PHOT_MEDIUM, 1.0, 1.4, 18, 0.3),
   phoebe: L(MoonMat.Phoebe, [1.02, 1.0, 0.97], PHOT_DARK, 0.9, 1.2, 19, 0.081),
-  pan: L(MoonMat.Small, [1.05, 1.0, 0.93], PHOT_SMALL, 0.3, 1.2, 21),
-  daphnis: L(MoonMat.Small, [1.05, 1.0, 0.93], PHOT_SMALL, 0.3, 1.2, 22),
-  atlas: L(MoonMat.Small, [1.05, 1.0, 0.93], PHOT_SMALL, 0.3, 1.2, 23),
+  // ring moons: few, muted craters even on their cores (Thomas et al. 2013: maybe five > 1 km on Atlas's best-seen
+  // region); the measured shapes carry the relief, the procedural craters only sub-model-resolution texture
+  pan: { ...L(MoonMat.Small, [1.05, 1.0, 0.93], PHOT_SMALL, 0.12, 1.2, 21), smoothRidgeDeg: 15 },
+  daphnis: { ...L(MoonMat.Small, [1.05, 1.0, 0.93], PHOT_SMALL, 0.12, 1.2, 22), smoothRidgeDeg: 10 },
+  atlas: { ...L(MoonMat.Small, [1.05, 1.0, 0.93], PHOT_SMALL, 0.12, 1.2, 23), smoothRidgeDeg: 20 },
   prometheus: L(MoonMat.Small, [1.06, 1.0, 0.92], PHOT_SMALL, 0.5, 1.4, 24),
   pandora: L(MoonMat.Small, [1.05, 1.0, 0.93], PHOT_SMALL, 0.6, 1.4, 25),
   epimetheus: L(MoonMat.Small, [1.03, 1.0, 0.95], PHOT_SMALL, 0.7, 1.4, 26),

@@ -86,6 +86,16 @@ Implications:
 * Late HDR hooks exist for **sub-pixel sources** (unresolved moons): a single opaque distance per pixel can't
   represent a sub-pixel point in front of the rings, so the far pass registers a hook that adds them to hdrRT
   after the ring layer, with an analytic ring transmission and an occlusion test against sceneRT.a.
+* **Moon shapes** (`far/glsl/moons.ts`): triaxial ellipsoids with analytic limb coverage, except the small inner
+  moons with measured shapes (`MoonState.shape`, `src/moons/shapes.ts`; data: data-sources.md §6 — Pan, Daphnis,
+  Atlas, Prometheus, Pandora, Epimetheus, Janus): `traceShapedMoon` sphere-traces the star-shaped radius map (1°
+  lat-lon, bilinear) inside the bounding sphere r_max (step (|p| − r)·Lipschitz factor, floor 0.3 texel / half a
+  pixel), refines the hit (guarded secant), takes limb coverage from the closest perpendicular gap or deepest
+  penetration in pixels (a ridge in front of the core counts as covered), normals from the interpolated tangential
+  gradient field (one-sided on the equatorial ridge crests) and self-shadowing from a soft-shadow march toward the Sun.
+  The CPU `MoonShape.radiusAlong` is the same function (camera clearance via `moonSurfaceRadius`); MoonPoints
+  integrates unresolved moons over the r_max disk with the same tracer. Debug views `?debug=30..34`: normal,
+  self-shadow, cos i, march outcome, external shadows (r Saturn, g moons, b rings).
 * **Auto exposure** (`PostPass`): highlight meter (per-cell peak/extended brightness, Sun excluded, isolated
   point sources ≤ 64× key) for small bright bodies on black sky; when lit material (> 1e-4 W m⁻² sr⁻¹) covers
   most of the frame it blends to the 90th percentile of the lit pixels (interpolated within its half-stop

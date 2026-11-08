@@ -7,15 +7,16 @@ follow [Adding a tool](#adding-a-tool) so the next session can run it too.
 
 | command | what it checks | runtime* |
 |---|---|---|
-| `npm test` | smoke + physics + counts + seam + exposure against one private dev server; summary table | ~5.5 min |
+| `npm test` | smoke + physics + counts + seam + exposure + moonflux against one private dev server; summary table | ~5.5 min |
 | `npm run test:smoke` | every place loads and renders cleanly (errors, fallbacks, NaN / negative pixels) | ~1.5 min |
 | `npm run test:physics` | Sun ephemeris, orbital frequencies, near-field particle kinematics | ~15 s |
 | `npm run test:counts` | drawn particle counts vs the analytic expectation, HUD count line, radius sampler | ~30 s |
 | `npm run test:seam` | near field + medium vs medium alone (seams/arcs), particle flux vs render scale | ~2.2 min |
 | `npm run test:fps` | uncapped fps table: places × particle quality (informational) | ~2.5 min |
 | `npm run test:exposure` | the camera-pinned astronaut doesn't change the auto exposure (meter mask) | ~45 s |
+| `npm run test:moonflux` | point-source flux of unresolved moons = resolved brightness (measured shapes + ellipsoid control) | ~10 s |
 | `node scripts/shot.mjs …` / `node scripts/shots.mjs …` | screenshots (one / batch spec) | — |
-| `node scripts/img.mjs profile\|mean\|crop …` | PNG brightness profiles, region ratios, contrast-stretched zooms | — |
+| `node scripts/img.mjs profile\|mean\|crop\|rotate …` | PNG brightness profiles, region ratios, contrast-stretched zooms, rotate/scale | — |
 
 \* on an M-class Mac with the GPU to itself; another agent's browser on the same GPU slows everything down.
 
@@ -135,6 +136,17 @@ half-stop histogram is interpolated, so residuals are ≲ 0.1), mask live only w
 2026-11-07: 0.00 EV at overview, a-ring-30m, enceladus, cloud-tops (default set) and at a-ring-inside,
 b-ring-inside, a-ring-1km, shadow, rings-above; 0.10 at under-rings. ~45 s.
 
+### moonflux — `scripts/test/moonflux.mjs` (`--moons Pan,…`, `--tol`, `--tol-ellipsoid`, `--px`, `--t ISO`)
+A moon below ~1–2.5 px radius is a point source whose irradiance `far/MoonPoints.ts` integrates with sunflower rays
+over the moon's bounding disk through the resolved renderer's shading (256 rays for measured shapes, 64 for
+ellipsoids). Per moon (default: the 7 measured shapes + Mimas as ellipsoid control): a resolved view (~120 px radius,
+10° fov, 70° below the ring plane so Saturn and the rings stay out of the frame; ring layer, near field, stars off)
+with the resolved/point cross-fade weight forced to 0.5 so the flux step runs; E_res = far-pass sceneRT radiance
+integrated over the bounding circle / 0.5, E_flux = the moon's flux-target row sum. Checks: ratio within 1 ± 0.08
+(measured shapes) / 1 ± 0.10 (ellipsoids: the pre-existing 64-ray sampling); no errors. Measured 2026-11-08: Pan
+0.9995, Daphnis 0.970, Atlas 1.026, Prometheus 0.972, Pandora 0.973, Epimetheus 0.967, Janus 0.986, Mimas 1.070. It
+guards the bounding radius r_max (Pan's / Atlas's ridges reach 3–4 km beyond their IAU ellipsoids) and the ray count.
+
 ## Tools
 
 - `scripts/shot.mjs <url> <out.png> [--until expr] [--eval expr] [--wait ms] [--w --h --dpr] [--keep-storage]` —
@@ -148,11 +160,21 @@ b-ring-inside, a-ring-1km, shadow, rings-above; 0.10 at under-rings. ~45 s.
   the 1 km wake view with and without the near field, Daphnis in the Keeler gap with and without edge waves
   (`edgeWaveScale` 0), Daphnis and Pan close-ups, the Keeler gap and the B-ring edge at the 2009 equinox. The
   orbit-camera `az` values put the Sun ~30–40° to the side on those dates (Sun azimuth 61° on 2026-11-08,
-  −136° in Aug 2009).
+  −136° in Aug 2009). `scripts/test/specs/moon-shapes.json`: the measured small-moon shapes — 9 Cassini frames
+  reproduced from the PDS shape-model documents' image tables (the first shot defines `window.__mv(o)`: SCLK → time,
+  calibrated so the app's sub-solar W longitude equals the table's; camera at the sub-spacecraft lat / W lon and range;
+  NAC-like fov below the UI's 20° minimum), generic views of all 7 reshaped moons on 2026-11-08 and a camera-clearance
+  check 20 m above Pan's ridge (eval prints the clamped distance vs the surface radius). Compare with the raw frames
+  (`https://opus.pds-rings.seti.org/opus/api/files/co-iss-<frame>.json` → `_full.png`) rotated by the frame's
+  `noraz` (clockwise); renders are north-up.
 - `scripts/img.mjs profile <x0> <x1> <y0> <y1> <step> a.png b.png …` — vertical brightness + texture profile of
   a column strip in several screenshots side by side (find seams); `mean a.png b.png "x0,y0,x1,y1" …` — region
   means and ratio; `crop out.png x0 y0 w h scale gain a.png b.png …` — stacked, upscaled, contrast-stretched
-  crops (gain 3 makes 1 % seams visible). View PNGs with the Read tool.
+  crops (gain 3 makes 1 % seams visible); `rotate in.png out.png cwDeg scale W H [cx cy]` — rotate/scale about a
+  point (north-up render → a Cassini frame's `noraz` orientation and m/px). View PNGs with the Read tool.
+- `scripts/data/moons/render_shape_model.mjs <moon> <out.png> --lat --lonW [--sunLat --sunLonW --kmPerPx --mode]` —
+  independent orthographic render of the raw PDS plate model (not the app's radius map), north up: the reference
+  for checking the app's measured-shape rendering and for comparisons with Cassini frames.
 - `scripts/meter-debug.mjs "<url or ?query>" [--base URL] [--settle ms]` — auto-exposure meter intermediates for
   one view (scene-meter 90th percentile + lit coverage, highlight meter region / extended / peak, metered
   luminance, EV, share of the frame under the astronaut's meter mask). For tuning / debugging exposure.

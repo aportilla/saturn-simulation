@@ -4,6 +4,7 @@
 // All positions are SEF meters in JS doubles. Shaders receive camera-relative float32 values.
 import { Matrix3, Matrix4, Quaternion, Vector3 } from 'three';
 import { LOG_DEPTH_FAR } from './constants';
+import type { MoonShape } from '../moons/shapes';
 
 export type MoonKind = 'major' | 'ring' | 'coorbital' | 'trojan' | 'minor' | 'irregular';
 
@@ -19,6 +20,11 @@ export interface MoonState {
   /** Triaxial semi-axes (m) in the body frame: x = longest (points at Saturn for synchronous rotators), y = along-orbit, z = polar */
   radii: Vector3;
   meanRadius: number;
+  /**
+   * Measured shape (star-shaped radius map, src/moons/shapes.ts) when loaded: Pan, Daphnis, Atlas, Prometheus, Pandora,
+   * Epimetheus, Janus. It replaces the ellipsoid `radii` for rendering and camera clearance (moonSurfaceRadius()).
+   */
+  shape?: MoonShape | null;
   /** body -> SEF rotation */
   orient: Quaternion;
   /** Visual geometric albedo (used to scale the surface reflectance) */

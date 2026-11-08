@@ -12,6 +12,7 @@ via `ICRF_TO_SEF` in `src/core/ephemeris.ts`, pole RA 40.589°, Dec 83.537°).
 | `src/moons/MoonSystem.ts` | `loadMoonSystem(): Promise<MoonProvider>` (falls back to `StubMoons` with a warning), `class MoonSystem implements MoonProvider` (+ `indexOf(name)`, `accurateSpanJd(i)`), `createMoonSystem(json, i16, f32, hyperion)` (for Node tests) | `public/data/moons/moons.json`, `moon_tables.i16`, `moon_tables.f32`, `hyperion_rotation.f32` |
 | `src/moons/orbitModel.ts` | `OrbitModel`, `OrbitSample`, `tauFromT` (runtime mirror of `scripts/data/moons/model.mjs`) | |
 | `src/moons/hyperionRotation.ts` | `HyperionRotation` | |
+| `src/moons/shapes.ts` | `loadMoonShapes(): Promise<Map<string, MoonShape>>` (empty map + warning if missing; `loadMoonSystem` attaches them as `MoonState.shape`), `MoonShape.radiusAlong(x,y,z)`, `.gradientFields()`, `moonSurfaceRadius(m, dBody)` (shape or ellipsoid; used by the cameras) | `public/data/moons/shapes.json`, `shapes.u16` (section 6) |
 | `src/sky/starCatalog.ts` | `loadStarCatalog(): Promise<StarCatalog \| null>`, `starIrradiance(V)`, `starColorFromBV(bv)`, `teffFromBV(bv)`, `STAR_E0` | `public/data/stars/stars.json`, `stars.bin` |
 | `src/core/ephemeris.ts` (orchestrator) | `loadSunTable()` | `public/data/ephemeris/sun_from_saturn.json` |
 | far-field renderer | reads `public/data/textures/manifest.json` | `public/data/textures/moons/<key>.jpg` |
@@ -55,7 +56,9 @@ Epimetheus, then Aegaeon, Methone, Anthe, Pallene, Calypso, Telesto, Polydeuces,
 | 27 | Ymir | 619 | irregular | 9.5 (sphere) | 9.5 | 3.6e-4 (est.) | 0.06 | 1.034, 0.994, 0.955 | assumed pole, P = 11.92 h | cartesian 8 d |
 
 Sources:
-* **Shapes**: IAU WGCCRE 2015 report (Archinal et al. 2018, *CMDA* 130:22) as implemented in NAIF `pck00011.tpc`
+* **Shapes** (the radii above; for Pan, Daphnis, Atlas, Prometheus, Pandora, Epimetheus and Janus only the
+  fallback and the shadow spheres — they are rendered with the measured shape models of section 6): IAU WGCCRE 2015
+  report (Archinal et al. 2018, *CMDA* 130:22) as implemented in NAIF `pck00011.tpc`
   (`BODY6xx_RADII`), which includes the Thomas 2010 (*Icarus* 208:395), Thomas et al. 2013 (*Icarus* 226:999; Methone,
   Pallene, Polydeuces, Aegaeon) and Buratti et al. 2019 (*Science* 364; Pan, Daphnis, Atlas, Pandora) results. a = axis
   toward Saturn (body +x), b = along-orbit (+y), c = polar (+z). Irregulars: spheres of the radiometric/assumed-albedo
@@ -266,7 +269,58 @@ trailing side are suppressed) and contain baked-in topographic shading; Phoebe's
 sees). **No Saturn map**: no public-domain Cassini full-globe cylindrical map was found (Photojournal has only tile
 mosaics such as PIA06193); Saturn's bands rotate differentially, so a static map would be inaccurate anyway.
 
-## 6. Reproduce
+## 6. Measured shapes of the small inner moons (`public/data/moons/shapes.{json,u16}`)
+
+**Source**: P. C. Thomas, J. Joseph & T. Ansty (2018), *Saturn Small Moon Shape Models V1.0*, NASA Planetary Data
+System, Small Bodies Node, `urn:nasa:pds:saturn_satellite_shape_models::1.0`, **doi:10.26033/ewy3-jy61**
+(`https://sbnarchive.psi.edu/pds4/cassini/saturn_satellite_shape_models_V1_0/`): 30k-plate models (13–14 k vertices,
+km) from Cassini ISS NAC stereo control points and limb fits, including the 2016–17 ring-grazing close flybys (Pan
+2017-03-07 at 24,500 km, Daphnis 2017-01-16, Atlas 2017-04-12 at 12,700 km, Pandora 2016-12-18, Epimetheus 2017-01/02).
+**Licence**: NASA PDS data (US-government work), no copyright restrictions; cite the data set. The bundle also holds
+Telesto, Calypso, Helene and Hyperion (not used yet). Frame: +X Saturn-facing prime meridian, +Y opposite to the orbital
+motion (trailing), +Z north spin pole, origin = centre of figure (±20–90 m) — identical to `MoonState`'s body frame.
+
+**Processing** (`scripts/data/moons/build_shapes.mjs`): each model is verified star-shaped about the origin (every
+plate faces outward and the plates' solid angles sum to 4π to 1e-12, so each direction meets the surface once); the
+radial function r(lat, lonE) is sampled by exact ray-plate intersection on a 1° grid, 360 × 181, rows from the south to
+the north pole (both included, constant) and **a row on the equator** — the ridge crests of Pan, Atlas and Daphnis
+are a vertex chain at z = 0, kept sharp; uint16 (r = value × scaleKm = r_max/65535: 0.09 m for Daphnis … 1.6 m for
+Janus). Reconstruction error of the bilinear interpolant against the mesh (40,000 random directions): rms 0.4–14 m
+(≤ 3 % of the models' stated radius uncertainties), worst single points 8–178 m on sharp creases (Prometheus 178 m vs
+its 0.2–0.4 km). 1.5° would give rms 0.8–25 m (397 KiB), 0.5° rms 0.2–5 m (3.5 MB).
+
+| moon | R_vol (km) model / published | r_min–r_max (km) | extents x / y / z (km) | best-fit ellipsoid (km) | `moons.json` (IAU) | map rms / max (m) | model uncertainty (km) |
+|---|---|---|---|---|---|---|---|
+| Pan | 13.70 / 14.0 ± 1.2ᵃ, 13.7 ± 0.3ᵇ | 10.36–20.40 | −20.16..20.41 / −16.20..15.27 / −10.50..11.05 | 17.51 × 14.13 × 10.30 | 17.2 × 15.4 × 10.4 | 3.1 / 78 | 0.2–0.3 |
+| Daphnis | 3.89 / 3.8 ± 0.8ᵃ, 3.9 ± 0.5ᵇ | 2.67–5.61 | −5.59..5.59 / −4.77..4.94 / −3.10..2.79 | 4.96 × 4.31 × 2.74 | 4.6 × 4.5 × 2.8 | 0.4 / 8 | 0.2–0.7 |
+| Atlas | 14.93 / 15.1 ± 0.8ᵃ, 14.9 ± 0.2ᵇ | 9.17–24.16 | −24.16..23.38 / −20.40..20.88 / −10.07..9.40 | 20.79 × 19.14 × 8.33 | 20.5 × 17.8 × 9.4 | 2.6 / 39 | 0.1–0.3 |
+| Prometheus | 42.76 / 43.1 ± 1.2ᵃ | 26.28–72.69 | −72.69..70.02 / −41.73..41.71 / −29.76..29.13 | 67.89 × 40.23 × 28.43 | 68.2 × 41.6 × 28.2 | 7.1 / 178 | 0.2–0.4 |
+| Pandora | 40.04 / 40.6 ± 1.5ᵃ | 29.24–56.94 | −56.88..55.48 / −40.87..41.85 / −33.36..32.68 | 51.65 × 39.60 × 31.25 | 52.2 × 40.8 × 31.5 | 5.6 / 61 | 0.2–0.3 |
+| Epimetheus | 58.59 / 58.2 ± 1.2ᵃ | 44.30–75.37 | −75.36..70.78 / −58.63..54.18 / −53.27..54.57 | 71.34 × 53.76 × 51.99 | 64.9 × 57.3 × 53.0 | 7.5 / 74 | 0.15–0.3 |
+| Janus | 88.98 / 89.2 ± 0.8ᵃ | 67.70–106.79 | −106.73..99.97 / −93.50..96.31 / −78.05..75.19 | 102.23 × 91.74 × 74.64 | 101.7 × 93.0 × 76.3 | 13.8 / 173 | 0.3–1.3 |
+
+ᵃ Thomas et al. 2013 (*Icarus* 226:999, Table 1; its a, b, c are exactly the `moons.json` radii, i.e. pre-2016 limb-fit
+ellipsoids). ᵇ Thomas & Helfenstein 2020 (*Icarus* 344:113355) as tabulated by Rambaux et al. 2022 (*A&A* 667:A78).
+Best-fit ellipsoid: centre fixed, radial least squares over directions uniform in solid angle (informational).
+Uncertainties: the bundle's `<moon>_document.pdf`. All volume-equivalent radii agree with the published means; the
+equatorial **ridges reach well beyond the ellipsoids** (Pan 20.4 vs a = 17.2 km, Atlas 24.2 vs 20.5 km), which is why
+the far pass bounds with r_max and the cameras use the shape. Epimetheus's model x-extent (146 km) exceeds the 2013
+limb-fit a (129.8 km) though volume, b and c agree — the outline is broad, not a few bad vertices; the 2018 model is
+used as published. `MoonState.meanRadius` keeps the IAU value (shadow spheres, labels).
+
+**Runtime**: `shapes.json` holds the grid and per moon `offset, count, scaleKm, rMaxKm, rMinKm, slopeOverRmin` (max
+arc-length slope of the map over r_min: the Lipschitz bound of |p| − r(p̂), i.e. the sphere-tracing step factor
+1/√(1 + (L/r_min)²)) plus the statistics above. `MoonShape` interpolates bilinearly in (lon, lat) exactly as the shader;
+the far pass packs radius/r_max and the tangential gradient (central differences; one-sided on an equatorial crest
+whose flanks differ by > 20°, so the crest stays sharp — two texture layers, picked by hemisphere) into an RGBA32F
+array. Validation against Cassini frames (geometry from the documents' image tables; `scripts/test/specs/moon-shapes.json`):
+with the time set so the app's sub-solar W longitude equals the table's, the sub-solar latitude matches to 0.01° for
+all 9 frames; the time offsets this needs relative to SCLK ≈ seconds since 1958 UTC grow smoothly from −27 min
+(2005) to −70 min (2017), the same for every moon of an epoch (clock drift, not the rotation models). Rotated by the
+frames' `noraz`, the renders reproduce the silhouettes and ridge features of N1867606643 (Pan), N1870699307 (Atlas),
+N1504613650 (Pandora) and N1575363139 (Epimetheus).
+
+## 7. Reproduce
 
 ```sh
 node scripts/data/ephemeris/build_sun.mjs                       # Sun table (1 Horizons request)
@@ -277,6 +331,8 @@ node scripts/data/stars/build_stars.mjs                         # -> public/data
 node scripts/data/textures/download.mjs data-raw/textures/usgs <USGS mosaic URLs>   # asc-pds-services.s3.us-west-2.amazonaws.com/mosaic/...
 node scripts/data/textures/download.mjs data-raw/textures/photojournal <assets.science.nasa.gov PIA URLs>
 node scripts/data/textures/build_textures.mjs                   # -> public/data/textures/*
+node scripts/data/moons/build_shapes.mjs [--profiles]           # PDS shape models -> public/data/moons/shapes.* (downloads to data-raw/moon_shapes/pds, ~15 MB; ~5 s)
+node scripts/data/moons/render_shape_model.mjs pan out.png --lat 39.21 --lonW 216.71 --sunLat 26.71 --sunLonW 199.29   # raw-mesh reference render
 # runtime verification of the TypeScript modules against fresh Horizons queries:
 node_modules/.bin/rolldown scripts/data/moons/verify_runtime.ts --file <tmp>/verify.mjs --format esm --platform node
 SV_ROOT=$PWD node <tmp>/verify.mjs
@@ -286,11 +342,12 @@ Helper/provenance scripts: `probe_spans.mjs` (Horizons coverage), `ssd_tables.mj
 swap epochs), `textures/fetch_labels.mjs` (USGS ISIS
 labels), `textures/check_phoebe_ticks.mjs`, `textures/list_usgs.mjs`, `textures/scan_pia.mjs`.
 
-## 7. Files and sizes
+## 8. Files and sizes
 
 | file | size | content |
 |---|---|---|
 | `public/data/moons/moons.json` | 51 KB | catalogue, rotation and orbit models, accuracy |
+| `public/data/moons/shapes.json` / `shapes.u16` | 7 KB / 891 KiB | measured shapes of 7 small moons (1° radius maps, uint16) |
 | `public/data/moons/moon_tables.i16` | 1.2 MB | element residual tables (int16 × per-field scale) |
 | `public/data/moons/moon_tables.f32` | 258 KB | Cartesian residual tables (Phoebe, irregulars) |
 | `public/data/moons/hyperion_rotation.f32` | 154 KB | 5500 rotation checkpoints |
