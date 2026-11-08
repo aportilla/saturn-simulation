@@ -11,6 +11,7 @@
 //   w_i = smoothstep(rhoLo, rhoHi, a / (s * renderPixelAngle))        resolved: 3 -> 6 render px radius
 //       x (1 - smoothstep(tauVisLo, tauVisHi, tau_los))                 not statistically occluded: tau 4 -> 5
 //       x (1 - smoothstep(e1 - F, e1, out))                             near the view frustum
+//       x smoothstep(1, 1.15, d / rho_cam)                              the camera outside the body
 // An overlap is at most the smaller particle's diameter deep and typically ~0.3 of its radius, i.e. about one pixel
 // of silhouette at 3 px radius: below that it is invisible, so pairs are corrected with min(w_i, w_j); the fades
 // make every correction continuous in time. tau_los: slab-model optical depth from the camera to the particle's
@@ -21,6 +22,9 @@
 // yields to a larger one, so only particles about that close can push a visible one), fading out over F = half
 // of it - but never beyond the coverage of R0 (the update pass keeps out-of-view particles within rb + mw, mw = the
 // wake margin of ~3 wake wavelengths; with wakes off (mw = 0) the fade moves to [0, rb] at the view's edge).
+// d / rho_cam: the camera's distance from the centre over the body's radial extent toward it - a body around the
+// camera is not drawn (the camera is a ghost), so it must not push its neighbours out of an empty hollow around
+// the camera (the last factor is applied when the list is materialized, where the shape is known).
 //
 // CONTACT DISTANCE: the sum of the two drawn base shapes' radial extents along the centre line n,
 // rho_i(n) = a_i / sqrt(n^T M'_i n), M'_i = R_i diag(1 / shape_i^2) R_i^T (nearShape axes / a in the current
@@ -203,8 +207,14 @@ void main() {
   vec3 ex = nearQRot(q, vec3(1.0, 0.0, 0.0)), ey = nearQRot(q, vec3(0.0, 1.0, 0.0)), ez = nearQRot(q, vec3(0.0, 0.0, 1.0));
   vec3 iv = 1.0 / (sh * sh);
   mat3 M = iv.x * outerProduct(ex, ex) + iv.y * outerProduct(ey, ey) + iv.z * outerProduct(ez, ez);
+  // a body around the camera is not drawn (nearDraw discards it: the camera is a ghost), so it takes no part in
+  // contacts - an invisible body must not visibly push its neighbours out of a hollow around the camera; fading
+  // out as the camera crosses its surface (its radial extent toward the camera, relief included)
+  float dc = length(r0.xyz);
+  vec3 nc = dc > 0.0 ? r0.xyz / dc : vec3(0.0, 0.0, 1.0);
+  float wc = smoothstep(1.0, 1.15, dc * sqrt(dot(nc, M * nc)) / a);
   oP = vec4(r0.xyz, float(tc.y * uTexW + tc.x));
-  oM = vec4(r0.w, nearContactWeight(r0.xyz, a), M[0][0], M[1][1]);
+  oM = vec4(r0.w, nearContactWeight(r0.xyz, a) * wc, M[0][0], M[1][1]);
   oS = vec4(M[2][2], M[0][1], M[0][2], M[1][2]);
 }`;
 

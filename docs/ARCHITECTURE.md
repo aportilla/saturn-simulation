@@ -220,8 +220,10 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   - *who*: present particles (drawn or not) weighted by smooth fades — resolved (3 → 6 render px radius: an overlap
     is typically ~0.3 of the smaller radius deep, about a pixel at 3 px), not statistically occluded (slab
     line-of-sight τ 4 → 5 with a conservative path τ, as the update pass's cull), near the view frustum (dilated by
-    two contact distances, the reach of a push; within R0's out-of-view coverage rb + mw). A pair is corrected with
-    the smaller weight, so every correction fades in continuously.
+    two contact distances, the reach of a push; within R0's out-of-view coverage rb + mw), and not around the camera
+    (a body containing the camera is not drawn — the camera is a ghost — so it must not push its neighbours out of
+    an empty hollow; fading over d/ρ 1 → 1.15). A pair is corrected with the smaller weight, so every correction
+    fades in continuously.
   - *contact distance*: the sum of the drawn base shapes' radial extents along the centre line,
     ρ = a / √(nᵀM′n), M′ = R diag(1/shape²) Rᵀ (`nearShape` / `nearOrientation`: ellipsoids at high quality,
     spheres otherwise); the high-quality relief (±~0.1 a) interlocks with the neighbour's.
