@@ -1,0 +1,15 @@
+{
+  "until": "window.__svReady===true",
+  "shots": [
+    { "name": "a-inside", "url": "?preset=a-ring-inside&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1&fov=35", "wait": 4000 },
+    { "name": "b-inside", "url": "?preset=b-ring-inside&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1&fov=35", "wait": 4000 },
+    { "name": "a-1km", "url": "?preset=a-ring-1km&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0", "wait": 4000 },
+    { "name": "a-1km-no-near", "url": "?preset=a-ring-1km&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&nearField=0", "wait": 4000 },
+    { "name": "keeler-wide", "url": "?cam=orbit&target=daphnis&dist=120000&az=31&el=-45&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&fov=40&scale=1", "wait": 3000 },
+    { "name": "keeler-wide-no-edge-waves", "url": "?cam=orbit&target=daphnis&dist=120000&az=31&el=-45&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&fov=40&scale=1", "eval": "(() => { window.__sv.pipeline.passes.rings.inner.edgeWaveScale = 0; return 'edgeWaveScale=0'; })()", "wait": 3000 },
+    { "name": "daphnis-close", "url": "?cam=orbit&target=daphnis&dist=25000&az=31&el=-50&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&fov=40&scale=1", "wait": 3000 },
+    { "name": "pan-close", "url": "?cam=orbit&target=pan&dist=70000&az=31&el=-25&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&fov=40&scale=1", "wait": 3000 },
+    { "name": "keeler-equinox", "url": "?cam=orbit&target=daphnis&dist=200000&az=-176&el=-35&t=2009-08-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&fov=50", "wait": 3000 },
+    { "name": "b-edge-equinox", "url": "?cam=ring&r=110000e3&phi=-100.9&z=-4000e3&yaw=90&pitch=28&t=2009-07-26T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&fov=25", "wait": 3000 }
+  ]
+}

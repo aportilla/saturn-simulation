@@ -38,8 +38,9 @@ Common options (every test):
 - `--base URL` — use a running dev server (e.g. `http://127.0.0.1:5173/`). **Default: none** — the test starts a
   private Vite dev server on a free port with **HMR and file watching off**, so edits by other agents can't reload
   the page mid-measurement (the code is frozen at server start; dependency cache in
-  `<os tmp>/space-viz-test-vite-cache`). With `--base` pointing at the normal dev server a reload is possible;
-  the harness retries a load once.
+  `<os tmp>/space-viz-test-vite-cache/<hash of the checkout path>`, one per checkout / git worktree, so agents
+  testing in parallel worktrees don't race on Vite's optimizer cache). With `--base` pointing at the normal dev
+  server a reload is possible; the harness retries a load once.
 - `--out DIR` — output directory; default `<os tmp>/space-viz-test/<test>-<yyyymmdd-hhmmss>` (printed at start).
 - `--w / --h` — browser viewport (display pixels; the app renders at its render scale, default 0.5).
 - `--help` — usage line.
@@ -142,7 +143,12 @@ b-ring-inside, a-ring-1km, shadow, rings-above; 0.10 at under-rings. ~45 s.
   `{ base?, until, shots: [{ name, url, eval?, wait?, reload? }] }`; shots with the same URL reuse the page
   (`eval` can change settings between them). Without a reachable `base` (spec or `--base`) it starts a private
   server, so specs with relative URLs run anywhere. Example spec: `scripts/test/specs/astronaut.json` (the
-  astronaut overlay in several places, fov 25/100, and the V key toggle).
+  astronaut overlay in several places, fov 25/100, and the V key toggle). `scripts/test/specs/cassini-compare.json`:
+  views matched to Cassini images for before/after checks of ring morphology — A/B-ring particle close-ups,
+  the 1 km wake view with and without the near field, Daphnis in the Keeler gap with and without edge waves
+  (`edgeWaveScale` 0), Daphnis and Pan close-ups, the Keeler gap and the B-ring edge at the 2009 equinox. The
+  orbit-camera `az` values put the Sun ~30–40° to the side on those dates (Sun azimuth 61° on 2026-11-08,
+  −136° in Aug 2009).
 - `scripts/img.mjs profile <x0> <x1> <y0> <y1> <step> a.png b.png …` — vertical brightness + texture profile of
   a column strip in several screenshots side by side (find seams); `mean a.png b.png "x0,y0,x1,y1" …` — region
   means and ratio; `crop out.png x0 y0 w h scale gain a.png b.png …` — stacked, upscaled, contrast-stretched

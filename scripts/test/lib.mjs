@@ -16,6 +16,7 @@
 //             (unnatural hues), measureFps (fresh page per measurement)
 // - images:   decodePng / encodePng / pngLumaMean (no dependencies)
 // puppeteer-core and vite are imported lazily, so the PNG / CLI helpers work without them.
+import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -156,8 +157,9 @@ function freePort() {
 }
 /**
  * The app's base URL: `base` if it answers, otherwise a private Vite dev server for this repo on a free port
- * (no HMR, no file watching: the code is fixed for the run; deps cache in <os tmp>/space-viz-test-vite-cache).
- * Returns { base, own, close() }.
+ * (no HMR, no file watching: the code is fixed for the run; deps cache in
+ * <os tmp>/space-viz-test-vite-cache/<hash of this checkout's path>, one per checkout / git worktree, so runs
+ * from parallel worktrees never share Vite's dependency optimizer state). Returns { base, own, close() }.
  */
 export async function startServer({ base, log = console.log } = {}) {
   if (base) {
@@ -172,7 +174,7 @@ export async function startServer({ base, log = console.log } = {}) {
     root: REPO,
     logLevel: 'warn',
     clearScreen: false,
-    cacheDir: join(tmpdir(), 'space-viz-test-vite-cache'),
+    cacheDir: join(tmpdir(), 'space-viz-test-vite-cache', createHash('sha1').update(REPO).digest('hex').slice(0, 12)),
     server: { host: '127.0.0.1', port, strictPort: true, hmr: false, watch: { ignored: ['**/*'] } },
   });
   await server.listen();
