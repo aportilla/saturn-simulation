@@ -607,17 +607,19 @@ def fit_granola(B, phi, T):
 
 
 # ------------------------------------------------------------------ temporal coherence
-def temporal_procedural(run, lags_orb, nt=24):
+def temporal_procedural(run, lags_orb, nband, nt=24):
+    """Shearing-frame autocorrelation (and band shear test) of the exact procedural field."""
     import procedural as pr
     sc = run.cfg['procedural']
     wf = pr.WakeFieldPort(run.cfg.get('seed_proc', 12345), m0x=sc['m0x'], m0y=sc['m0y'], t_life=sc['t_life'], rc=sc['rc'],
-                          tile_scale=sc.get('tile_scale', 1.0))
+                          tile_scale=sc.get('tile_scale', 1.0), n_gen=sc.get('n_gen', 2), env_w=sc.get('env_w', 0.0))
     wf.configure(sc['lambda_m'], sc['strength'], sc['gamma'], sc['spread_par'], sc['spread_perp'], sc['omega'])
     xs = -run.Lx / 2 + (np.arange(0, run.nx, 2) + 0.5) * run.hx
     ys = -run.Ly / 2 + (np.arange(0, run.ny, 2) + 0.5) * run.hy
     X, Y = np.meshgrid(xs, ys, indexing='ij')
     t0 = run.cfg['t0']
     res = []
+    shear = {}
     rng = np.random.default_rng(3)
     t1s = t0 + rng.uniform(0, 6, nt) * run.P
     base = []
@@ -631,8 +633,49 @@ def temporal_procedural(run, lags_orb, nt=24):
             wf.update(t1 + dt)
             f2 = wf.density(X, Y - 1.5 * run.Om * X * dt)
             cs.append(np.corrcoef(b.ravel(), f2.ravel())[0, 1])
+            if lag in (0.1, 0.2, 0.3):
+                shear.setdefault(lag, []).append(band_shear(b, wf.density, X, Y, run.Om, dt, nband))
         res.append((lag, float(np.mean(cs)), len(cs)))
-    return res
+    return res, shear
+
+
+SHEAR_QS = np.arange(0.0, 2.01, 0.25)
+
+
+def band_shear(f1, sample2, X, Y, Om, dt, nband):
+    """Correlation of f1 (t) with the t + dt field in radial bands, advected with the flow at each band centre plus an
+    internal shear q: y' = y - Omega dt (1.5 x_c + q (x - x_c)). Returns C(q) for SHEAR_QS (mean over bands)."""
+    nx = X.shape[0]
+    edges = np.linspace(0, nx, nband + 1).astype(int)
+    xc = np.zeros(nx)
+    for b in range(nband):
+        xc[edges[b]:edges[b + 1]] = X[edges[b]:edges[b + 1], 0].mean()
+    XC = xc[:, None] * np.ones_like(X)
+    out = []
+    for q in SHEAR_QS:
+        f2 = sample2(X, Y - Om * dt * (1.5 * XC + q * (X - XC)))
+        cs = [np.corrcoef(f1[edges[b]:edges[b + 1]].ravel(), f2[edges[b]:edges[b + 1]].ravel())[0, 1] for b in range(nband)]
+        out.append(float(np.mean(cs)))
+    return out
+
+
+def summarize_shear(rows):
+    """rows: {lag: [C(q) per pair]} -> per lag: mean C(q), best q (parabolic refinement), C at q = 1.5."""
+    res = {}
+    for lag, lst in rows.items():
+        if not lst:
+            continue
+        c = np.mean(np.array(lst), axis=0)
+        k = int(np.argmax(c))
+        qb = float(SHEAR_QS[k])
+        if 0 < k < len(c) - 1:
+            den = c[k - 1] - 2 * c[k] + c[k + 1]
+            if den < 0:
+                qb += 0.5 * (c[k - 1] - c[k + 1]) / den * (SHEAR_QS[1] - SHEAR_QS[0])
+        res[str(lag)] = dict(C_vs_q=[round(float(v), 4) for v in c], q_best=round(qb, 3), C_material=round(float(c[6]), 4),
+                             C_best=round(float(c.max()), 4), n_pairs=len(lst))
+    return dict(q_grid=SHEAR_QS.tolist(), lags=res,
+                note='internal shear rate of the pattern in 2 lambda radial bands (q = 1.5: sheared like the material)')
 
 
 def fit_decay(res, min_lag=0.1):
@@ -707,6 +750,11 @@ def analyze(args):
         thr_o = otsu(D16)
         per['otsu'].append(thr_o)
         T16 = F.box('area', s16) / mean_area
+        # continuum normal optical depth of the cross-section field (what a medium with tau(x) = tau_sim D_tau(x) at
+        # lambda/32 resolution transmits): -ln < exp(-tau_sim D_tau) >
+        T32 = F.box('area', s32) / mean_area
+        tau_sim_ = R.d.get('tau_sim', R.d.get('tau_sim_expected'))
+        per.setdefault('tau_cont', []).append(-math.log(np.mean(np.exp(-tau_sim_ * T32))))
         for key, thr in (('gr1', 1.0), ('gro', thr_o)):
             w = D16 > thr
             per[key].append([w.mean(), D16[w].mean() if w.any() else np.nan, D16[~w].mean(), (D16 * w).sum() / D16.sum(),
@@ -812,6 +860,9 @@ def analyze(args):
             F.add_native('dens', dd['dens'].astype(np.float64) * F.cell)
             P16 = F.box('dens', s16)
             P32 = F.box('dens', s32)
+            # the app's medium: tau(x) = tau_zone wakeDensity(x) (full-distribution tau), Beer-Lambert per column
+            tz = R.cfg['tau']
+            per.setdefault('tau_cont_dens', []).append([-math.log(np.mean(np.exp(-tz * P32))) / tz, float(P32.mean())])
             per['dens_q16'].append(np.quantile(P16, QUANT).tolist() + [float(P16.max()), float(P16.std())])
             hist16_dens += np.histogram(np.log(np.clip(P16, 1e-6, None)), hist_edges)[0]
             acc_dens.add(P32, t)
@@ -914,8 +965,10 @@ def analyze(args):
                                [[round(float(a), 4), round(float(b), 4)] for a, b in zip(*sk)]))
     # temporal coherence
     lags = [0.0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.75, 1.0]
+    shear_rows = {}
+    nband = max(1, int(round(R.Lx / (2 * lam))))
     if R.kind == 'procedural':
-        tr = temporal_procedural(R, lags)
+        tr, shear_rows = temporal_procedural(R, lags, nband)
     else:
         sub = idx[::max(1, len(idx) // 60)] if not args.quick else idx[::8]
         snaps_t = []
@@ -949,9 +1002,14 @@ def analyze(args):
                 b = cache[i]['F'].box(fld, s8) / cache[i]['F'].mean_mass
                 f2 = cache[j]['F'].at(fld, s8, X, Y - 1.5 * R.Om * X * dt) / cache[j]['F'].mean_mass
                 cs.append(np.corrcoef(b.ravel(), f2.ravel())[0, 1])
+                if lag in (0.1, 0.2, 0.3):
+                    Fj = cache[j]['F']
+                    shear_rows.setdefault(lag, []).append(
+                        band_shear(b, lambda xx, yy: Fj.at(fld, s8, xx, yy) / Fj.mean_mass, X, Y, R.Om, dt, nband))
             tr.append((lag, float(np.mean(cs)) if cs else float('nan'), len(cs)))
     out['temporal'] = dict(lags_orbits=[r[0] for r in tr], C=[round(r[1], 4) for r in tr], n_pairs=[r[2] for r in tr],
-                           fit=fit_decay(tr), smoothing='lambda/8 (N-body) / exact field (procedural)')
+                           fit=fit_decay(tr), smoothing='lambda/8 (N-body) / exact field (procedural)',
+                           pattern_shear=summarize_shear(shear_rows))
     # vertical / sizes
     bins = [[round(float(R.bins[b]), 4), round(float(R.bins[b + 1]), 4)] for b in range(nbins)]
     counts = np.bincount(R.bin_of, minlength=nbins).tolist()
@@ -1005,6 +1063,10 @@ def analyze(args):
         cc = block_stats(per['contrast'], T, R.P)
         ee = block_stats(per['envD'], T, R.P)
         out['sizes'] = dict(size_bins_m=bins, participation=ms(pp, 3), contrast_wake_gap=ms(cc, 3), mean_D_at_particles=ms(ee, 3))
+    tc = block_stats(per['tau_cont'], T, R.P)
+    out['tau_continuum'] = dict(tau_cont=ms(tc), tau_dyn=tau_sim, ratio=round(float(tc[0] / tau_sim), 4),
+                                note='-ln <exp(-tau_sim D_tau)> of the cross-section field at lambda/32 (a continuous medium '
+                                     'with the particles\' column optical depth); compare raycast.tau_phot (spheres)')
     if per['ray']:
         tau = lambda T_: -math.log(max(T_, 1e-9))  # noqa: E731
         rr = per['ray']
@@ -1055,6 +1117,10 @@ def analyze(args):
                                'segment_median_over_lambda', 'segment_mean_over_lambda', 'wake_area_fraction'],
                               [[round(float(a), 4), round(float(b), 4)] for a, b in zip(*sk2)])),
             particles_vs_field=dict(corr=dc[0][0], mean_D_particles=dc[0][1], mean_D_field=dc[0][2]),
+            medium_tau=dict(ratio_tau_phot_over_tau=ms(block_stats([v[0] for v in per['tau_cont_dens']], T, R.P)),
+                            mean_wakeDensity=ms(block_stats([v[1] for v in per['tau_cont_dens']], T, R.P)),
+                            tau_zone=R.cfg['tau'],
+                            note='medium tau(x) = tau_zone wakeDensity(x) at lambda/32: -ln<exp(-tau)> / tau_zone'),
             model=P)
     path = args.json or os.path.join(nb.RESULTS_DIR, f'{R.name}{"" if fld == "mass" else ".tau"}.json')
     nb.write_json(path, out)

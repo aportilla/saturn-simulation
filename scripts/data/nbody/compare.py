@@ -3,7 +3,8 @@
 
 usage ($PY = the venv python, see README.md):
   $PY scripts/data/nbody/compare.py scripts/data/nbody/results/A128-sd.json scripts/data/nbody/results/A128-sd-proc.json ...
-      [--rows all|wake|packing|sizes] [--labels "N-body,procedural"]
+      [--rows all|wake|packing|sizes] [--labels "N-body;procedural"]
+  $PY scripts/data/nbody/compare.py --runs data-raw/nbody/A128-ident data-raw/nbody/A128-sd ...   # runs table
 Values are "mean ± standard error of 1-orbit block means" where the analysis provides one.
 """
 import argparse
@@ -119,17 +120,47 @@ def size_table(results, labels):
     return '\n'.join(out)
 
 
+def runs_table(dirs):
+    """Markdown table of N-body runs from their params.json and log.txt."""
+    print('| run | site | Σ (kg/m²) | τ zone / simulated | radii (m), q | ρ (kg/m³) / r_h | box | N | orbits (measured from) | wall time |')
+    print('|---|---|---|---|---|---|---|---|---|---|')
+    for d in dirs:
+        with open(os.path.join(d, 'params.json')) as f:
+            p = json.load(f)
+        c, dv = p['config'], p['derived']
+        wall, last = '–', 0.0
+        logp = os.path.join(d, 'log.txt')
+        if os.path.exists(logp):
+            for line in open(logp):
+                if line.startswith('orbit'):
+                    parts = line.split()
+                    last = float(parts[1])
+                    wall = f"{float(parts[3]):.0f} min"
+                elif line.startswith('done'):
+                    wall = line.split('wall')[1].strip()
+        sizes = f"{c['radius']:g} (identical)" if c.get('radius') else f"{c['a_min']:g}–{c['a_max']:g}, q {c['q']:g}"
+        if dv.get('N_proxy'):
+            sizes += f" + {dv['N_proxy']} proxies of {c['a_min']:g}"
+        print(f"| {c['name']} | {c['a_km']:,.0f} km | {c['sigma']:g} | {c['tau']:g} / {dv.get('tau_sim', dv['tau_sim_expected']):.2f} | "
+              f"{sizes} | {dv.get('rho', float('nan')):.0f} / {dv.get('r_h', float('nan')):.2f} | {c['box']:g} λ_T = {dv['Lx']:.0f} m | "
+              f"{dv['N']:,} | {last:g} ({c.get('fine_from', 0):g}) | {wall} |")
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('json', nargs='+')
+    ap.add_argument('json', nargs='+', help='result JSONs (or run directories with --runs)')
     ap.add_argument('--rows', default='all', choices=['all', 'wake', 'packing', 'sizes'])
-    ap.add_argument('--labels')
+    ap.add_argument('--labels', help='column labels separated by ";"')
+    ap.add_argument('--runs', action='store_true', help='print the runs table from N-body run directories')
     a = ap.parse_args(argv)
+    if a.runs:
+        runs_table(a.json)
+        return
     results = []
     for p in a.json:
         with open(p) as f:
             results.append(json.load(f))
-    labels = a.labels.split(',') if a.labels else [os.path.basename(p).replace('.json', '') for p in a.json]
+    labels = a.labels.split(';') if a.labels else [os.path.basename(p).replace('.json', '') for p in a.json]
     rows = (WAKE_ROWS if a.rows in ('all', 'wake') else []) + (PACK_ROWS if a.rows in ('all', 'packing') else [])
     if rows:
         print('| statistic | ' + ' | '.join(labels) + ' |')

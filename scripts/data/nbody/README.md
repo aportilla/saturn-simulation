@@ -83,3 +83,23 @@ $PY scripts/data/nbody/procedural.py check-inverse --json scripts/data/nbody/res
 ```
 
 (The shell loops are for reading; run one command per process when you want them in parallel.)
+
+## Runs and runtimes (M5 Max, one core per run, 4–6 runs in parallel)
+
+README_RUNS
+
+Cost scales roughly with N × (collisions per particle): 49 ms/step for 21k identical 1 m particles, 120 ms for 29k
+particles of 0.2–5 m, 250 ms for the 58k-particle B ring at the start (later ~1 s/step at ~200 collisions per particle
+per orbit). `--bench 40` estimates a run before starting it. Analysis: ~1–3 min per run (`--granola` adds ~2 min),
+calibration ~20–40 min with 4 workers.
+
+## Results files (`results/`)
+
+| file | content |
+|---|---|
+| `<run>.json` | analysis of an N-body run (surface-mass-density field), `<run>.tau.json` the same for the cross-section field |
+| `<run>-proc.json` | the same statistics for the procedural counterpart (with `noise_free`: the exact `wakeDensity()` field) |
+| `calib_<name>.json` | calibration: target metrics, the app's defaults and their score, every candidate, the best parameters |
+| `check_inverse_<site>.json` | `wakeDensity()` vs the exact density of the forward displacement map |
+
+Main numbers and the recommendations derived from them: `docs/ring-physics.md` §8.

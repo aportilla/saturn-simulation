@@ -46,8 +46,20 @@ import nbcommon as nb  # noqa: E402
 N_TEX = 256
 WAKE_FD_H = 1.5
 TWO_PI = 2 * math.pi
-# tile_scale: not a parameter of the app (= 1 there); scales the tile, i.e. the crest spacing (for calibration)
-DEFAULTS = dict(m0x=3.0, m0y=6.0, t_life=3.0, rc=0.45, pitch_peak_deg=20.0, tile_scale=1.0)
+# tile_scale, n_gen and env_w are not parameters of the app (1, 2 and sin^2 there): the crest spacing scale, the number
+# of overlapping generations and a plateau envelope with crossfade width env_w (fraction of T_LIFE), for calibration
+DEFAULTS = dict(m0x=3.0, m0y=6.0, t_life=3.0, rc=0.45, pitch_peak_deg=20.0, tile_scale=1.0, n_gen=2, env_w=0.0)
+
+
+def envelope(phase, w):
+    """Generation envelope at phase = age / T_LIFE in [0, 1). w = 0: the app's sin^2(pi phase). w > 0 (two generations
+    only): rise smoothstep(0, w, phase), plateau 1, fall over [0.5, 0.5 + w], 0 after; the two generations, half a
+    lifetime apart, again sum to exactly 1."""
+    if w <= 0:
+        return math.sin(math.pi * phase) ** 2
+    if phase < 0.5:
+        return smooth(0.0, w, phase)
+    return 1.0 - smooth(0.0, w, phase - 0.5)
 
 # zone values of src/rings/ringRegions.ts used by the reference sites (checked against the TS by --verify)
 ZONES = {
@@ -188,17 +200,21 @@ class WakeFieldPort:
         self.wmax = math.exp(-self.lng * strength)
 
     def update(self, t):
-        """Generation uniforms at sim time t (s): list of (amp, S, offU, offV, sel), older first."""
+        """Generation uniforms at sim time t (s): list of (amp, S, offU, offV, sel), older first.
+        n_gen = 2 is the app (WakeField.update). n_gen > 2 (calibration variant, not in the app): generations born every
+        T/n_gen with amplitude strength * (2/n_gen) * sin^2(pi age / T), which again sum to `strength`."""
         tau = self.omega * t
         T = self.p['t_life']
-        half = T / 2
-        ny = math.floor(tau / half)
+        n = int(self.p.get('n_gen', 2))
+        w = float(self.p.get('env_w', 0.0)) if n == 2 else 0.0
+        step = T / n
+        ny = math.floor(tau / step)
         gens = []
-        for g in range(2):
-            ng = ny - (1 - g)
-            age = tau - ng * half
-            env = math.sin(math.pi * age / T) ** 2
-            gens.append((self.strength * env, self.q_shear * age, hash_float(ng, 1), hash_float(ng, 2), ng % 2))
+        for g in range(n):
+            ng = ny - (n - 1 - g)
+            age = tau - ng * step
+            env = envelope(age / T, w)
+            gens.append((self.strength * env * 2 / n, self.q_shear * age, hash_float(ng, 1), hash_float(ng, 2), ng % 2))
         self.gens = gens
         return gens
 
@@ -293,12 +309,15 @@ class WakeFieldPort:
         return nx * d, ny * d
 
     def displacement(self, x, y):
-        """wakeDisplacement(q): displacement (m) of particles whose undisplaced (epicyclic) position is (x, y)."""
+        """wakeDisplacement(q): displacement (m) of particles whose undisplaced (epicyclic) position is (x, y).
+        The maps are composed oldest first (x = M_young(M_old(q)))."""
         if self.strength <= 1e-3:
             return np.zeros_like(x), np.zeros_like(y)
-        d0x, d0y = self.gen_disp(0, x, y)
-        d1x, d1y = self.gen_disp(1, x + d0x, y + d0y)
-        return d0x + d1x, d0y + d1y
+        dx, dy = np.zeros_like(x), np.zeros_like(y)
+        for g in range(len(self.gens)):
+            ddx, ddy = self.gen_disp(g, x + dx, y + dy)
+            dx, dy = dx + ddx, dy + ddy
+        return dx, dy
 
     def gen_inverse(self, g, x, y):
         nx, ny, km = self._geom(g)
@@ -323,9 +342,11 @@ class WakeFieldPort:
         """wakeDensity(x): Eulerian surface-density factor (mean ~1)."""
         if self.strength <= 1e-3:
             return np.ones_like(x)
-        q1x, q1y, J1 = self.gen_inverse(1, x, y)
-        _, _, J0 = self.gen_inverse(0, q1x, q1y)
-        return np.clip(1 / (J1 * J0), self.wmin * 0.9, self.wmax * 1.1)
+        qx, qy, J = x, y, 1.0
+        for g in range(len(self.gens) - 1, -1, -1):      # youngest first (wakes.glsl: inverse(1) then inverse(0))
+            qx, qy, Jg = self.gen_inverse(g, qx, qy)
+            J = J * Jg
+        return np.clip(1 / J, self.wmin * 0.9, self.wmax * 1.1)
 
 
 def simulator_config(params, over=None):
@@ -353,7 +374,8 @@ def synth(args):
     with open(os.path.join(like, 'params.json')) as f:
         params = json.load(f)
     over = dict(gamma=args.gamma, spread_par=args.spread_par, spread_perp=args.spread_perp, rc=args.rc,
-                t_life=args.t_life, strength=args.strength, tile_scale=getattr(args, 'tile_scale', None))
+                t_life=args.t_life, strength=args.strength, tile_scale=getattr(args, 'tile_scale', None),
+                n_gen=getattr(args, 'n_gen', None), env_w=getattr(args, 'env_w', None))
     if args.m0:
         mx, my = (float(s) for s in args.m0.split(','))
         over.update(m0x=mx, m0y=my)
@@ -365,7 +387,8 @@ def synth(args):
     for fn in os.listdir(out):
         if fn.startswith(('snap_', 'dens_')):
             os.remove(os.path.join(out, fn))
-    wf = WakeFieldPort(args.seed, m0x=sc['m0x'], m0y=sc['m0y'], t_life=sc['t_life'], rc=sc['rc'], tile_scale=sc['tile_scale'])
+    wf = WakeFieldPort(args.seed, m0x=sc['m0x'], m0y=sc['m0y'], t_life=sc['t_life'], rc=sc['rc'], tile_scale=sc['tile_scale'],
+                       n_gen=sc['n_gen'], env_w=sc['env_w'])
     wf.configure(sc['lambda_m'], sc['strength'], sc['gamma'], sc['spread_par'], sc['spread_perp'], sc['omega'])
     Lx, Ly, lam = d['Lx'], d['Ly'], d['lambda_T']
     margin = args.margin_lambda * lam
@@ -558,6 +581,8 @@ def main(argv):
     s.add_argument('--t-life', type=float)
     s.add_argument('--strength', type=float)
     s.add_argument('--tile-scale', type=float, help='scale of the tile = crest spacing (app: 1)')
+    s.add_argument('--n-gen', type=int, help='number of overlapping generations (app: 2)')
+    s.add_argument('--env-w', type=float, help='plateau envelope crossfade width / T_LIFE (app: 0 = sin^2)')
     s.add_argument('--m0', help='lattice mode at birth "mx,my" (default 3,6)')
     s.add_argument('--seed', type=int, default=12345)
     s.add_argument('--t0', type=float)

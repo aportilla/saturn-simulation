@@ -12,8 +12,13 @@ error, a floor)). Coordinate search in three stages, each starting from the best
   contrast    gamma (strength fixed at the zone value; only -ln(gamma) * strength matters)    -> D quantiles
   spacing     tile_scale (tile = lambda * 6 / sin 20 deg * tile_scale: crest spacing; 1 in the app) -> spectrum
   morphology  spreadPar x spreadPerp x R_C                                                    -> ACF, skeleton
+  dislocations R_C 0.3-1.0 with ln(gamma) rescaled to keep the mean local strength 1/(1 + R_C^2), x spreadPerp +-25 %
   time        T_LIFE with the birth mode m0 = (m0x, 6) chosen so that the amplitude-weighted pitch stays near the
               N-body median (integer m0x keeps the texture tileable)                          -> C(dt), pitch
+  envelope    model variant (not in the app): plateau envelope with crossfade width env_w x T_LIFE instead of sin^2,
+              T_LIFE 4-7 with matching m0x
+  generations model variant (not in the app): n_gen = 3, 4 overlapping generations born every T_LIFE/n_gen with
+              amplitude (2/n_gen) sin^2 (sum = strength), T_LIFE 3-5 (uWakeGen already has a third, unused slot)
   contrast2   gamma x 0.8 .. 1.25 around the best
 Metrics: spectral peak and power-weighted spacing / lambda, D quantiles p5 p25 p75 p95 p99 (lambda/16), ACF L_par and
 L_perp (1/e) / lambda, first minimum and side-peak height across crests, skeleton end and branch points per lambda^2
@@ -94,7 +99,8 @@ def evaluate(job):
     sargs = argparse.Namespace(like=job['like'], name=os.path.basename(wd), out=wd, orbits=job['orbits'], snap=0.05,
                                margin_lambda=1.0, gamma=p.get('gamma'), spread_par=p.get('spread_par'),
                                spread_perp=p.get('spread_perp'), rc=p.get('rc'), t_life=p.get('t_life'),
-                               strength=p.get('strength'), tile_scale=p.get('tile_scale'),
+                               strength=p.get('strength'), tile_scale=p.get('tile_scale'), n_gen=p.get('n_gen'),
+                               env_w=p.get('env_w'),
                                m0=f"{p['m0x']},{p.get('m0y', 6.0)}" if 'm0x' in p else None,
                                seed=job.get('seed', 12345), t0=None, particles=True)
     import contextlib
@@ -120,6 +126,7 @@ def main(argv):
     ap.add_argument('--orbits', type=float, default=2.0, help='length of each synthetic candidate run (orbits)')
     ap.add_argument('--stages', default='contrast,morphology,time')
     ap.add_argument('--jobs', type=int, default=6)
+    ap.add_argument('--start', help='start from the best parameters of a previous calib_*.json (instead of the app defaults)')
     ap.add_argument('--out')
     a = ap.parse_args(argv)
     with open(a.target) as f:
@@ -132,7 +139,8 @@ def main(argv):
     sc = pr.simulator_config(params)
     pitch_target = target['pitch_med']
     base = dict(gamma=sc['gamma'], strength=sc['strength'], spread_par=sc['spread_par'], spread_perp=sc['spread_perp'],
-                rc=sc['rc'], t_life=sc['t_life'], m0x=sc['m0x'], m0y=sc['m0y'], tile_scale=sc['tile_scale'])
+                rc=sc['rc'], t_life=sc['t_life'], m0x=sc['m0x'], m0y=sc['m0y'], tile_scale=sc['tile_scale'], n_gen=sc['n_gen'],
+                env_w=sc['env_w'])
     work = os.path.join(nb.RAW_DIR, 'calib', name)
     os.makedirs(work, exist_ok=True)
     results = []
@@ -153,12 +161,20 @@ def main(argv):
             results.append(o)
             pp = o['params']
             print(f"  score {o['score']:8.2f}  gamma {pp['gamma']:.3f} spreads {pp['spread_par']:.2f}/{pp['spread_perp']:.2f} "
-                  f"Rc {pp['rc']:.2f} T {pp['t_life']:.1f} m0x {pp['m0x']:+.0f} tile x{pp['tile_scale']:.2f}", flush=True)
+                  f"Rc {pp['rc']:.2f} T {pp['t_life']:.1f} m0x {pp['m0x']:+.0f} tile x{pp['tile_scale']:.2f} "
+                  f"n_gen {pp.get('n_gen', 2)} env_w {pp.get('env_w', 0.0):.2f}", flush=True)
         return min(out, key=lambda o: o['score'])
 
     print(f'calibrating against {a.target} ({name}); defaults: {base}')
     best = run_batch([dict(base)])
     print(f"simulator defaults: score {best['score']:.2f}")
+    if a.start:
+        with open(a.start) as f:
+            prev = json.load(f)['best']['params']
+        sb = run_batch([dict(base, **prev)])
+        print(f"start ({a.start}): score {sb['score']:.2f}")
+        if sb['score'] < best['score']:
+            best = sb
     for stage in a.stages.split(','):
         b = dict(best['params'])
         if stage == 'contrast':
@@ -169,11 +185,31 @@ def main(argv):
         elif stage == 'time':
             cands = []
             for T in (3.0, 4.0, 5.0, 6.0, 7.0, 8.0):
-                cands.append(dict(b, t_life=T, m0x=m0x_for(T, pitch_target)))
+                cands.append(dict(b, t_life=T, m0x=m0x_for(T, pitch_target), n_gen=2))
+        elif stage == 'envelope':
+            # model variant: plateau envelope (rise / fall smoothstep over env_w * T_LIFE, constant in between; the
+            # two generations still sum to strength) - not in the app yet (app: sin^2)
+            cands = [dict(b, n_gen=2, t_life=T, env_w=w, m0x=m0x) for T, w, m0x in
+                     ((4.0, 0.15, 3.0), (5.0, 0.1, 2.0), (5.0, 0.15, 0.0), (5.0, 0.1, 1.0), (6.0, 0.1, 2.0), (6.0, 0.15, 0.0),
+                      (6.0, 0.1, 1.0), (7.0, 0.1, 0.0))]
+        elif stage == 'generations':
+            # model variant: n overlapping generations (born every T/n, amplitude (2/n) sin^2) - not in the app yet
+            cands = [dict(b, n_gen=n, t_life=T, m0x=m0x_for(T, pitch_target)) for n in (3, 4) for T in (3.0, 4.0, 5.0)]
         elif stage == 'contrast2':
             cands = [dict(b, gamma=b['gamma'] * f) for f in (0.8, 0.9, 1.1, 1.25)]
         elif stage == 'spacing':
             cands = [dict(b, tile_scale=s) for s in (0.8, 1.0, 1.2, 1.4, 1.6, 1.8) if abs(s - b['tile_scale']) > 1e-6]
+        elif stage == 'dislocations':
+            # R_C with ln(gamma) rescaled so that the mean local strength <1 - exp(-|W|^2/Rc^2)> = 1/(1 + Rc^2)
+            # (|W|^2 exponentially distributed, mean 1) times ln(gamma) stays the same
+            f0 = 1 / (1 + b['rc'] ** 2)
+            cands = []
+            for rc in (0.3, 0.45, 0.6, 0.8, 1.0):
+                if abs(rc - b['rc']) < 1e-6:
+                    continue
+                g = math.exp(math.log(b['gamma']) * f0 * (1 + rc * rc))
+                for sq in (b['spread_perp'] * 0.75, b['spread_perp'], b['spread_perp'] * 1.25):
+                    cands.append(dict(b, rc=rc, gamma=g, spread_perp=sq))
         else:
             raise SystemExit(f'unknown stage {stage}')
         print(f'stage {stage}: {len(cands)} candidates')

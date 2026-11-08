@@ -46,8 +46,10 @@ def pint(lo, hi, p):
 
 
 def hill_rh(a_orbit, rho):
-    """r_h = R_Hill(pair) / (r1 + r2) for two equal particles of internal density rho (Salo et al. 2004 notation):
-    R_Hill = a ((m1 + m2) / (3 M))^(1/3)  ->  r_h = (a / 2) (8 pi rho / (9 M))^(1/3), independent of size."""
+    """r_h = R_Hill(pair) / (r1 + r2) for two equal particles of internal density rho:
+    R_Hill = a ((m1 + m2) / (3 M))^(1/3)  ->  r_h = (a / 2) (8 pi rho / (9 M))^(1/3), independent of size.
+    Salo et al. (2004) quote the inverse, r_p = 1 / r_h: their standard run (rho = 450 kg/m^3, 130,000 km) has
+    r_p = 1.18, i.e. r_h = 0.85, which this formula reproduces."""
     return 0.5 * a_orbit * (8 * math.pi * rho / (9 * M_SAT)) ** (1 / 3)
 
 
