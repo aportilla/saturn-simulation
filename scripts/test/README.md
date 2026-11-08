@@ -17,7 +17,7 @@ follow [Adding a tool](#adding-a-tool) so the next session can run it too.
 | `npm run test:edges` | gap edges perturbed by moonlets and the B-ring edge modes (streamline map): gaps empty, rendered edges = model, near field follows | ~50 s |
 | `npm run test:moonflux` | point-source flux of unresolved moons = resolved brightness (measured shapes + ellipsoid control) | ~10 s |
 | `npm run test:particles` | resolved-particle photometry and shape contract: GLSL vs CPU mirrors, factor LUT, relief area / photometry | ~20 s |
-| `npm run test:propellers` | propeller moonlets and the sub-km τ texture: named positions vs Tiscareno 2010 Table 1, texture statistics, footprint prefilter, GPU τ vs the CPU model, near-field presence, moonlet bodies | ~40 s |
+| `npm run test:propellers` | propeller moonlets and the sub-km τ texture: named positions vs Tiscareno 2010 Table 1, texture statistics, footprint prefilter, GPU τ vs the CPU model, near-field presence and its cost gate, moonlet bodies | ~1 min |
 | `node scripts/shot.mjs …` / `node scripts/shots.mjs …` | screenshots (one / batch spec) | — |
 | `node scripts/img.mjs profile\|mean\|crop\|rotate …` | PNG brightness profiles, region ratios, contrast-stretched zooms, rotate/scale | — |
 
@@ -287,7 +287,7 @@ the GLSL through ring-layer and near-field read-backs; t = 2026-11-08T12:00Z.
 | all | console / GL errors, passes ok, NaN / negative pixels (structure views, presets) | none | none |
 
 Screenshots `structure-belt.png`, `structure-bleriot.png`, `presence.png`, `propeller-bleriot.png`,
-`propeller-belt.png`. ~40 s. The texture statistics are deterministic (CPU mirror); the prefilter and presence
+`propeller-belt.png`. ~1 min. The texture statistics are deterministic (CPU mirror); the prefilter and presence
 Monte Carlos vary by ~0.3 % / ~2 % between runs.
 
 ## Tools
