@@ -64,7 +64,9 @@ B-ring edge 117,650 (mean 117,570, Mimas 2:1 m = 2 mode ±~75 km; Nicholson et a
 its normal modes (§9)**; the ringlets and the A-ring edge are still the snapshot. (3) Density waves become
 concentric ripples, since the profile is axisymmetric.
 Their real pitch is tiny, so locally this is right. (4) In the A ring the 1 km-scale ±10–15 % τ texture is real
-but mostly not axisymmetric (ingress/egress correlation < 0.35 at < 2 km scales).
+but mostly not axisymmetric (ingress/egress correlation < 0.35 at < 2 km scales). The profile keeps it
+axisymmetric; the renderer's sub-km texture below it (§10) is 2-D, sheared and short-lived, and the propeller
+moonlets (§11) add their own non-axisymmetric structure.
 
 ## 3. Zone parameters (`RING_ZONES`)
 
@@ -413,6 +415,175 @@ longitude the rendered edge is 31 km inside the RSS edge.
 The machinery is generic: add an `EdgeFeature` (modes, decay, gap, snapshot geometry) to `EDGE_FEATURES` (≤ 2
 features / 8 modes in the shader: `RS_FEATURES`, `RS_MODES`).
 
+## 10. Sub-km optical-depth texture (`src/rings/ringTexture.ts`, `shaders/ringTexture.glsl`)
+
+The profile (§2) resolves 1 km. Below that the renderer multiplies τ by a random factor **M = 1 + A F** (the
+`rsTauModTexture` hook of `sv_ringStructure`, so the sheet, the march and the near field's presence all see the same
+field). It replaces the former radial-only noise (`rlFineFactor`, sheet and march only) and keeps its statistics:
+
+* **Spectrum and amplitude** (unchanged): six octaves with radial correlation lengths λ_j = 500, 250, …, 15.6 m and
+  amplitudes ∝ √λ_j (a k⁻² power spectrum), F clamped at ±3σ_F (σ_F = 0.234); amplitude per region A = 0.22 + 0.35
+  smoothstep(1, 3, τ) + 0.1 wake (τ, wake strength of the 1 km-prefiltered profile): rms 5 % in the C ring and
+  Cassini Division, 7.5 % in the A ring, ~15 % in the B-ring core. Mean ⟨M⟩ = 1 exactly (symmetric), so the column
+  and the ring mass are unchanged.
+* **Azimuthal coherence by shear.** Each octave is 2-D value noise on a lattice that was **isotropic** at the
+  structure's birth (cells λ_b × λ_b) and is advected with the flow since: the material at a' carries the lattice
+  azimuth φ = θ − Ω(a')·age, Ω(a) the circular angular velocity with J2–J6 (a series in (R/a)², error < 10⁻¹⁰ —
+  the same flow model moves the propellers, §11). A clump of age t is a trailing streak of aspect ≈ q Ω t (q = 1.5)
+  and pitch atan(1/(qΩt)). **Two generations** overlap: a generation is visible for one coherence time T with
+  amplitude sin(π a/T) (a = visible age; the two slots' squares sum to 1, so the variance is stationary) and is born
+  already T/2 old, i.e. it is seen at shear ages T/2 … 3T/2 (qΩT = 3π at mid-life: pitch 6°, 4–12° over the life).
+  **T = one orbital period at 128,000 km (12.9 h)**: the dynamical time on which collisions, self-gravity and
+  viscous overstability create and destroy structure; it makes the azimuthal coherence ~10× the radial one
+  (≈ 2 km for the field, 4.7 km for its 500 m octave) — far below the ingress/egress separations of the
+  occultations, which see the sub-2 km structure decorrelated (§2 caveat 4), and far above the radial scale, as
+  for every sheared structure in the ring. λ_b = C_BIRTH λ_j with **C_BIRTH = 9.5**: at the mid-life shear the
+  radial correlation at fixed azimuth then equals the former noise's λ_j (calibrated with the CPU mirror).
+* **Footprint prefilter.** Octave j fades with the radial pixel footprint fp as before, wv_j = clamp((λ_j/fp − 1)/2,
+  0, 1); the faded part is returned as the variance v = A² Σ (1 − wv_j²) w_j² ⟨n²⟩ of M below the footprint. The
+  sheet folds (m, v) into its transmission pyramid (`rlApplyTauMod`, rlOptics.glsl): for each stored path factor
+  μ, −μ ln⟨e^{−Mτ/μ}⟩ = mτ − vτ²/(2μ) (second-order cumulants; the field is a symmetric sum of octaves, nearly
+  Gaussian), continued linearly with the slope of the floor F = max(m − 3√v, 0) where the tilted distribution
+  reaches the clamp. A Gamma model (as used for the wake path statistics) is right-skewed and underestimates the
+  transmission by 2–20 % here.
+* **Precision.** The noise is one 256² R16F tile (node values k/1024, exact in fp16; smoothstep remap through the
+  hardware bilinear filter). The lattice's azimuthal cell count per ring is a multiple of 256 at 128,000 km (no seam);
+  the CPU passes each octave's lattice coordinates at the frame origin in double precision (mod 256 cells), the
+  GPU adds the float32 offsets (aL, Δθ): precise near the camera, independent of the anchor.
+
+**Validation** (`npm run test:propellers`, texture and prefilter sections; CPU mirror statistics averaged over a
+generation cycle): variance of F / the former noise 1.024; radial correlation length (ACF = ½) 190.3 m vs the former
+190.0 m; azimuthal 1,923 m (10.1× the radial); correlation ridge trailing with pitch 6.1°; correlation at a
+co-moving point −0.017 after T, 0.988 after T/20. Prefilter vs the ensemble of the resolved field (B ring A = 0.62
+and τ = 1.2, 3; A ring A = 0.32, τ = 0.65; footprints 2 km and 300 m): E[T_prefilter]/⟨e^{−Mτ/μ}⟩ = 0.997–1.002
+wherever T > 10⁻³ (1.03–1.04 at T ≈ 10⁻⁴); E[m] = 0.9988–1.0000; var(m) + E[v] = 1.007 var M. The sheet's τ equals
+the CPU model τ0 J M per pixel looking down on the A ring from 12 km (footprint 15.5 m): median 1.000, 99.8 % of
+pixels within 8 %, rms of the modulation 0.110 on the GPU and in the CPU model.
+
+**Cost to the near field.** The near-field boxes are allocated for the maximum M (1 + 0.70 A: 1.22 in the A ring,
+1.43 in the B-ring core); presence accepts τ0 J M / bound. Where the 12M-slot cap binds (B ring seen from ~100 m) the
+deficit grows accordingly (`test:counts`: 9.2 % of the visible ≥ 1 px particles at 100 m above the B ring, 0.3 %
+before; complete from 1 km).
+
+## 11. Propeller moonlets (`src/rings/propellers.ts`, `shaders/ringPropellers.glsl`)
+
+Moonlets of ~20 m–1 km embedded in the A ring are too small to open a full gap; they clear two **partial gaps**
+that trail ahead (inner side) and behind (outer side) of them, the "propeller" seen by Cassini (Tiscareno et al.
+2006, 2008, 2010; Sremčević et al. 2007). The renderer has the measured giants and statistical belts:
+
+**Named giants** (Tiscareno et al. 2010, ApJL 718, L92, and its supplementary tables): Earhart, Post, Sikorsky,
+Curtiss, Lindbergh, Wright, Kingsford Smith, Hinkler, Santos-Dumont, Richthofen, Blériot at 133,798–134,912 km.
+* **Orbits: Table 1** (longitude at the epoch, mean motion n, semimajor axis), epoch **2007-01-01 12:00 UTC** = JD
+  2454102.0 UTC = 220,924,865.184 s TDB. Longitudes are inertial, measured in the ring plane from the ascending node
+  of the ring plane on the Earth's J2000 equator — the SEF azimuth (checked in the test with the B-ring edge's
+  forced m = 2 minimum, locked to Mimas: Mimas' SEF longitude at the Spitale & Porco 2010 epoch is 13.5° vs 7.2° +
+  2.9° lag, within Mimas' equation of centre). θ(t) = λ0 + n (t − t_ep) exactly (the test checks 1.5×10⁻¹¹ rad
+  against an independent propagation in 2026). The moonlet's radius in the renderer is where the flow model's Ω
+  equals n (5–15 m inside the fitted a, whose oblateness model differs slightly), so the moonlet co-moves with
+  the rendered material.
+* **Blériot's non-Keplerian motion**: Tiscareno et al. 2010 §3 / Fig. 4 — residuals from the linear fit of ±300 km
+  (0.13°), 50× the measurement errors, fitted by a sinusoid of **0.11° amplitude and 3.68 yr period** on top of
+  the linear trend (their alternative: piecewise fits, i.e. occasional kicks). The phase is not tabulated; **2.0
+  rad at the epoch** reproduces the sign changes of their piecewise fits (angular acceleration −0.0096″/day² over
+  mid-2006 … early 2007, +0.0023″/day² over late 2007 … early 2009; Aω² = 0.0086″/day²). Uncertain by ~±0.5 rad,
+  i.e. up to ~±0.05° (~120 km) along the orbit. Extrapolated to 2026 (17 yr past the data) the true position is
+  uncertain by far more: the motion is not understood (no resonance identified). The others are linear; the paper
+  notes longitude variations of up to 1,000 km for them too, not modelled.
+* **Sizes.** On the lit face the bright lobes are the density-ENHANCED regions, ~9 r_H apart (Sremčević et al. 2007;
+  Tiscareno et al. 2010 §2.1 calls R ≤ 0.18 Δr an upper limit): **r_H = Δr_lit/9** (Table S2), R = 0.72 r_H (a
+  Roche-lobe-filling rubble pile, Porco et al. 2007). Blériot: r_H = 611 m, **R = 440 m** (its equinox shadow
+  height is 0.43 km, Table S3); the Δr/4 reading would give R = 0.95 km and partial gaps 5.5 km apart where the
+  lit-face dark lanes are ~1.8 km apart. Azimuthal extent: the enhanced lobes' downstream scale d_B = Δℓ_lit/2
+  (Table S4: Blériot 50 km), the partial gaps' d_D = 2.4 d_B (Blériot's unlit-face bright features — the gaps,
+  seen in transmitted light — are ~120 km long against ~50 km for the lit-face lobes; Wright 22 vs 14 km).
+* **Procedural trans-Encke giants**: 2×10⁻⁸ km⁻² with Δr_lit ≥ 2 km over 133,780–136,450 km (the 2010 paper's
+  complete scan of 133,700–135,000 km found 19), minus the 9 named ones above 2 km: ~36, Δr_lit 2–6 km (Q = 5).
+
+**Propeller belts** (Tiscareno et al. 2008, AJ 135, 1083): three belts 126,750–128,000, 128,500–130,200 and
+131,300–132,000 km; cumulative N(>Δr) = 2.5×10⁻⁶ km⁻² (Δr/0.8 km)^−4.84 inside them — 7,400 propellers with Δr >
+0.8 km (quoted 7,000–8,000) and 7×10⁻⁴ km⁻² with Δr > 0.25 km (the SOI value); the slope 4.84 (quoted 4.5–5.4) is
+fixed by those two numbers. Their Δr were measured on mostly unlit-face images, i.e. on the partial gaps,
+which are 4 r_H apart (Seiß et al. 2005): **r_H = Δr/4, R = 0.18 Δr**. Four classes, the power law extended down
+to R = 20 m (below the detections; such propellers are ~100 m wide and seen only from the near field):
+
+| class | Δr (km) | R (m) | number density (km⁻²) | number in the belts |
+|---|---|---|---|---|
+| belt-0 | 0.11–0.22 | 20–40 | 3.6×10⁻² | 1.1×10⁸ |
+| belt-1 | 0.22–0.44 | 40–79 | 1.2×10⁻³ | 3.7×10⁶ |
+| belt-2 | 0.44–0.88 | 79–158 | 4.4×10⁻⁵ | 1.3×10⁵ |
+| belt-3 | 0.88–1.4 | 158–252 | 1.4×10⁻⁶ | 4,200 |
+
+Belt Δℓ = 5.5 Δr (gap features): d_D = 2.75 Δr, d_B = d_D/2.4. Radial windows have 25 km soft edges.
+
+**Placement: a co-moving hash grid** (identical in GLSL and the CPU mirror). Mean motions are counted in units of
+2⁻²⁴ revolutions per day (2.7 mm of radius); radial cells are intervals of n, each holding ONE orbit (cell start +
+hash), so the moonlets of a cell move rigidly; azimuthal cells are 2^B per orbit along it. A moonlet's longitude is
+Φ + n_i (k + f)/2²⁴ turns with k whole days: the integer part n_i k mod 2²⁴ is exact in uint arithmetic, so every
+moonlet keeps an exact, smooth longitude for decades while drifting at its own Keplerian rate relative to the
+co-orbiting camera (the belts shear past each other like the ring material). Cells are at least the structure's
+reach (13.5 r_H radially, 6 d_D along the orbit) and hold ≤ 0.1 expected moonlets (Bernoulli trial), so a lookup
+visits 3 × 3 cells per class: bounded cost. Classes fade out for footprints of 8–16 r_H,max (statistically they
+then average to M ≈ 1).
+
+**Structure of one propeller** (moonlet Hill radius h; x = radial offset from the moonlet's orbit, s = arc from the
+moonlet; material is carried downstream, d = −s outside, +s inside; the two sides blend over |x| < h/2, giving the
+S shape):
+* Partial gaps centred at |x| = 2h (Gaussian, σ = 0.7h), depth D0 L_D(d/d_D) with **D0 = 0.6** (the partial gaps
+  of Spahn & Sremčević 2000 / Sremčević et al. 2002 / Seiß et al. 2005 hold about half the density) and
+  L_D(u) = u e^{1−u}: refilling by viscous diffusion after a peak at d = d_D (faded out at 4.5–6 d_D).
+* Density-enhanced lobes at |x| = 4.5h (Sremčević et al. 2007), widening downstream as s_B = 0.6h (1 + d/d_B),
+  holding exactly the gaps' deficit at every d (local mass balance: E s_B = D0 L_D 0.7h) — M averages to 1 across
+  every cut.
+* Moonlet wakes outside 6 r_H: the streamline density 1/(∂r/∂a') of the universal Hill response (§8's table, b =
+  6–13 tapered), truncated after 6–8 d_B.
+* **No self-gravity wakes in the stirred material.** The encounter heats the material (random velocities ≫ the
+  ring's), i.e. Toomre Q ≫ 2, and self-gravity wakes need Q ≲ 2 (Salo 1995): the wake strength is multiplied by
+  1 − 0.9 × disturbance (gaps, lobes and the encounter region). A homogeneous layer is brighter on the lit face and
+  more opaque on the unlit face than the wake-structured ring — the sense of the giants' lit-face bright /
+  unlit-face dark wings (PIA12790 / PIA12791).
+* **Footprint prefilter**: the Gaussian lobes are convolved with the footprint (mean preserved), the wakes faded
+  like the gap-edge waves; what is smoothed away is returned as sub-footprint variance (sheet: §10's prefilter).
+* **Vertical relief** (`rsReliefPropellers`): the moonlet's inclination excites the material around it to its
+  height z_m = Z cos(phase) (Hoffmann et al. 2013, 2015), decaying radially over 2.5 h, downstream over d_B and
+  upstream over 2h; Z = the equinox shadow height where measured (Blériot 0.43 km, Earhart 0.26, Santos-Dumont
+  0.12; Tiscareno et al. 2010 Table S3), else 0.45 r_H (their median per r_H). Computed and exposed through the
+  relief hook; drawn geometrically by the relief work package.
+
+**The moonlets themselves** (`PropellerMoonletPass`): bodies ≥ 0.25 display px within 3,000 km, ellipsoids with
+the Roche-lobe proportions 1 : 0.667 : 0.638 (long axis toward Saturn), mean radius R, low-frequency relief, the
+particles' regolith law and albedo (± 10 %), lit like the particles (Saturn and moon shadows, the ring column
+toward the Sun, diffuse ring light, Saturnshine); the 8 nearest cast shadows on the medium and the astronaut.
+
+**Validation** (`npm run test:propellers`): positions vs Table 1 (1.8×10⁻¹² rad in 2009, 1.5×10⁻¹¹ rad in 2026;
+model radii −5…−15 m from the fitted a); the sheet's τ per pixel vs the CPU model looking down at a belt-3
+propeller and at Blériot (median 1.000, 99.8 % / 100 % of pixels within 8 %; deepest gap τ/τ0 = 0.43 / 0.50);
+near-field particles over a belt propeller's partial gap: drawn / expected (n_k τ0 M) = 1.00 in the gap (M ≈ 0.6),
+0.975 on its flank, 1.03 outside (grouped at the drawn, wake-displaced positions); the moonlet bodies drawn with the
+right depth.
+
+**Cost.** A lookup enumerates up to 3 × 3 hash cells per class (4 belt classes in a belt) plus the giants: ~1,500
+GPU operations, constant per lookup but expensive at millions of lookups per frame. Measured in the same page (A/B,
+`scripts/test/fps.mjs --ab-off/--ab-on`, 1920×1080, render scale 0.5, quality high, another agent's browser on the
+same GPU): texture + propellers +9.3 ± 1.6 ms per frame at `a-ring-1km` (16.4 → 25.8 ms), +10.9 ± 1.6 ms at
+`a-ring-30m` (26.3 → 37.2 ms), after the cost rules of ARCHITECTURE.md (before them +17 and +23 ms). Of that, the
+propellers ~5 ms (near-field presence and the march's cache), the texture ~4 ms (near-field presence: 12 lookups per
+particle slot). Outside the propeller region (B ring) the texture costs ~3 ms. A per-frame clipmap of M around the
+camera (as the wake-density clipmap), sampled by the near field and the march, would remove most of it.
+
+**Not modelled / caveats.** The giants are much fainter in renders than in Cassini's 2 km/px images: removing the
+wakes in the stirred material changes the propeller's brightness by only 0.6 % (Earhart, lit, phase 82°) to 2.3 %
+(Santos-Dumont, unlit) at those resolutions — the observed contrast must come mostly from the vertical structure
+(the puffed-up stirred layer, its shadows and its larger path lengths at low elevation), which is not drawn yet.
+The procedural moonlets are on circular orbits with a vertical oscillation; the giants' eccentricities (if any) and
+their non-Keplerian wandering beyond Blériot's one sinusoid are not modelled. Interactions between nearby
+propellers and with density waves are ignored (the factors multiply), and the texture of §10 is independent of the
+propellers. The moonlet bodies don't yet shadow the near-field particles (the particle pass enables per-particle
+moon shadows only when moons are near: one condition to add in `NearFieldPass`), and only the 8 nearest bodies
+shadow the ring (`uShadowSph`): in wide views of a belt the farther moonlets have no shadow. For cost, the lighting
+lookups of the particles, the astronaut and the bodies use the unmodulated column (particles inside a partial gap
+are lit as in the undisturbed ring; their number follows the gap) and shadow casters outside the view ignore the
+propellers.
+
 ## References
 
 Afigbo, V. M., et al. 2025, JGR Planets (Kronoseismology VII; arXiv:2502.19265) · Albers, N., et al. 2012,
@@ -434,7 +605,8 @@ M. M. 2013, Icarus 226,
 1225 · Hedman, M. M., et al. 2007a, Icarus 188, 89 (D ring) · Hedman, M. M., et al. 2007b, AJ 133, 2624 (A-ring
 wakes) · Hedman, M. M., et al. 2013, Icarus 223, 105 · Hedman, M. M., Nicholson, P. D. 2013, AJ 146, 12 ·
 Hedman, M. M., Nicholson, P. D. 2014, MNRAS 444, 1369 · Hedman, M. M., Nicholson, P. D. 2016, Icarus 279, 109 ·
-Hénon, M., Petit, J.-M. 1986, Celest. Mech. 38, 67 · Iess, L., et al. 2019, Science 364, eaat2965 · Jerousek, R. G., et
+Hénon, M., Petit, J.-M. 1986, Celest. Mech. 38, 67 · Hoffmann, H., Seiß, M., Spahn, F. 2013, ApJL 765, L4 ·
+Hoffmann, H., Seiß, M., Salo, H., Spahn, F. 2015, Icarus 252, 400 · Iess, L., et al. 2019, Science 364, eaat2965 · Jerousek, R. G., et
 al. 2016, Icarus 279, 36 · Jerousek, R. G., et al. 2020, Icarus 344, 113565 · Julian, W. H., Toomre, A. 1966, ApJ 146,
 810 · Lissauer, J. J. 1985 (via H&N 2016) · Marouf, E. A., Tyler, G. L., Rosen, P. A.
 1986, Icarus 68, 120 · Marouf, E. A., et al. 2008 (Cassini RSS particle sizes; via Cuzzi et al. 2009) · Marouf, E.
@@ -444,10 +616,14 @@ composition of Saturn's rings*, Space Sci. Rev. (arXiv:2311.17344) · Morishima,
 (B-ring edge) · Nicholson, P. D., et al. 2014b, Icarus 241, 373 (C ring) · PDS Rings Node, *Vital statistics for
 Saturn's rings* (pds-rings.seti.org/saturn/saturn_rings_table.html) · Porco, C. C., et al. 2007, Science 318, 1602 ·
 Poulet, F., Cuzzi, J. N., French, R. G., Dones, L. 2002, Icarus 158, 224 (HST phase curves, Hapke / Shkuratov fits) ·
-Showalter, M. R., Cuzzi, J. N., Marouf, E. A., Esposito, L. W. 1986, Icarus 66, 297 · Spitale, J. N., Porco, C. C.
-2009, AJ 138, 1520 · Spitale, J. N., Porco, C. C. 2010, AJ 140, 1747 · Tajeddine, R., et al. 2017,
-ApJS 232, 28 · Tiscareno, M. S., et al. 2007, Icarus 189,
-14 · Tiscareno, M. S., et al. 2013, Icarus 224, 201 · Tiscareno, M. S., Harris, B. E. 2018, Icarus 312, 157 ·
+Salo, H. 1995, Icarus 117, 287 · Seiß, M., Spahn, F., Sremčević, M., Salo, H. 2005, GRL 32, L11205 ·
+Showalter, M. R., Cuzzi, J. N., Marouf, E. A., Esposito, L. W. 1986, Icarus 66, 297 · Spahn, F., Sremčević, M. 2000,
+A&A 358, 368 · Spitale, J. N., Porco, C. C.
+2009, AJ 138, 1520 · Spitale, J. N., Porco, C. C. 2010, AJ 140, 1747 · Sremčević, M., Spahn, F., Duschl, W. J. 2002,
+MNRAS 337, 1139 · Sremčević, M., et al. 2007, Nature 449, 1019 · Tajeddine, R., et al. 2017,
+ApJS 232, 28 · Tiscareno, M. S., et al. 2006, Nature 440, 648 · Tiscareno, M. S., et al. 2007, Icarus 189,
+14 · Tiscareno, M. S., et al. 2008, AJ 135, 1083 · Tiscareno, M. S., et al. 2010, ApJL 718, L92 (+ supplementary
+tables S1–S4, arXiv:1007.1008) · Tiscareno, M. S., et al. 2013, Icarus 224, 201 · Tiscareno, M. S., Harris, B. E. 2018, Icarus 312, 157 ·
 Weidenschilling, S. J., Chapman, C. R., Davis, D. R., Greenberg, R. 1984, in *Planetary Rings* (Univ. Arizona
 Press), 367 · Weiss, J. W., Porco, C. C., Tiscareno, M. S. 2009, AJ 138, 272 · Wisdom, J., Tremaine, S. 1988, AJ 95,
 925 · Zebker, H. A., Marouf, E. A., Tyler, G. L. 1985, Icarus 64, 531.

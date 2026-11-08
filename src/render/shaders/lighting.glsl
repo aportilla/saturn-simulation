@@ -9,6 +9,11 @@
 #define MAX_MOONS 32
 uniform int uMoonCount;
 uniform vec4 uMoonPosR[MAX_MOONS];   // xyz: moon center relative to the camera (m), w: mean radius (m)
+// Further sun-shadowing spheres that are not moons of the far field (the propeller moonlets near the camera, set by
+// PropellerMoonletPass.update): same layout, included in moonsSunVisibility.
+#define MAX_SHADOW_SPH 8
+uniform int uShadowSphN;
+uniform vec4 uShadowSph[MAX_SHADOW_SPH];
 
 // Disk-integrated phase function of a Lambertian sphere, normalized to Int P dOmega = 4pi.
 // cosAlpha = cos(phase angle) = dot(dirToSun, dirToViewer). P(0) = 8/3.
@@ -135,27 +140,41 @@ float diskOverlapFraction(float d, float rs, float rm) {
   return clamp((a1 + a2 - a3) / (PI * r1 * r1), 0.0, 1.0);
 }
 
-// Fraction of the solar disk visible from camera-relative point p considering all moons (spheres).
-// Set skipIndex to a moon index to ignore (e.g. when shading that moon's own surface), else -1.
+// Visible fraction of the solar disk at p behind one shadowing sphere (center relative to the camera, radius R).
+float sphereSunVisibility(vec3 p, vec4 sph) {
+  vec3 c = sph.xyz - p;
+  float R = sph.w;
+  float d = length(c);
+  if (d <= R) return 0.0;
+  // angular separation Sun-moon center: atan2 form (acos near 1 resolves only ~3.5e-4 rad in float32,
+  // comparable to the Sun's 4.9e-4 rad radius, which speckles penumbrae)
+  float cs = dot(c, uSunDir);
+  if (cs <= 0.0) return 1.0;
+  float angM = asin(R / d);
+  float sep = atan(length(cross(c, uSunDir)), cs);
+  if (sep >= angM + uSunAngRadius) return 1.0;
+  return 1.0 - diskOverlapFraction(sep, uSunAngRadius, angM);
+}
+// The further shadowing spheres (propeller moonlets); skipIndex: one of them to ignore (its own surface), else -1.
+float extraSunVisibility(vec3 p, int skipIndex) {
+  float vis = 1.0;
+  for (int i = 0; i < MAX_SHADOW_SPH; i++) {
+    if (i >= uShadowSphN) break;
+    if (i != skipIndex) vis *= sphereSunVisibility(p, uShadowSph[i]);
+  }
+  return vis;
+}
+// Fraction of the solar disk visible from camera-relative point p considering all moons (spheres) and the further
+// shadowing spheres. Set skipIndex to a moon index to ignore (e.g. when shading that moon's own surface), else -1.
 float moonsSunVisibility(vec3 p, int skipIndex) {
   float vis = 1.0;
   for (int i = 0; i < MAX_MOONS; i++) {
     if (i >= uMoonCount) break;
     if (i == skipIndex) continue;
-    vec3 c = uMoonPosR[i].xyz - p;
-    float R = uMoonPosR[i].w;
-    float d = length(c);
-    if (d <= R) return 0.0;
-    float angM = asin(R / d);
-    // angular separation Sun-moon center: atan2 form (acos near 1 resolves only ~3.5e-4 rad in float32,
-    // comparable to the Sun's 4.9e-4 rad radius, which speckles penumbrae)
-    float cs = dot(c, uSunDir);
-    if (cs <= 0.0) continue;
-    float sep = atan(length(cross(c, uSunDir)), cs);
-    if (sep >= angM + uSunAngRadius) continue;
-    vis *= 1.0 - diskOverlapFraction(sep, uSunAngRadius, angM);
+    vis *= sphereSunVisibility(p, uMoonPosR[i]);
+    if (vis <= 0.0) return 0.0;
   }
-  return vis;
+  return vis * extraSunVisibility(p, -1);
 }
 
 // Combined direct-sunlight visibility from Saturn and moon occultation (ring transmission NOT included).

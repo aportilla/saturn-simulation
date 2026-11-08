@@ -158,9 +158,12 @@ void rlMarch(vec3 rd, float sA, float sB, float jitter, out vec3 Lout, out float
 
   float s = sA;
   float drCache = 1e30, fpCache = -1.0, tauTS = -1.0;
-  // streamline-map cache (sv_ringStructure): last evaluation point, its da = a' - r, gradient and J x tauMod
+  // streamline-map cache (sv_ringStructure): last evaluation point, its da = a' - r, gradient and J
   float stDr = 1e30, stDth = 0.0, stDa = 0.0, stJ = 1.0;
   vec2 stG = vec2(0.0);
+  // propeller cache (their finest structure, the smallest belt propellers' gap lobes, is ~20 m wide): tau factor and
+  // the wake-strength factor (no self-gravity wakes in the stirred material), and the latter nearest the mid-plane
+  float prDr = 1e30, prDth = 0.0, prFp = -1.0, prM = 1.0, prW = 1.0, prWRef = 1.0, zRefW = 1e30;
   RlS S = rlEmpty();
   float tau = 0.0, tau0 = 0.0, P = 0.0, beta = 0.5, bsh = 0.0;
   RlTS tsSun, tsSs;
@@ -229,8 +232,9 @@ void rlMarch(vec3 rd, float sA, float sB, float jitter, out vec3 Lout, out float
     vec3 exB = rlExt(l0.z + d.z * ds, S.H, s + ds);
     float sm = s + ds * fj;
     vec3 l = o + d * sm;
-    // ---- profile (cached while the radius changes little); sub-km structure evaluated every step
+    // ---- profile (cached while the radius changes little); the 2-D modulation evaluated every step
     float dr = ringDrFromLocal(l);
+    float dthL = atan(l.y, uRingR0 + l.x);
     float fpR = max(fpPix, ds * abs(d.x) * 0.5);
     // 2-D ring structure (sv_ringStructure): the profile is that of the Lagrangian radius dr + da, tau x J x M.
     // The map is smooth on km scales: re-evaluated when the step moved > 25-100 m radially (less where J varies)
@@ -238,16 +242,15 @@ void rlMarch(vec3 rd, float sA, float sB, float jitter, out vec3 Lout, out float
     float drL = dr;
     float Jst = 1.0;
     if (!rsIdentityAt(dr)) {
-      float dth = atan(l.y, uRingR0 + l.x);
-      if (abs(dr - stDr) > 25.0 + 75.0 / (1.0 + 4.0 * abs(stJ - 1.0)) || abs(dth - stDth) * uRingR0 > 500.0) {
-        RingStream st = ringStream(dr, dth, fpR);
+      if (abs(dr - stDr) > 25.0 + 75.0 / (1.0 + 4.0 * abs(stJ - 1.0)) || abs(dthL - stDth) * uRingR0 > 500.0) {
+        RingStream st = ringStreamMap(dr, dthL, fpR);
         stDr = dr;
-        stDth = dth;
+        stDth = dthL;
         stDa = st.da;
         stG = st.daGrad;
-        stJ = st.J * st.tauMod;
+        stJ = st.J;
       }
-      drL = dr + stDa + dot(stG, vec2(dr - stDr, (dth - stDth) * uRingR0));
+      drL = dr + stDa + dot(stG, vec2(dr - stDr, (dthL - stDth) * uRingR0));
       Jst = stJ;
     }
     if (abs(drL - drCache) > 50.0 + 0.25 * fpR || fpR > 2.0 * fpCache || fpR < 0.5 * fpCache) {
@@ -285,9 +288,22 @@ void rlMarch(vec3 rd, float sA, float sB, float jitter, out vec3 Lout, out float
       exB = rlExt(l0.z + d.z * ds, S.H, s + ds);
     }
     {
-      float xF = uRlIdx0F + drL / uRingDr0;
-      float kF = floor(xF);
-      tau = tau0 * Jst * rlFineFactor(uRlIdx0I + kF, xF - kF, fpR * Jst, tau0, S.wake);
+      // 2-D optical-depth modulation at the step's Lagrangian point (sv_ringStructure hooks): the sub-km texture every
+      // step (its finest octave is 16 m radially), the propellers (costly hash-grid enumeration) re-evaluated after 4 m radially / 16 m along the orbit.
+      // Only the resolved mean is used: at the march's footprints (< ~1 wake spacing) the texture's unresolved
+      // variance is < 5 % of its total (the 16-31 m octaves), a < 0.3 % effect on the mean transmission.
+      float fpM = fpR * Jst;
+      float mt = rsTauModTexture(drL, dthL, fpM).x;
+      if (abs(drL - prDr) > 4.0 || abs(dthL - prDth) * uRingR0 > 16.0 || fpM > 2.0 * prFp || fpM < 0.5 * prFp) {
+        vec3 pm = rsPropellersMod(drL, dthL, fpM);
+        prM = pm.x;
+        prW = pm.z;
+        prDr = drL;
+        prDth = dthL;
+        prFp = fpM;
+      }
+      tau = tau0 * Jst * mt * prM;
+      if (abs(l.z) < zRefW) { zRefW = abs(l.z); prWRef = prW; }
     }
     // two-stream solutions: the multiply-scattered field is smooth -> refresh only on a 15 % tau change
     if (abs(tau - tauTS) > 0.15 * max(tauTS, 0.02)) {
@@ -382,6 +398,9 @@ void rlMarch(vec3 rd, float sA, float sB, float jitter, out vec3 Lout, out float
           W = mix(Wray, 1.0, fadeRay);
           Ws = mix(WsRay, 1.0, fadeRay);
         }
+        // no self-gravity wakes in a propeller's stirred material (sv_ringStructure wake factor)
+        W = mix(1.0, W, prW);
+        Ws = mix(1.0, Ws, prW);
       }
       float sigU = sig0 * W;
       sigMax = max(sigMax, sig0T * W);
@@ -397,12 +416,16 @@ void rlMarch(vec3 rd, float sA, float sB, float jitter, out vec3 Lout, out float
     // ---- statistical (unresolved) wakes: two columns, emission ~ W, view attenuation ~ Wv, sun path ~ Ws
     if (doStat) {
       if (abs(z) < 0.3 * S.H && !doExp) gRlWsrc = 8.0;
-      float tsb = sig0 * Wvb * ds, tsg = sig0 * Wvg * ds;
-      sigMax = max(sigMax, sig0T * max(Wvb, Wvg));
-      vec3 SBb = RL_SS(Wsb, -log(max(Tb, 1e-30)) + tsb) + srcMS;
-      vec3 SBg = RL_SS(Wsg, -log(max(Tg, 1e-30)) + tsg) + srcMS;
-      Lb += Tb * rlStepEmit(haveA ? SbA : SBb, SBb, tsb) * (Wb / Wvb);
-      Lg += Tg * rlStepEmit(haveA ? SgA : SBg, SBg, tsg) * (Wg / Wvg);
+      // (the two columns' contrast scaled by the propellers' wake factor: the columns' mean stays 1)
+      float pWb = mix(1.0, Wb, prW), pWg = mix(1.0, Wg, prW);
+      float pWvb = mix(1.0, Wvb, prW), pWvg = mix(1.0, Wvg, prW);
+      float pWsb = mix(1.0, Wsb, prW), pWsg = mix(1.0, Wsg, prW);
+      float tsb = sig0 * pWvb * ds, tsg = sig0 * pWvg * ds;
+      sigMax = max(sigMax, sig0T * max(pWvb, pWvg));
+      vec3 SBb = RL_SS(pWsb, -log(max(Tb, 1e-30)) + tsb) + srcMS;
+      vec3 SBg = RL_SS(pWsg, -log(max(Tg, 1e-30)) + tsg) + srcMS;
+      Lb += Tb * rlStepEmit(haveA ? SbA : SBb, SBb, tsb) * (pWb / pWvb);
+      Lg += Tg * rlStepEmit(haveA ? SgA : SBg, SBg, tsg) * (pWg / pWvg);
       SbA = SBb;
       SgA = SBg;
       Tb *= exp(-tsb);
@@ -415,6 +438,7 @@ void rlMarch(vec3 rd, float sA, float sB, float jitter, out vec3 Lout, out float
     s += ds;
   }
   vec3 Ls = fB * Lb + (1.0 - fB) * Lg;
+  wsV *= prWRef;   // the propellers' wake factor nearest the mid-plane
   float Ts = doStat ? rlTransWakesTau(tauV, chiV, fB, wsV, mWV) : 1.0;
   // Prefilter correction of the explicit field's transmission: the clipmap texels (box + bilinear, across-crest
   // std 0.5 d) average the density over the pixel footprint BEFORE it is exponentiated, which lowers the mean

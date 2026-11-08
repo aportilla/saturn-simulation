@@ -5,6 +5,7 @@
 //     1. clear  -> (0,0,0,SKY_DIST), depth 1
 //     2. far    -> sky, stars, Sun, Saturn, moons            (FarFieldPass)
 //     3. near   -> discrete ring particles near the camera    (NearFieldPass)
+//    3a. bodies -> propeller moonlets (depth-tested)           (PropellerMoonletPass)
 //    3b. overlay -> camera-pinned astronaut (depth-tested)    (AstronautPass)
 //   hdrRT (RGBA32F radiance)
 //     4. rings  -> ring layer composited over sceneRT        (RingLayerPass) [else plain copy]
@@ -87,6 +88,8 @@ export interface RenderPass {
 export interface PipelinePasses {
   far?: RenderPass;
   near?: RenderPass;
+  /** further opaque bodies in the ring layer, drawn after the near field (the propeller moonlets) */
+  bodies?: RenderPass;
   /** opaque overlays drawn after the near field, before the ring layer (the camera-pinned astronaut) */
   overlay?: RenderPass;
   rings?: RenderPass;
@@ -114,6 +117,8 @@ export class Pipeline {
   private lastLocalRKm = -1;
   private lastLocalRKmL = -1;
   private lastLocalMacro = false;
+  private lastModKey = '';
+  private modCheckFrame = 0;
   ready = false;
 
   constructor(readonly renderer: WebGLRenderer, passes: PipelinePasses) {
@@ -124,6 +129,7 @@ export class Pipeline {
   async init(width: number, height: number): Promise<void> {
     registerShaderChunks();
     const [profile, structure] = await Promise.all([RingProfile.load(), RingStructure.load()]);
+    structure.attachProfile(profile);
     const lod = new RingLod();
     const wakes = new WakeField();
     const shared = new SharedUniforms(profile, lod, wakes, structure);
@@ -157,7 +163,7 @@ export class Pipeline {
   /** The passes in pipeline order. */
   private ordered(): (RenderPass | undefined)[] {
     const p = this.passes;
-    return [p.far, p.near, p.overlay, p.rings, p.post];
+    return [p.far, p.near, p.bodies, p.overlay, p.rings, p.post];
   }
 
   static makeTarget(w: number, h: number, depth: boolean): WebGLRenderTarget {
@@ -209,16 +215,31 @@ export class Pipeline {
     const local = c.profile.local(rKm * 1000);
     const drifted = local.macroscopic !== this.lastLocalMacro || Math.abs(rKm - this.lastLocalRKmL) > 20;
     const camZ = f.ring.camLocal.z;
-    if (anchorChanged || movedFar || drifted || c.lod.needsRealloc(pa, camZ)) {
+    // The particles are thinned by tau0 M / tauMax with M the 2-D modulation (sub-km texture, propellers): each class's
+    // tauMax covers the largest M in its box. Propellers drift through the co-orbiting boxes: their bounds are
+    // re-checked every 60 frames and the allocation re-fitted when one changes.
+    const thCam = Math.atan2(f.camPos.y, f.camPos.x);
+    let modKey = this.lastModKey;
+    if (++this.modCheckFrame % 60 === 0 && c.lod.active) {
+      c.structure.prepareNear(rKm * 1000, thCam);
+      modKey = c.structure.nearBoundKey(c.lod.box);
+    }
+    if (anchorChanged || movedFar || drifted || c.lod.needsRealloc(pa, camZ) || modKey !== this.lastModKey) {
       const driftKm = c.structure.maxDisplacementNear(rKmE * 1000) / 1000;
+      c.structure.prepareNear(rKm * 1000, thCam);
       // each size class is generated at the max tau over the radial span of its own box (+ the possible drift)
-      c.lod.configure(local, (halfWidth) => c.profile.maxTauKm(rKm, halfWidth / 1000 + driftKm), camZ, { pixelAngle: pa, maxSlots: this.policy.maxSlots });
+      c.lod.configure(local, (halfWidth) => c.profile.maxTauKm(rKm, halfWidth / 1000 + driftKm) * c.structure.maxTauModNear(rKm * 1000, halfWidth + driftKm * 1000), camZ, { pixelAngle: pa, maxSlots: this.policy.maxSlots });
       c.wakes.configure(local, f.ring);
       this.lastAnchorId = f.ring.anchorId;
       this.lastLocalRKm = rKmE;
       this.lastLocalRKmL = rKm;
       this.lastLocalMacro = local.macroscopic;
+      this.lastModKey = c.structure.nearBoundKey(c.lod.box);
     }
+    // near-field cost gate: the size classes whose guiding centres a propeller's structure can reach (elsewhere its
+    // factor is exactly 1, so nearUpdate.glsl skips the enumeration there)
+    const P = c.structure.propellers;
+    P.uniforms.uRpNearMask.value = P.nearClassMask(rKm * 1000, thCam, c.lod.box, 500);
     // the near field is active while the camera is within the distance its largest particles can be drawn at
     const nearAllowed = f.settings.nearField && Math.abs(f.camPos.z) < c.lod.maxReach && c.lod.totalParticles > 0;
     c.lod.setActive(nearAllowed && (this.passes.near?.enabled ?? false));
@@ -244,6 +265,8 @@ export class Pipeline {
     // 2-3. opaque scene
     if (this.passes.far?.enabled) this.passes.far.render(f, c);
     if (this.passes.near?.enabled && c.lod.active) this.passes.near.render(f, c);
+    // 3a. further bodies in the ring layer (propeller moonlets), depth-tested against the particles
+    if (this.passes.bodies?.enabled) this.passes.bodies.render(f, c);
     // 3b. opaque overlays (camera-pinned astronaut), depth-tested against the particles, under the ring medium
     if (this.passes.overlay?.enabled) this.passes.overlay.render(f, c);
     // 4. ring layer (or plain copy)

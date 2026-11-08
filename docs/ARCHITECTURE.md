@@ -71,6 +71,7 @@ Implications:
 | 0 | clear (internal) | | sceneRT = (0,0,0, SKY_DIST), depth = 1 |
 | 1 | **far** `passes/FarFieldPass.ts` `FarFieldPass` | shared uniforms | sceneRT rgb + a(=distance m) + log depth |
 | 2 | **near** `passes/NearFieldPass.ts` `NearFieldPass` | sceneRT depth (depth-tested) | sceneRT rgb + a + depth |
+| 2a | **bodies** `passes/PropellerMoonletPass.ts` `PropellerMoonletPass` (propeller moonlets ≥ 0.25 px) | sceneRT depth | sceneRT rgb + a + depth; shadow spheres `uShadowSph` |
 | 2b | **overlay** `passes/AstronautPass.ts` `AstronautPass` (`settings.astronaut`) | sceneRT depth, near shadow map (`ctx.nearShadow`), ringshine table (`ctx.ringshineTable`) | sceneRT rgb + a + depth |
 | 3 | **rings** `passes/RingLayerPass.ts` `RingLayerPass` | sceneRT (rgb, distance) | hdrRT (radiance) |
 | 3b | late HDR hooks (`far/lateHooks.ts`, run at the start of PostPass) | sceneRT.a | hdrRT (additive) |
@@ -101,7 +102,17 @@ Implications:
   The CPU `MoonShape.radiusAlong` is the same function (camera clearance via `moonSurfaceRadius`); MoonPoints
   integrates unresolved moons over the r_max disk with the same tracer. Debug views `?debug=40..44`: normal,
   self-shadow, cos i, march outcome, external shadows (r Saturn, g moons, b rings). (Debug-view numbers are shared
-  by all passes through `settings.debugView`: ring layer 1–12, near field 11–22 and 31–34, far-field moons 40–44.)
+  by all passes through `settings.debugView`: ring layer 1–12, near field 11–22 and 31–34, far-field moons 40–44,
+  propeller moonlets 45 = normals.)
+* **Propeller moonlets** (`PropellerMoonletPass`, shaders `src/render/propellers/`): the bodies of the propellers'
+  moonlets (named giants and the hash-grid belts, `src/rings/propellers.ts`) — the MAX_MOONS (32) sphere list can't
+  hold them. Every 30 frames (or after the camera moved > max(0.1 |z|, 2 km)) the CPU mirror lists the moonlets within
+  3,000 km that are ≥ 0.25 display px; each frame they are positioned at their live radius / longitude (and vertical
+  phase), frustum-culled, sorted and drawn as instanced boxes ray-traced as ellipsoids (Hill-lobe proportions
+  1 : 0.667 : 0.638 scaled to the moonlet radius, long axis toward Saturn, low-frequency relief on the normal),
+  `gl_FragDepth` = log depth. Lit with the regolith law × the factor LUT at the body's phase angle, Saturn's and the
+  moons' shadows, the ring column toward the Sun and Saturn, the two-stream diffuse ring light and Saturnshine. The
+  8 nearest are published as shadow spheres (`uShadowSph`, `sv_lighting`) for the medium and the astronaut.
 * **Auto exposure** (`PostPass`): highlight meter (per-cell peak/extended brightness, Sun excluded, isolated
   point sources ≤ 64× key) for small bright bodies on black sky; when lit material (> 1e-4 W m⁻² sr⁻¹) covers
   most of the frame it blends to the 90th percentile of the lit pixels (interpolated within its half-stop
@@ -157,15 +168,37 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   Eulerian τ = τ0(a') J M with J = 1/(∂r/∂a') (density factor) and M the 2-D modulation hook; a'(r, θ) by Newton
   iteration. All arguments are offsets for float32 precision: `dr` = r − uRingR0 (`ringDrFromLocal`), `dth` = azimuth
   − frame-origin azimuth (`atan(l.y, uRingR0 + l.x)`), `fp` = radial footprint (m).
-  `RingStream ringStream(dr, dth, fp)` → `.da` (a' − r), `.J`, `.tauMod`, `.daGrad` (for caching);
+  `RingStream ringStream(dr, dth, fp)` → `.da` (a' − r), `.J`, `.tauMod` (M at the footprint), `.tauVar` (variance of
+  M below the footprint), `.wakeMod` (self-gravity-wake strength factor, < 1 in material stirred by a propeller
+  moonlet), `.daGrad` (for caching);
   `ringStreamRelief(dr, dth, fp)` adds `.zeta` (mid-plane height of the material, m) and `.slope` (∂ζ/∂r, ∂ζ/(r∂θ));
   `vec3 ringStreamXi(aL, dth, fp)` = (ξ, ζ, J) at a Lagrangian offset aL = a' − r0 (the near field displaces its
-  particles, which carry a'); `RingSample ringSampleStream(dr, dth, fp)` / `ringSampleLocal(l, fp)` = THE lookup
-  (profile at a', τ and Σ × J × M, footprint × J); `ringSampleLagrangian(aL, fp)`; `ringSampleIdxPrecise(I, sub, fp)`
+  particles, which carry a'); `RingSample ringSampleStream(dr, dth, fp)` / `ringSampleLocal(l, fp)` = the lighting lookup
+  (profile at a', τ and Σ × J × the LIGHT part of M, below; footprint × J); `ringSampleLagrangian(aL, fp)`; `ringSampleIdxPrecise(I, sub, fp)`
   (integer + fraction index: `uRingIdx0 + dr/uRingDr0` rounds to 7.8 m in the outer A ring, which stair-steps
-  displaced edges; the ring layer has the same as `rlSampleP`); `ringSunTransmissionStream(p, fp)`. Hooks for later
-  work packages, identity now: `ringStructureRelief(aL, dth)` → (height, ∂/∂a', ∂/∂S) (bending waves, B-ring-edge
-  structures, relief sources) and `ringStructureTauMod(aL, dth)` (azimuthal texture, propellers). Sources now: the
+  displaced edges; the ring layer has the same as `rlSampleP`); `ringSunTransmissionStream(p, fp)`. Hooks (one stub
+  function per source, so work packages fill different functions): `ringStructureRelief(aL, dth)` → (height,
+  ∂/∂a', ∂/∂S) = `rsReliefWaves` + `rsReliefSites` (identity: relief work package) + `rsReliefPropellers`;
+  `vec3 ringStructureMod(aL, dth, fp)` → (mean M, variance of M below the footprint, wake factor) combines
+  `rsTauModTexture` (chunk `sv_ringTexture`, `src/render/shaders/ringTexture.glsl`, CPU `src/rings/ringTexture.ts`:
+  the sub-km 2-D sheared texture) and `rsPropellersMod` (chunk `sv_ringPropellers`, `ringPropellers.glsl`, CPU
+  `src/rings/propellers.ts`) as a product of independent factors (mean m_a m_b, variance v_a m_b² + v_b m_a² +
+  v_a v_b); `ringStructureTauModStat` = its (mean, variance), `ringStructureTauMod` = the mean. Both chunks are
+  `#include`d inside `sv_ringStructure` (three.js resolves nested includes; they use `rsTab`, declared by prototype
+  and defined later in the same chunk). Consumers: the sheet folds (m, v) into its τ pyramid
+  (`rlApplyTauMod`: transmission-preserving, second-order cumulants with a 3σ floor) and scales its wakes by the
+  wake factor; the march evaluates the texture per step at its footprint and caches the propeller term
+  (refreshed after 4 m radial / 16 m azimuthal travel or a 2× footprint change), mixing its explicit and statistical
+  wakes toward 1 by the wake factor; the near field multiplies presence by M at the particle's guiding centre
+  (`fp` = 0) and its wake displacement by the wake factor (`nearUpdate.glsl`). **Cost rules** (the propellers'
+  hash-grid enumeration is ~1,500 operations per lookup): `rsInvert` takes a modulation mode — `ringStream` /
+  `ringStreamRelief` FULL (the sheet), `ringStreamMap` NONE (the march applies M per step itself, the propellers
+  cached over 4 m radially / 16 m along the orbit), and `ringSampleStream` / `ringSampleLocal` (lighting and
+  occlusion lookups, called per vertex by the particles, the astronaut and the moonlet bodies) LIGHT = none by default
+  (`#define RS_LIGHT_TEXTURE` adds the texture at ≥ 64 m): the particles' number follows M, their lighting column is
+  the undisturbed one. In `nearUpdate.glsl` the propellers are enumerated only for particles that may be drawn and in
+  the size classes a propeller can reach this frame (`uRpNearMask`, `PropellerSystem.nearClassMask`, exact); shadow
+  casters outside the view take the texture only (shadow fidelity). Sources now: the
   moonlets Pan and Daphnis (Hill-problem response table, `public/data/rings/moonlet_response.*`) and the normal modes
   of eccentric edges (`src/rings/ringModes.ts` `EDGE_FEATURES`: the B-ring outer edge's four modes; uniforms
   `uRsMode[8]` = (A, m(φ0 − ϖ(t)), m, 1/L), `uRsModeF[8]` feature index, `uRsFeat[2]` = (a_edge − r0, material side,
@@ -175,7 +208,10 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
 * `sv_lighting`: `phaseLambertSphere`, `phaseHG`, `ringPhase(cosα, dust)`, `ringParticleSurge(α)`,
   `ringRegolithIF(μ0, μ, cos g, w)` (resolved particles; CPU mirror `near/NearRegolith.ts`),
   `extendedSourceCosine(cosθ, sin σ)` (incidence cosine of an extended spherical source), `saturnshine(p, out dir)`,
-  `diskOverlapFraction`, `moonsSunVisibility(p, skip)`, `sunVisibility(p)`; moon spheres `uMoonPosR[32]`.
+  `diskOverlapFraction`, `moonsSunVisibility(p, skip)`, `sunVisibility(p)`; moon spheres `uMoonPosR[32]`; extra
+  shadow spheres `uShadowSph[MAX_SHADOW_SPH = 8]` / `uShadowSphN` (published by later-loaded bodies — the propeller
+  moonlets; reset to 0 every frame by `SharedUniforms.update`), `sphereSunVisibility(p, sph)`,
+  `extraSunVisibility(p, skipIndex)` (also multiplied into `moonsSunVisibility`).
 * `sv_ringLod` (mirror of `src/rings/RingLod.ts`): 14 octave size classes from 1 mm, `lodCarryParticle(a,k,s,dz)`
   (one particle's draw probability: count contract, display pixels via `uLodPixelAngle`), `lodCarry(a,k,s,dz)`
   (the share of class k the medium leaves out: exact class mean of the former; `a` unused), `ringExtinction(s, z, tau, H, W, out sigTot, out
@@ -256,13 +292,18 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   which it falls below the handover band (with zoom headroom) from the lowest camera height served (dz above
   the slab; 0 normally), so nothing is simulated where it could not be drawn; radii within a class are sampled
   from n(a)·D(a)² (≤ 6 power-law pieces, box a power of a on each: ~1% over the exact D), boxes up to 60 km
-  (10 m boulders are ≥ 1 px out to ~20 km at 1080p), each class generated at the max τ over its own box.
+  (10 m boulders are ≥ 1 px out to ~20 km at 1080p), each class generated at the max τ over its own box times the
+  bound of the 2-D modulation there (`RingStructure.maxTauModNear`: texture 1 + 0.70 A, i.e. 1.22 in the A ring and
+  1.43 in the B-ring core; a propeller's lobe factor 1.27 × its wake bound only where a propeller's band crosses the
+  box — `prepareNear` / `nearBoundKey`, re-checked every 60 frames, re-fit when the key changes). Presence then
+  accepts τ0 J M / bound.
   Independent of the camera position (particles persist while flying) unless the total exceeds the 12M-slot
   cap (dense B ring, ~46M): then it is fitted to the camera height h (valid for [h/1.5, 1.5h], re-fit
   outside); above the layer the zoom-in margin and the band below h are given up first (down to 1.07× / 1.13×:
   they hold nothing drawn now, but re-fits come sooner), only then are the largest boxes clipped at a common
   radius; the stats report the visibility-weighted deficit (~0 inside the B ring, where the layer hides
-  everything farther; B ring at 1080p: complete from ≥ 700 m above, ~3–30% short at 50–500 m). Vertical
+  everything farther; B ring at 1080p: complete from ≥ 700 m above, ~3–30% short at 50–500 m; the texture's
+  allocation bound 1.43 raised the 1280×720 deficit at 100 m from 0.3 % to 9.2 %, `npm run test:counts`). Vertical
   visibility is not used to thin it: every particle crosses the mid-plane, and wake gaps leave even the B ring
   at τ ~ 1. The near field is active while the camera is within the largest particles' reach. Seeds depend on
   the anchor id and class only; classes whose allocation is unchanged keep their particles across re-fits.
@@ -280,6 +321,19 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   cause under a co-orbiting camera (`RingStructure.maxDisplacementNear`), re-fitted on 1 km of camera travel, when the
   material under the camera changes (ring ↔ gap) or after 20 km of Lagrangian drift. ζ is computed and exposed (`ringStreamRelief`,
   `ringStreamXi`), not yet rendered geometrically (relief work package). Details and numbers: ring-physics.md §8.
+* **Sub-km texture** (`RingTexture`, `sv_ringTexture`; ring-physics.md §10): τ × M with M = 1 + A F, F a 2-D
+  random field with the former radial noise's power spectrum (6 octaves, 500 → 15.6 m) and amplitude law, built
+  from value noise on lattices that are isotropic at birth and advected by the Keplerian (+J2–J6) flow — trailing
+  streaks (pitch ~6°, azimuthal correlation ~10× the radial), two overlapping generations of coherence time T =
+  12.9 h. Octaves below the footprint fade into the variance the sheet folds into its pyramid; the mean is 1 at
+  every footprint. The noise tile is a 256² R16F texture; lattice phases are passed per frame in double precision.
+* **Propellers** (`PropellerSystem`, `sv_ringPropellers`; ring-physics.md §11): the 11 named giant propellers of the
+  outer A ring (Tiscareno et al. 2010 Table 1 orbits, Blériot's 0.11° / 3.68 yr sinusoid) and four belt classes
+  (Tiscareno et al. 2008 populations) placed by a deterministic hash grid in (mean motion, co-moving longitude)
+  cells — each moonlet moves on its own orbit, longitudes exact in integer arithmetic. Structure per moonlet: two
+  partial gaps at ±2 r_H trailing in opposite directions with Δℓ, depth and enhanced lobes from the Sremčević /
+  Seiß scaling, moonlet wakes (Hill-response table), equinox relief; enumerated per lookup over a 3×3 cell
+  neighbourhood (bounded cost), faded beyond 8–16 r_H footprints.
 * **Outer rings**: F ring (eccentric, a = 140,221 km), G, E (vertical torus around Enceladus), D — analytic
   in the ring-layer pass (`OUTER_RINGS` in `ringRegions.ts`).
 

@@ -225,7 +225,6 @@ export class RingLayerPass implements RenderPass {
       uRlIdx0F: { value: 0 },
       uRlPhi0: { value: 0 },
       uRlShScale: { value: 1 },
-      uRlFineAmp: { value: 1 },
       uRlCoarse: { value: this.pyr.coarsestSpacing },
       uRlPhaseModel: { value: this.phaseModel },
       uRlSSScale: { value: 1 },

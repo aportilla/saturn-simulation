@@ -72,7 +72,14 @@ edges (forced epicycles from integrations of Hill's problem, wavelength 3π × t
 at the Encke edges, 2–3.5 km at the Keeler edges, crowding the streamlines into denser crests, damped over a few
 wavelengths), seen identically by the medium, the particles and the astronaut's lighting. The B ring's outer edge
 sits at its mean radius and moves with its four measured normal modes (the Mimas 2:1 forced m = 2 plus free m = 1,
-2, 3 modes; up to ~150 km peak to peak). Per-zone
+2, 3 modes; up to ~150 km peak to peak). Below the data's 1 km resolution the optical depth has a 2-D texture
+(±5 % in the C ring, ±7.5 % in the A ring, ±15 % in the B-ring core, scales 15 m–500 m): clumps born isotropic
+and sheared by the Keplerian flow into trailing streaks ~10× longer than wide that live about one orbit, drifting
+with the material. **Propellers**: the moonlets embedded in the A ring — the 11 named giants beyond the Encke gap
+(Blériot, Earhart, Santos-Dumont, … on their measured orbits, including Blériot's wandering) and the ~10⁸ belt
+moonlets of 20–250 m radius in the mid A ring, each on its own orbit — clear two partial gaps that trail in opposite
+directions, pile the material into dense lobes beside them and raise moonlet wakes; you can fly to one
+(`propeller-bleriot`, `propeller-belt`) and see the moonlet itself, a Roche-lobe-shaped rubble body. Per-zone
 particle size distributions (power laws, e.g. A ring 2 cm–5 m, B ring 5 cm–2 m, C ring 4 mm–10 m), layer
 thickness (C 5 m, A 10 m, B 10–15 m), surface density calibrated to density waves, albedo and colour. The
 implied ring mass, 1.34×10¹⁹ kg, matches Cassini's measured 1.54 ± 0.49×10¹⁹ kg. Details and references:
@@ -126,10 +133,12 @@ is in view.
 
 ```
 src/core      constants, time, ephemeris, frames, co-orbiting ring anchor, frame state
-src/rings     ring zone table, radial profile, 2-D structure (streamline map), level-of-detail contract, wake field
+src/rings     ring zone table, radial profile, 2-D structure (streamline map, sub-km texture, propellers),
+              level-of-detail contract, wake field
 src/moons     moon ephemerides and rotation          src/sky   star catalogue
-src/render    pipeline (far → near → astronaut → ring layer → post), shared GLSL, passes:
-              far/ (Saturn, moons, stars) · near/ (particles) · astronaut/ · rings/ (ring medium) · PostPass (camera)
+src/render    pipeline (far → near → propeller moonlets → astronaut → ring layer → post), shared GLSL, passes:
+              far/ (Saturn, moons, stars) · near/ (particles) · propellers/ (moonlet bodies) · astronaut/ ·
+              rings/ (ring medium) · PostPass (camera)
 src/app, src/camera, src/ui    application, camera rig and controllers, HUD
 public/data   ring optical depth, ephemerides, stars, moon maps (built by scripts/data/**)
 sandbox/      per-subsystem test pages (ringplot.html plots the ring profile against the raw occultations)
@@ -159,6 +168,14 @@ Full provenance, formats and accuracy: [`docs/data-sources.md`](docs/data-source
   outer edge) and the Encke-gap ringlets are not modelled. Near-field particles on displaced edge material are lit
   with the unperturbed profile at their position (too bright there) until the particle shader samples the 2-D
   structure; in the most compressed wave crests particles far from the camera may be missing.
+* Propellers: the giant propellers are much fainter than in Cassini's 2 km/px images (the bright lit-face /
+  dark unlit-face wings come mostly from the stirred, puffed-up material, whose vertical relief is computed but not
+  yet drawn; only the loss of self-gravity wakes there is rendered); the belt propellers are statistical (positions
+  from a hash grid with the measured number density, not the catalogued individuals); Blériot's libration phase is
+  estimated from the paper's figure; moonlet bodies don't yet shadow the near-field particles.
+* The sub-km texture's statistics (spectrum, amplitude, shear, lifetime) are a model consistent with occultations,
+  not a map of the real ring. The texture and the propellers cost ~9–11 ms per frame inside and just above the A
+  ring (measured on a shared GPU; docs/ring-physics.md §11), most of it in the particles' presence test.
 * Particle shapes and surface detail are procedural; light reflected from one part of the rings onto another is
   not modelled.
 * Daphnis's orbit is extrapolated (Horizons coverage ends in 2018); Hyperion's actual present-day orientation is

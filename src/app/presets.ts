@@ -17,6 +17,7 @@ import type { Controller } from '../camera/Transition';
 import { shadowEntryAzimuth } from './physics';
 import type { LiveInfo } from './liveInfo';
 import { deg, duration, len, percent, perArea, sig, speed, km } from '../ui/format';
+import { propellersAt } from '../rings/propellers';
 
 export interface PresetEnv {
   frame: FrameState;
@@ -102,6 +103,43 @@ function nearMoonRing(env: PresetEnv, name: string, distKm: number, s: Omit<Ring
   const lead = sAlong > 0; // Sun ahead -> stand in front of the moon and look back at it
   const dphi = (distKm * 1e3) / r;
   return ringPreset(env, { ...s, rKm: r / 1e3, phi: lead ? phiM + dphi : phiM - dphi, yaw: lead ? 180 : 0 });
+}
+
+/**
+ * Co-orbiting with a propeller moonlet (radius a, longitude th at arrival): the camera `dist` away horizontally and
+ * `height` above the lit face (side 1) or below the unlit one (side -1), looking at a point `ahead` along the view
+ * direction past the moonlet; the view direction is 135 deg from the Sun's azimuth (the Sun behind and to one side:
+ * shadows and relief show) on the lit face, and along the orbit on the unlit face (the propeller's two partial gaps
+ * trail along it and glow there).
+ */
+function propellerView(env: PresetEnv, a: number, th: number, dist: number, height: number, speedMs: number, side = 1, ahead = 0): FreeController {
+  const f = env.frame;
+  const L = lit(f);
+  const anchor = new RingAnchor(a, th, env.tArrive);
+  // Sun direction in the local frame at the moonlet (x radial, y prograde)
+  const sx = Math.cos(th) * f.sunDir.x + Math.sin(th) * f.sunDir.y;
+  const sy = -Math.sin(th) * f.sunDir.x + Math.cos(th) * f.sunDir.y;
+  const vAz = side > 0 ? Math.atan2(sy, sx) + Math.PI * 0.75 : Math.PI / 2 - 0.35;
+  const dir = new Vector3(Math.cos(vAz), Math.sin(vAz), 0);
+  const local = new Vector3(-dist * dir.x, -dist * dir.y, side * L * height);
+  const fwd = dir.clone().multiplyScalar(dist + ahead).sub(local);
+  const up = new Vector3(0, 0, side * L);
+  const q = lookQuat(fwd, up, new Quaternion());
+  return new FreeController({ frame: 'ring', anchor, local, qLocal: q, upLocal: up, speed: speedMs });
+}
+function propellerBleriot(env: PresetEnv): Controller {
+  const g = propellersAt(env.tArrive).giant('Blériot');
+  if (!g) return ringPreset(env, { rKm: 134_912, fromNoonDeg: 40, zLit: -8e3, yaw: -60, pitch: 15, up: 'side', speed: 200 });
+  // from the unlit face, behind the moonlet: the partial gaps glow, the moonlet in front
+  return propellerView(env, g.a, g.theta, 30e3, 7e3, 300, -1, 25e3);
+}
+function propellerBelt(env: PresetEnv): Controller {
+  const f = env.frame;
+  // the largest belt propeller (dr >= 0.44 km) in the middle belt within ~2,000 km of 35 deg past local noon
+  const th0 = sunAz(f) + 35 * DEG;
+  const m = propellersAt(env.tArrive).findLargest(129_350e3, th0, 850e3, 2000e3, 2);
+  if (!m) return ringPreset(env, { rKm: 129_350, fromNoonDeg: 35, zLit: 1000, yaw: -60, pitch: -20, up: 'side', speed: 40 });
+  return propellerView(env, m.a, m.theta, 9 * m.R, 2.6 * m.R, 20);
 }
 
 /** F ring & Prometheus: outside the F ring looking in on the day side, inside looking out on the night side. */
@@ -221,6 +259,16 @@ export const PRESETS: Preset[] = [
     explain: () => `${b('The Keeler Gap and Daphnis.')} A ~40 km gap near the A ring's outer edge, cleared by 8 km Daphnis. Its slightly eccentric, inclined orbit raises waves on the gap edges that rise up to ~1.5 km out of the ring plane.`,
   },
   {
+    id: 'propeller-bleriot', title: 'Propeller Blériot', group: 'Gaps & shepherds', subtitle: 'The largest tracked propeller moonlet',
+    build: (e) => propellerBleriot(e),
+    explain: () => `${b('Propeller “Blériot”.')} A moonlet ~0.9 km across, too small to open a full gap: it clears two partial gaps that trail off in opposite directions — ahead of it on the side toward Saturn, behind it on the far side — flanked by denser lobes, an S-shaped “propeller” over 100 km long. Tracked by Cassini 2005–2009 (Tiscareno et al. 2010) and placed here on that orbit (it wanders by ±300 km around a keplerian path). The structure is lifted out of the ring plane by up to ~0.4 km (its shadows at the 2009 equinox).`,
+  },
+  {
+    id: 'propeller-belt', title: 'Propeller belt moonlet', group: 'Gaps & shepherds', subtitle: 'Mid-A ring, 129,000 km',
+    build: (e) => propellerBelt(e),
+    explain: () => `${b('A propeller in the mid-A ring belts.')} Thousands of moonlets 40–500 m across orbit in three belts between 126,750 and 132,000 km (Tiscareno et al. 2008). Each is too small to clear a gap; instead it leaves a propeller-shaped disturbance a few km long: two partial gaps offset to either side of its orbit, trailing in opposite directions. The smallest propellers are by far the most common (the number above a size falls as size<sup>−4.8</sup>).`,
+  },
+  {
     id: 'f-ring', title: 'F ring & Prometheus', group: 'Gaps & shepherds', subtitle: 'Shepherd moon at work',
     build: (e) => fRing(e),
     explain: () => `${b('The F ring and Prometheus.')} The F ring (140,221 km) is a narrow, kinked core wrapped in dusty strands. Prometheus (136 × 79 × 59 km) orbits ~800 km inside it; once per 14.7-hour orbit, at closest approach, its gravity pulls streamers and channels out of the ring.`,
@@ -264,6 +312,7 @@ const ALIASES: Record<string, string> = {
   'a-30m': 'a-ring-30m', 'a-1km': 'a-ring-1km', 'b-inside': 'b-ring-inside', 'b-ring': 'b-ring-inside', 'c-inside': 'c-ring-inside',
   'c-ring': 'c-ring-inside', cassini: 'cassini-division', encke: 'encke-gap', pan: 'encke-gap', keeler: 'keeler-gap', daphnis: 'keeler-gap',
   'f-ring-prometheus': 'f-ring', prometheus: 'f-ring', under: 'under-rings', unlit: 'under-rings', eclipse: 'shadow', clouds: 'cloud-tops',
+  bleriot: 'propeller-bleriot', propeller: 'propeller-bleriot', 'propeller-belt-moonlet': 'propeller-belt',
 };
 
 export function findPreset(id: string): Preset | null {

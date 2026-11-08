@@ -5,8 +5,9 @@
 // Material is labelled by its Lagrangian (unperturbed streamline) radius a'. At azimuth theta and time t the
 // streamline sits at r = a' + xi(a', theta, t) and at height zeta(a', theta, t). The Eulerian optical depth is
 //   tau(r, theta) = tau0(a') * J * M,    J = 1 / (dr/da')   (surface-density conservation: streamline crowding)
-// with tau0 the radial profile and M a multiplicative 2-D modulation (hook, 1 for now). a'(r, theta) is found by
-// Newton iteration from a' = r. A gap is empty by construction: no material streamline maps into it.
+// with tau0 the radial profile and M a multiplicative 2-D modulation (the sub-km texture, src/rings/ringTexture.ts, times
+// the propellers, src/rings/propellers.ts; RingStructure fills it). a'(r, theta) is found by Newton iteration from
+// a' = r. A gap is empty by construction: no material streamline maps into it.
 //
 // Sources of xi / zeta (summed):
 //   * moonlets in gaps (Pan, Daphnis): the universal Hill-problem response (scripts/data/rings/moonlet_response.mjs)
@@ -15,7 +16,8 @@
 //     psi_c = the moonlet's vertical phase at the particle's conjunction, a_moon(t_conj) its radius then (its own
 //     epicycle).
 //   * normal modes of eccentric edges (src/rings/ringModes.ts, added by RingStructure.evalAt);
-//   * (hooks for later work packages: relief = mid-plane height and slope, tauMod = 2-D optical-depth modulation.)
+//   * relief hooks (mid-plane height and slope: the propellers' relief here, more from the relief work package) and
+//     the tauMod sources (2-D optical-depth modulation), both added by RingStructure.
 // Precision: all inputs are offsets (m) from the ring-frame origin r0 / the moonlet, so the float32 GPU version
 // stays precise near the camera.
 
@@ -63,8 +65,12 @@ export interface StreamPoint {
   J: number;
   /** dr/da' (unclamped) */
   drda: number;
-  /** multiplicative 2-D optical-depth modulation (hook) */
+  /** multiplicative 2-D optical-depth modulation (texture x propellers, set by RingStructure.streamAt) */
   tauMod: number;
+  /** sub-footprint variance of that modulation (the ring-layer sheet's prefilter) */
+  tauVar?: number;
+  /** self-gravity-wake strength factor (1 = undisturbed; a propeller's stirred material has none) */
+  wakeMod?: number;
   /** mid-plane height of the material (m) */
   zeta: number;
   /** d zeta / dr, d zeta / (r dtheta) (Eulerian) */
@@ -233,6 +239,7 @@ export function invertStreamlines(evalAt: StructureEval, dr: number, dth: number
   out.drda = drda;
   out.J = J;
   out.tauMod = 1;
+  out.tauVar = 0;
   out.zeta = _e[3];
   // Eulerian slopes: d/dr = J d/da'; d/dS at fixed r = d/dS|a' - (dxi/dS) J d/da'
   out.slopeR = _e[4] * J;

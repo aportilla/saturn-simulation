@@ -93,24 +93,33 @@ void main() {
   // (two generations of at most half a wavelength each, wavelength <= tile / 6).
   float mw = uWakeOn > 0.5 ? uWakeTile / 6.0 : 0.0;
   vec3 p0 = qe * uRingER + qy * uRingEPhi + vec3(0.0, 0.0, z - uRingCamLocal.z);
-  if (!nearShadowCaster(p0, rb + mw, uClass)) {
+  bool cand;   // possibly in view and large enough to be drawn
+  {
     float r = rb + mw;
     vec3 v = uWorldToCam * p0;
     float w = -v.z;
     float tx = uTanHalfFov * uAspect, ty = uTanHalfFov;
     bool outside = w < -r || abs(v.x) > w * tx + r * sqrt(1.0 + tx * tx) || abs(v.y) > w * ty + r * sqrt(1.0 + ty * ty);
-    if (outside || lodCarryParticle(a, uClass, max(length(p0) - mw, 1e-4), p0.z) <= 0.0) { o = vec4(p0, 0.0); return; }
+    cand = !outside && lodCarryParticle(a, uClass, max(length(p0) - mw, 1e-4), p0.z) > 0.0;
   }
+  if (!cand && !nearShadowCaster(p0, rb + mw, uClass)) { o = vec4(p0, 0.0); return; }
 
-  // --- presence: thin by the macroscopic optical depth at the guiding-center (Lagrangian) radius (empty gaps)
+  // --- presence: thin by the macroscopic optical depth at the guiding-center (Lagrangian) radius (empty gaps) times the
+  // 2-D modulation there (sv_ringStructure: sub-km texture, propellers -- the medium carries the same tau0 J M)
   RingSample rs = ringSampleLagrangian(aL, 0.0);
-  float tauM = rs.tau * (1.0 - rs.dust);
+  // (tau factor, -, self-gravity-wake strength factor). The propellers' hash-grid enumeration is costly: it runs for
+  // particles that may be drawn, in the classes a propeller can reach this frame (CPU mask uRpNearMask; elsewhere
+  // their factor is exactly 1). Shadow casters outside the view take the texture only: a shadow-fidelity reduction
+  // (their density inside a propeller's gaps / lobes is the undisturbed one), the drawn particles are exact.
+  bool rpEval = cand && (uRpNearMask & (1 << uClass)) != 0;
+  vec3 smod = rpEval ? ringStructureMod(aL, dthP, 0.0) : ringStructureModNoPropellers(aL, dthP, 0.0);
+  float tauM = rs.tau * (1.0 - rs.dust) * smod.x;
   if (nearU(idx, seed, NS_PRES) * uTauBoxMax >= tauM) { o = vec4(0.0); return; }
 
   // --- self-gravity wakes (Eulerian field), faded out at the particle's (Lagrangian) box edge, where it is too
-  // small to be drawn
+  // small to be drawn, and absent in a propeller's stirred material (sv_ringStructure wake factor)
   vec2 ql = vec2(uRingCamLocal.x + qe, uRingCamLocal.y + qy);
-  float fw = 1.0 - smoothstep(0.85 * D, D, max(abs(qx), abs(qy)));
+  float fw = (1.0 - smoothstep(0.85 * D, D, max(abs(qx), abs(qy)))) * smod.z;
   vec2 dw = fw > 0.0 ? wakeDisplacement(ql) * fw : vec2(0.0);
 
   vec3 pl = vec3(qe + dw.x, qy + dw.y, z - uRingCamLocal.z);          // camera-relative, local axes

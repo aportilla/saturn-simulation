@@ -8,10 +8,13 @@
 //     (ringModes.ts EDGE_FEATURES: phases at the ring-frame origin) and the ring frame (Pipeline.render), and
 //   * is the CPU mirror: the camera's Lagrangian position for the near field, tau at the camera for the HUD,
 //     tests (window.__sv.pipeline.ctx.structure).
+// The 2-D optical-depth modulation M (tauMod hooks) comes from the sub-km texture (`texture`, src/rings/ringTexture.ts)
+// and the propeller moonlets (`propellers`, src/rings/propellers.ts); both are owned here (uniforms merged into this
+// object's, updated in update(), CPU mirrors through tauModAt / streamAt).
 // Without the table (load failure) it is the identity map (uRsOn = 0): straight edges, as before.
 import { ClampToEdgeWrapping, DataTexture, FloatType, NearestFilter, RGBAFormat, Vector2, Vector4 } from 'three';
 import type { FrameState } from '../core/FrameState';
-import { PROFILE_DR_KM, PROFILE_R_MIN_KM } from './RingProfile';
+import { PROFILE_DR_KM, PROFILE_R_MIN_KM, type RingProfile } from './RingProfile';
 import { SATURN, orbitalFrequencies, shearParameter } from '../core/constants';
 import { dataUrl } from '../core/assets';
 import {
@@ -19,6 +22,8 @@ import {
   type MoonletParams, type MoonletTableMeta, type StreamPoint,
 } from './streamlines';
 import { EDGE_FEATURES, featureDisplacement } from './ringModes';
+import { RingTexture, texAmplitude } from './ringTexture';
+import { PropellerSystem } from './propellers';
 
 /** moonlet slots in the shader (uRsMl has 3 vec4 per slot) */
 export const RS_MOONLETS = 2;
@@ -34,7 +39,7 @@ const DEFAULT_MOONLETS = [
 ];
 
 function emptyPoint(): StreamPoint {
-  return { da: 0, J: 1, drda: 1, tauMod: 1, zeta: 0, slopeR: 0, slopeT: 0 };
+  return { da: 0, J: 1, drda: 1, tauMod: 1, tauVar: 0, wakeMod: 1, zeta: 0, slopeR: 0, slopeT: 0 };
 }
 
 async function loadTable(base = dataUrl('data/rings/moonlet_response')): Promise<MoonletTable | null> {
@@ -76,6 +81,12 @@ export class RingStructure {
   phi0 = 0;
   /** true when a moonlet's zone lies within the near field's reach of the camera */
   nearActive = false;
+  /** sub-km optical-depth texture (tauMod hook rsTauModTexture); `texture.amp` 0 switches it off */
+  readonly texture: RingTexture;
+  /** propeller moonlets (tauMod hook rsTauModPropellers, relief hook rsReliefPropellers); `propellers.scale` 0: off */
+  readonly propellers: PropellerSystem;
+  /** the radial profile (the texture's amplitude law reads its 1 km level); attached by the pipeline */
+  private profile: RingProfile | null = null;
 
   readonly uniforms: {
     uRsTab: { value: DataTexture | null };
@@ -89,10 +100,12 @@ export class RingStructure {
     uRsMode: { value: Vector4[] };
     uRsModeF: { value: Int32Array };
     uRsFeat: { value: Vector4[] };
-  };
+  } & RingTexture['uniforms'] & PropellerSystem['uniforms'];
 
   private constructor(table: MoonletTable | null) {
     this.table = table;
+    this.texture = new RingTexture();
+    this.propellers = new PropellerSystem(this.texture, table);
     const meta = table?.meta;
     this.moonlets = DEFAULT_MOONLETS.slice(0, RS_MOONLETS).map((m) => {
       const j = meta?.moonlets.find((x) => x.id === m.id);
@@ -124,7 +137,14 @@ export class RingStructure {
       uRsMode: { value: Array.from({ length: RS_MODES }, () => new Vector4()) },
       uRsModeF: { value: new Int32Array(RS_MODES) },
       uRsFeat: { value: Array.from({ length: RS_FEATURES }, () => new Vector4(1e12, -1, 1e-12, 0)) },
+      ...this.texture.uniforms,
+      ...this.propellers.uniforms,
     };
+  }
+
+  /** The radial profile: the texture's amplitude law (CPU mirror) reads its 1 km-prefiltered level. */
+  attachProfile(p: RingProfile): void {
+    this.profile = p;
   }
 
   static async load(): Promise<RingStructure> {
@@ -142,6 +162,9 @@ export class RingStructure {
     const idx0 = (this.r0 - PROFILE_R_MIN_KM * 1000) / (PROFILE_DR_KM * 1000);
     const i0 = Math.floor(idx0);
     u.uRsIdx0.value.set(i0, idx0 - i0);
+    // 2-D optical-depth modulation sources: sub-km texture (flow model at r0) and propellers
+    this.texture.update(f.t, this.r0, this.phi0);
+    this.propellers.update(f.t, this.r0, this.phi0);
     let on = false;
     const T = this.table;
     for (let k = 0; k < this.moonlets.length; k++) {
@@ -238,6 +261,11 @@ export class RingStructure {
         o[2] += this.edgeModeScale * this._m[2];
       }
     }
+    // relief hooks (sv_ringStructure ringStructureRelief): the propellers' (the relief package adds its sources)
+    if (wantZ) {
+      this.propellers.reliefAt(aL, dth, this._z);
+      o[3] += this._z[0]; o[4] += this._z[1]; o[5] += this._z[2];
+    }
     const T = this.table;
     if (!T) return;
     for (const p of this.params) {
@@ -255,15 +283,79 @@ export class RingStructure {
     }
   };
   private readonly _m = [0, 0, 0, 0, 0, 0];
+  private readonly _z = [0, 0, 0];
+
+  /** amplitude A of the sub-km texture at Lagrangian offset aL: the 1 km-prefiltered profile (as the GLSL) */
+  textureAmplitudeAt(aL: number): number {
+    const p = this.profile;
+    const d = p?.texA?.image.data as Float32Array | undefined;
+    if (!p || !d) return 0;
+    const fi0 = (this.r0 + aL - PROFILE_R_MIN_KM * 1000) / (PROFILE_DR_KM * 1000);
+    if (fi0 < -0.5 || fi0 > p.levelCounts[0] - 0.5) return 0;
+    const L = Math.min(2, p.levelOffsets.length - 1), sc = 2 ** L;
+    const n = p.levelCounts[L];
+    const c = Math.min(Math.max((fi0 - 0.5 * (sc - 1)) / sc, 0), n - 1);
+    const j0 = Math.floor(c), j1 = Math.min(j0 + 1, n - 1), f = c - j0;
+    const off = p.levelOffsets[L];
+    const tau = d[(off + j0) * 4] * (1 - f) + d[(off + j1) * 4] * f;
+    const wake = d[(off + j0) * 4 + 3] * (1 - f) + d[(off + j1) * 4 + 3] * f;
+    return tau > 0 ? texAmplitude(tau, wake) : 0;
+  }
+
+  /**
+   * The 2-D modulation at Lagrangian offset aL (m), azimuth offset dth (rad), footprint fp (m): texture x propellers,
+   * [mean tau factor, sub-footprint variance, self-gravity-wake strength factor] (sv_ringStructure ringStructureMod).
+   */
+  tauModAt(aL: number, dth: number, fp = 0, out: number[] = [1, 0, 1]): number[] {
+    const t = this.texture.evalAt(aL, dth, fp, this.textureAmplitudeAt(aL), this._t);
+    const p = this.propellers.tauModAt(aL, dth, fp, this._p);
+    out[0] = t[0] * p[0];
+    out[1] = t[1] * p[0] * p[0] + p[1] * t[0] * t[0] + t[1] * p[1];
+    out[2] = p[2];
+    return out;
+  }
+  private readonly _t = [1, 0];
+  private readonly _p = [1, 0, 1];
+
+  /**
+   * Upper bound of the modulation within a box of half-width hw (m) around the point prepared by prepareNear (the
+   * near field thins its particles by tau0 M / tauMax: tauMax must cover the largest M in each class's box).
+   */
+  maxTauModNear(rAbs: number, hw: number): number {
+    // texture: the clamp of F at the largest amplitude within the box (tau and wake of the 1 km level)
+    let A = 0;
+    for (let dr = -hw; dr <= hw; dr += Math.max(250, hw / 64)) A = Math.max(A, this.textureAmplitudeAt(rAbs + dr - this.r0));
+    return this.texture.maxFactor(A) * this.propellers.boxFactor(hw);
+  }
+  /** Collect the propellers around the SEF point (r, theta) for maxTauModNear (once per near-field re-fit). */
+  prepareNear(r: number, theta: number, reach = NEAR_REACH): void {
+    this.propellers.collectNear(r, theta, reach);
+  }
+  /** Signature of the propeller bounds of the given box half-widths (changes when a propeller drifts into a box). */
+  nearBoundKey(boxes: ArrayLike<number>): string {
+    let k = '';
+    for (let i = 0; i < boxes.length; i++) k += `${this.propellers.boxFactor(boxes[i]).toFixed(2)},`;
+    return k;
+  }
 
   /** Streamline state at the Eulerian point (dr = r - r0, dth = azimuth - phi0) of the current ring frame. */
   streamAt(dr: number, dth: number, fp = 0, wantZ = false, out: StreamPoint = emptyPoint()): StreamPoint {
     if (this.uniforms.uRsOn.value < 0.5) {
       Object.assign(out, emptyPoint());
-      return out;
+      if (wantZ) {
+        this.propellers.reliefAt(dr, dth, this._z);
+        out.zeta = this._z[0]; out.slopeR = this._z[1]; out.slopeT = this._z[2];
+      }
+    } else {
+      invertStreamlines(this.evalAt, dr, dth, fp, this.uniforms.uRsJFloor.value, wantZ, out);
     }
-    return invertStreamlines(this.evalAt, dr, dth, fp, this.uniforms.uRsJFloor.value, wantZ, out);
+    this.tauModAt(dr + out.da, dth, fp * out.J, this._tm);
+    out.tauMod = this._tm[0];
+    out.tauVar = this._tm[1];
+    out.wakeMod = this._tm[2];
+    return out;
   }
+  private readonly _tm = [1, 0, 1];
 
   /** Streamline state at an SEF radius r (m) and azimuth theta (rad). */
   streamAtSEF(r: number, theta: number, fp = 0, wantZ = false, out?: StreamPoint): StreamPoint {
@@ -310,6 +402,7 @@ export class RingStructure {
 
   dispose(): void {
     this.uniforms.uRsTab.value?.dispose();
+    this.texture.dispose();
   }
 }
 

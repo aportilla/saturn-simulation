@@ -6,7 +6,8 @@
 //
 // 1. drawn vs expected  per place (astronaut=0, statistical occlusion culling switched off for the comparison):
 //    measured = particles of class k in the near-field R0 read-back that are drawn (in view) and >= 0.5 display
-//    px in radius; expected = Monte Carlo of n_k(a) tau_macro(r) over the class box, the Gaussian layer height,
+//    px in radius; expected = Monte Carlo of n_k(a) tau_macro(r) M(r, theta) over the class box (M = the 2-D tau
+//    modulation of sv_ringStructure: sub-km texture, propellers; CPU mirror), the Gaussian layer height,
 //    the class's power-law radii and the view frustum, with the same >= 1 px condition. Ratio within
 //    1 +- max(4/sqrt(expected), 0.04) for the classes with the most expected particles (>= 300).
 // 2. HUD count line     pipeline.stats()['near.count'] starts with "complete" at every place checked, and at the
@@ -38,6 +39,10 @@ async function countClasses(page, nClasses, nMc) {
     const eR = f.ring.eR, eP = f.ring.ePhi, cam = f.ring.camLocal;
     const r0 = f.ring.r0 + cam.x;
     const tauMacro = (rm) => { const l = prof.local(rm); return l.tau * (1 - l.dust); };
+    // the 2-D modulation of sv_ringStructure (sub-km texture, propellers) at a local-frame offset (lx, ly) from the
+    // camera: the particles' presence follows tau0 M (CPU mirror, window.__sv.pipeline.ctx.structure)
+    const st = sv.pipeline.ctx.structure, mo = [1, 0, 1];
+    const tauMod = (lx, ly) => (st.tauModAt ? st.tauModAt(cam.x + lx, Math.atan2(cam.y + ly, f.ring.r0 + cam.x + lx), 0, mo)[0] : 1);
     // expected counts for every active class, then measure the largest
     const exp = [];
     for (const c of near.classes) {
@@ -52,7 +57,7 @@ async function countClasses(page, nClasses, nMc) {
         const x = lx * eR.x + ly * eP.x, y = lx * eR.y + ly * eP.y, z = zz - cam.z;
         const s = Math.hypot(lx, ly, z);
         if (a / (s * pa) < 0.5 || !inFrustum(x, y, z, 1.2 * a)) continue;
-        acc += tauMacro(r0 + lx);
+        acc += tauMacro(r0 + lx) * tauMod(lx, ly);
       }
       exp.push({ k, D, lo, hi, slots: c.slots, row0: c.row0, rows: c.rows, expected: (lod.nPerTau[k] * (2 * D) ** 2 * acc) / nMc });
     }

@@ -22,7 +22,8 @@
 //      drawn (>= 1000 >= 1 px; the boxes are Lagrangian) and vanish with straight edges (edgeWaveScale 0: the camera
 //      is then over the gap), and near field + medium / medium alone in the lower half is 0.8 .. 1.25 -- checked
 //      once nearDraw.vert.glsl lights particles through sv_ringStructure (ringSampleLocal), informational before.
-// The sub-km fine-structure noise is switched off for checks 1-5 (uRlFineAmp = 0), the near field too (sheet only).
+// The sub-km texture and the propellers (the 2-D tau modulation of sv_ringStructure: structure.texture.amp = 0,
+// structure.propellers.scale = 0) are switched off for checks 1-5, the near field too (sheet only).
 // usage: node scripts/test/edges.mjs [--base URL] [--out DIR] [--t ISO] [--w 1280 --h 720]
 //        [--views keeler-0,keeler-out,keeler-in,encke-out,encke-in,b-edge-90,b-edge-180,near-crest]
 import { join } from 'node:path';
@@ -84,8 +85,9 @@ await withHarness('edges', { usage: 'node scripts/test/edges.mjs [--base URL] [-
       const res = await page.evaluate(async (edgesKm, measure, rm) => {
         const sv = window.__sv;
         const frames = (n) => new Promise((res) => { let k = 0; const f = () => (++k >= n ? res() : requestAnimationFrame(f)); requestAnimationFrame(f); });
-        const rl = sv.pipeline.passes.rings.inner;
-        rl.u.uRlFineAmp.value = 0;
+        const stc = sv.pipeline.ctx.structure;
+        stc.texture.amp = 0;
+        stc.propellers.scale = 0;
         const rt = sv.pipeline.ctx.hdrRT;
         const w = rt.width, h = rt.height;
         const read = async (dbg) => {
@@ -97,7 +99,8 @@ await withHarness('edges', { usage: 'node scripts/test/edges.mjs [--base URL] [-
         };
         const b7 = await read(7), b9 = await read(9);
         sv.frame.settings.debugView = 0;
-        rl.u.uRlFineAmp.value = 1;
+        stc.texture.amp = 1;
+        stc.propellers.scale = 1;
         const st = sv.pipeline.ctx.structure, prof = sv.pipeline.ctx.profile;
         // unperturbed (Lagrangian) edge radii: half-level crossings of the profile next to the catalogued edges
         const tauKm = (rKm) => prof.tauAtKm(rKm);

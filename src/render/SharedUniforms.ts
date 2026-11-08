@@ -8,6 +8,9 @@ import type { RingLod } from '../rings/RingLod';
 import type { WakeField } from '../rings/WakeField';
 import type { RingStructure } from '../rings/RingStructure';
 
+/** further sun-shadowing spheres in sv_lighting (uShadowSph, MAX_SHADOW_SPH) */
+export const MAX_SHADOW_SPH = 8;
+
 export class SharedUniforms {
   readonly u: Record<string, { value: any }>;
 
@@ -58,6 +61,9 @@ export class SharedUniforms {
       // sv_lighting
       uMoonCount: { value: 0 },
       uMoonPosR: { value: moonPos },
+      // further sun-shadowing spheres (propeller moonlets near the camera), filled by PropellerMoonletPass.update
+      uShadowSphN: { value: 0 },
+      uShadowSph: { value: Array.from({ length: MAX_SHADOW_SPH }, () => new Vector4(1e12, 0, 0, 1)) },
       // sv_ringLod (shared objects owned by RingLod)
       ...lod.uniforms,
       // sv_wakes (shared objects owned by WakeField)
@@ -101,5 +107,7 @@ export class SharedUniforms {
       arr[i].set(m.pos.x - f.camPos.x, m.pos.y - f.camPos.y, m.pos.z - f.camPos.z, m.meanRadius);
     }
     u.uMoonCount.value = n;
+    // (the further shadowing spheres are set later in the frame by the pass that owns them; none unless it runs)
+    u.uShadowSphN.value = 0;
   }
 }

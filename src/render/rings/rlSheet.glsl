@@ -129,17 +129,17 @@ void rlMainSheet(vec3 rd, vec3 p, float dr, float theta, float fp, float unresFr
   tauOut = 0.0;
   float r = uRingR0 + dr;
   // 2-D ring structure (sv_ringStructure): the profile at the Lagrangian (streamline) radius, tau x J x M; the
-  // footprint in Lagrangian units (crowded streamlines put more material into the same footprint)
+  // footprint in Lagrangian units (crowded streamlines put more material into the same footprint). M (sub-km texture x
+  // propellers) is folded into the transmission-preserving prefilter with its sub-footprint variance (rlApplyTauMod).
   vec3 lh = ringLocalFromRel(p);
   RingStream st = ringStream(dr, atan(lh.y, uRingR0 + lh.x), fp);
   float drs = dr + st.da;
   float fpL = fp * st.J;
   float xF = uRlIdx0F + drs / uRingDr0;
   RlS S = rlSampleP(uRlIdx0I, xF, fpL);
-  float kF = floor(xF);
+  rlScaleTau(S, unresFrac * st.J);
+  rlApplyTauMod(S, st.tauMod, st.tauVar);
   float tauRef = rlTauM(S, 0.918);
-  rlScaleTau(S, rlFineFactor(uRlIdx0I + kF, xF - kF, fpL, tauRef, S.wake) * unresFrac * st.J * st.tauMod);
-  tauRef = rlTauM(S, 0.918);
   float spoke = rlSpokeTau(r, theta);
   tauOut = tauRef;
   if (tauRef <= 1e-7 && spoke <= 0.0) return;
@@ -156,8 +156,9 @@ void rlMainSheet(vec3 rd, vec3 p, float dr, float theta, float fp, float unresFr
   // (vertical relief, e.g. Daphnis' vertical edge waves: ringStreamRelief exposes zeta; rendering it geometrically
   // -- heights and shadows -- is the relief work package's)
 
-  // ---- direct sunlight, with unresolved wakes as a two-column mixture
-  float ws = uRlWakeStat.w > 0.0 ? clamp(S.wake / uRlWakeStat.w, 0.0, 2.0) * uRlWakeScale : 0.0;
+  // ---- direct sunlight, with unresolved wakes as a two-column mixture (none in a propeller's stirred material:
+  // RingStream .wakeMod)
+  float ws = uRlWakeStat.w > 0.0 ? clamp(S.wake / uRlWakeStat.w, 0.0, 2.0) * uRlWakeScale * st.wakeMod : 0.0;
   float fB = uRlWakeStat.x;
   vec3 IFsun;
   bool cols = ws * fB > 1e-3;

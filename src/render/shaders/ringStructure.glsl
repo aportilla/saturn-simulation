@@ -22,23 +22,32 @@
 // API (offsets keep float32 precise near the camera: dr = r - uRingR0 (ringDrFromLocal), dth = azimuth offset from
 // the ring-frame origin, atan(l.y, uRingR0 + l.x); fp = radial pixel footprint (m), 0 = full resolution):
 //   RingStream ringStream(dr, dth, fp)          Eulerian point -> Lagrangian offset .da (a' - r), density .J,
-//                                               2-D modulation .tauMod (no height: cheaper)
+//                                               2-D modulation .tauMod / .tauVar / .wakeMod (no height: cheaper)
 //   RingStream ringStreamRelief(dr, dth, fp)    the same plus .zeta (mid-plane height, m) and .slope (dzeta/dr,
 //                                               dzeta/(r dtheta)) -- the vertical-relief hook
+//   RingStream ringStreamMap(dr, dth, fp)       the map only (.tauMod = 1): callers that apply the modulation
 //   vec3  ringStreamXi(aL, dth, fp)             forward map at the Lagrangian offset aL = a' - uRingR0: (xi, zeta,
 //                                               J) (the near field displaces its particles, which carry a')
-//   RingSample ringSampleStream(dr, dth, fp)    THE main-ring lookup: profile at a', tau and Sigma x J x tauMod
+//   RingSample ringSampleStream(dr, dth, fp)    the lighting / occlusion lookup: profile at a', tau and Sigma x J x
+//                                               the modulation's LIGHT part (rsModFor: none by default)
 //   RingSample ringSampleLocal(l, fp)           the same for a local-frame point (ringLocalFromRel)
 //   RingSample ringSampleLagrangian(aL, fp)     the unperturbed profile at a Lagrangian offset (precise index)
 //   RingSample ringSampleIdxPrecise(I, sub, fp) profile at level-0 index I + sub (integer + small fraction)
 //   float ringSunTransmissionStream(p, fp)      ringSunTransmission through the structure
 //   bool  rsIdentityAt(dr)                      cheap test: no source can displace material near dr
 //   void ringLocalPolar(l, out dr, out dth)
-// Hooks for later work packages (identity now; keep their signatures):
+// Hooks (sums of independent sources, each in a function of its own):
 //   ringStructureRelief(aL, dth)  -> vec3(height, dheight/da', dheight/dS)  bending waves, B-ring-edge structures,
-//                                    propeller/moonlet relief ... (added to the moonlets' zeta)
-//   ringStructureTauMod(aL, dth)  -> multiplicative 2-D optical-depth modulation (azimuthal fine texture,
-//                                    propellers); must average to ~1 over azimuth
+//                                    propeller relief (sv_ringPropellers) ... (added to the moonlets' zeta)
+//   ringStructureTauModStat(aL, dth, fp) -> vec2(mean factor at the radial footprint fp, variance of its sub-footprint
+//                                    part): the 2-D optical-depth modulation M of the sub-km texture (sv_ringTexture) x
+//                                    the propellers (sv_ringPropellers); averages to ~1. ringStructureTauMod(...) = .x.
+//                                    The variance lets the ring-layer sheet fold the unresolved part into its
+//                                    transmission-preserving prefilter (rlApplyTauMod, rlOptics.glsl).
+//   ringStructureMod(aL, dth, fp) -> vec3(the two above, self-gravity-wake strength factor 0..1): one evaluation of
+//                                    all sources; the wake factor (1 = undisturbed; the propellers' stirred material
+//                                    has none) scales the wake contrast of every renderer (RingStream .wakeMod).
+// Include order inside this chunk: sv_ringTexture, sv_ringPropellers (at the hooks below).
 #ifndef SV_RING_STRUCTURE
 #define SV_RING_STRUCTURE
 
@@ -63,26 +72,60 @@ uniform vec4 uRsFeat[RS_FEATURES];  // (a_edge - r0 [m], material side (-1: inwa
 struct RingStream {
   float da;       // a' - r (m)
   float J;        // surface-density factor 1 / max(dr/da', floor)
-  float tauMod;   // multiplicative 2-D optical-depth modulation
+  float tauMod;   // multiplicative 2-D optical-depth modulation (mean at the footprint)
+  float tauVar;   // variance of its sub-footprint part (for the sheet's transmission-preserving prefilter)
+  float wakeMod;  // self-gravity-wake strength factor (1 = undisturbed; 0.1 in a propeller's stirred material)
   float zeta;     // mid-plane height of the material (m) (ringStreamRelief only)
   vec2 slope;     // (dzeta/dr, dzeta/(r dtheta)) (ringStreamRelief only)
   vec2 daGrad;    // (d da/dr, d da/(r dtheta)): linear extrapolation of da around this point (march cache)
 };
 
-// ---------------------------------------------------------------- hooks (later work packages)
-// One stub per source so that independent work packages fill different functions (each may move its body into a
+// ---------------------------------------------------------------- hooks
+// One function per source so that independent work packages fill different functions (each may move its body into a
 // chunk of its own; keep the names and signatures, or update the sums below and their documentation).
+// Sources in chunks of their own (included here; see their headers):
+//   sv_ringTexture     vec2 rsTauModTexture(aL, dth, fp)      sub-km optical-depth texture (src/rings/ringTexture.ts)
+//   sv_ringPropellers  vec2 rsTauModPropellers(aL, dth, fp)   propeller partial gaps, lobes, moonlet wakes
+//                      vec3 rsReliefPropellers(aL, dth)       their vertical relief (src/rings/propellers.ts)
+#include <sv_ringTexture>
+#include <sv_ringPropellers>
 // Vertical relief sources at Lagrangian offset aL (m) and azimuth offset dth: (height (m), d/da', d/dS) each.
 vec3 rsReliefWaves(float aL, float dth) { return vec3(0.0); }       // bending waves, C-ring corrugation (relief package)
 vec3 rsReliefSites(float aL, float dth) { return vec3(0.0); }       // B-ring-edge structures, embedded moonlets (relief package)
-vec3 rsReliefPropellers(float aL, float dth) { return vec3(0.0); }  // propeller moonlets (texture / propeller package)
 vec3 ringStructureRelief(float aL, float dth) {
   return rsReliefWaves(aL, dth) + rsReliefSites(aL, dth) + rsReliefPropellers(aL, dth);
 }
-// Multiplicative 2-D optical-depth modulation sources at Lagrangian offset aL and azimuth offset dth.
-float rsTauModTexture(float aL, float dth) { return 1.0; }     // azimuthal fine texture (texture / propeller package)
-float rsTauModPropellers(float aL, float dth) { return 1.0; }  // propeller partial gaps, moonlet wakes (same package)
-float ringStructureTauMod(float aL, float dth) { return rsTauModTexture(aL, dth) * rsTauModPropellers(aL, dth); }
+// Multiplicative 2-D optical-depth modulation at Lagrangian offset aL, azimuth offset dth and radial footprint fp:
+// (mean factor, variance of the part below the footprint) of the product of independent sources, and the self-gravity-
+// wake strength factor.
+vec3 ringStructureMod(float aL, float dth, float fp) {
+  vec2 a = rsTauModTexture(aL, dth, fp);
+  vec3 b = rsPropellersMod(aL, dth, fp);
+  return vec3(a.x * b.x, a.y * b.x * b.x + b.y * a.x * a.x + a.y * b.y, b.z);
+}
+vec2 ringStructureTauModStat(float aL, float dth, float fp) { return ringStructureMod(aL, dth, fp).xy; }
+float ringStructureTauMod(float aL, float dth, float fp) { return ringStructureMod(aL, dth, fp).x; }
+// ringStructureMod without the propellers, for callers that know none can reach the point (the near field's class
+// mask uRpNearMask, src/rings/propellers.ts nearClassMask): identical there, without the enumeration's cost
+vec3 ringStructureModNoPropellers(float aL, float dth, float fp) { return vec3(rsTauModTexture(aL, dth, fp), 1.0); }
+// What rsInvert evaluates of the modulation: FULL (the sheet: mean, variance, wake factor at the footprint), LIGHT
+// (ringSampleStream / ringSampleLocal: lighting and occlusion lookups, called per vertex / per particle / per pixel
+// by the near field, the astronaut and the moonlet bodies: none by default -- the propellers' enumeration costs
+// 10-20 ms per frame there and the texture several ms; the particles' NUMBER follows the full modulation (presence,
+// nearUpdate.glsl), only their lighting column is the undisturbed one; #define RS_LIGHT_TEXTURE adds the texture at a
+// footprint >= RS_LIGHT_FP, whose finer octaves average out along any sun or view path through the layer), NONE (the
+// march's map cache: the march applies the modulation per step itself).
+#define RS_MOD_FULL 0
+#define RS_MOD_LIGHT 1
+#define RS_MOD_NONE 2
+#define RS_LIGHT_FP 64.0
+vec3 rsModFor(int mm, float aL, float dth, float fp) {
+  if (mm == RS_MOD_FULL) return ringStructureMod(aL, dth, fp);
+#ifdef RS_LIGHT_TEXTURE
+  if (mm == RS_MOD_LIGHT) return vec3(rsTauModTexture(aL, dth, max(fp, RS_LIGHT_FP)).x, 0.0, 1.0);
+#endif
+  return vec3(1.0, 0.0, 1.0);
+}
 
 // ---------------------------------------------------------------- moonlet response table
 // group g at (b, t): (F, dF/db, dF/dt); 0 outside the time range and beyond b_hi; b >= b_lo (caller clamps)
@@ -238,11 +281,14 @@ bool rsIdentityAt(float dr) {
   return true;
 }
 
-RingStream rsInvert(float dr, float dth, float fp, bool wantZ) {
+RingStream rsInvert(float dr, float dth, float fp, bool wantZ, int mm) {
   RingStream st;
-  st.da = 0.0; st.J = 1.0; st.tauMod = 1.0; st.zeta = 0.0; st.slope = vec2(0.0); st.daGrad = vec2(0.0);
+  st.da = 0.0; st.J = 1.0; st.tauMod = 1.0; st.tauVar = 0.0; st.wakeMod = 1.0; st.zeta = 0.0; st.slope = vec2(0.0); st.daGrad = vec2(0.0);
   if (rsIdentityAt(dr)) {
-    st.tauMod = ringStructureTauMod(dr, dth);
+    vec3 tm = rsModFor(mm, dr, dth, fp);
+    st.tauMod = tm.x;
+    st.tauVar = tm.y;
+    st.wakeMod = tm.z;
     if (wantZ) { vec3 h = ringStructureRelief(dr, dth); st.zeta = h.x; st.slope = h.yz; }
     return st;
   }
@@ -255,7 +301,10 @@ RingStream rsInvert(float dr, float dth, float fp, bool wantZ) {
   rsEval(x, dth, fp, wantZ, r, z);
   st.da = x - dr;
   st.J = 1.0 / max(1.0 + r.y, uRsJFloor);
-  st.tauMod = ringStructureTauMod(x, dth);
+  vec3 tm = rsModFor(mm, x, dth, fp * st.J);
+  st.tauMod = tm.x;
+  st.tauVar = tm.y;
+  st.wakeMod = tm.z;
   // a'(r, S): da'/dr = J, da'/dS = -J dxi/dS  ->  gradient of da = a' - r
   st.daGrad = vec2(st.J - 1.0, -st.J * r.z);
   // Eulerian slopes: d/dr = J d/da';  d/dS at fixed r = d/dS|a' - (dxi/dS) J d/da'
@@ -264,8 +313,10 @@ RingStream rsInvert(float dr, float dth, float fp, bool wantZ) {
   return st;
 }
 
-RingStream ringStream(float dr, float dth, float fp) { return rsInvert(dr, dth, fp, false); }
-RingStream ringStreamRelief(float dr, float dth, float fp) { return rsInvert(dr, dth, fp, true); }
+RingStream ringStream(float dr, float dth, float fp) { return rsInvert(dr, dth, fp, false, RS_MOD_FULL); }
+RingStream ringStreamRelief(float dr, float dth, float fp) { return rsInvert(dr, dth, fp, true, RS_MOD_FULL); }
+// the map only (.da, .J, .daGrad; .tauMod = 1): for callers that apply the modulation themselves (the march)
+RingStream ringStreamMap(float dr, float dth, float fp) { return rsInvert(dr, dth, fp, false, RS_MOD_NONE); }
 
 // forward map at the Lagrangian offset aL = a' - r0: (xi (m), zeta (m), J)
 vec3 ringStreamXi(float aL, float dth, float fp) {
@@ -319,10 +370,12 @@ RingSample ringSampleIdxPrecise(float I, float sub, float fp) {
 // the (unperturbed) profile at the Lagrangian offset aL = a' - r0 (precise)
 RingSample ringSampleLagrangian(float aL, float fp) { return ringSampleIdxPrecise(uRsIdx0.x, uRsIdx0.y + aL / uRingDr0, fp); }
 
-// THE main-ring lookup: the profile at the Lagrangian radius, tau and Sigma scaled by J x tauMod. The footprint is
-// taken in Lagrangian units (x J: a crowded region maps more material into the same Eulerian footprint).
+// THE main-ring lookup for lighting and occlusion: the profile at the Lagrangian radius, tau and Sigma scaled by J x
+// the modulation's LIGHT part (none by default: see rsModFor). The footprint is taken in
+// Lagrangian units (x J: a crowded region maps more material into the same Eulerian footprint). The medium's own tau
+// (sheet: ringStream, march: per step) and the near field's presence (ringStructureMod) use the full modulation.
 RingSample ringSampleStream(float dr, float dth, float fp) {
-  RingStream st = ringStream(dr, dth, fp);
+  RingStream st = rsInvert(dr, dth, fp, false, RS_MOD_LIGHT);
   RingSample s = ringSampleLagrangian(dr + st.da, fp * st.J);
   float f = st.J * st.tauMod;
   s.tau *= f;
