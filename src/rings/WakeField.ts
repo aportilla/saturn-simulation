@@ -111,6 +111,9 @@ export class WakeField {
     uWakeOn: { value: 0 },
     // (ln gamma, 1/Rc^2, minimum density factor of the current pattern, maximum density factor)
     uWakeShape: { value: new Vector4(Math.log(0.16), 1 / (R_C * R_C), 1, 1) },
+    // mass correction of wakeDensity's dense part (the single-branch inverse misses folded branches of the forward
+    // map): k with <Wraw + (k - 1) max(Wraw - 1, 0)> = 1, measured on the GPU by the ring-layer pass (1 = none)
+    uWakeMassK: { value: 1 },
   };
 
   constructor(seed = 12345) {

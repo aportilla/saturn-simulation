@@ -4,7 +4,8 @@
 // Requires sv_common.
 //
 //   vec2  wakeDisplacement(vec2 q)  displacement (m) of a particle whose undisplaced (epicyclic) position is q
-//   float wakeDensity(vec2 x)       Eulerian surface-density factor at x (mean 1; gamma^s .. gamma^-s)
+//   float wakeDensity(vec2 x)       Eulerian surface-density factor at x (mean 1; gamma^s .. gamma^-s), with the
+//                                   mass correction uWakeMassK of the single-branch inverse (wakeDensityRaw)
 //   float wakeDensityFiltered(vec2 x, float footprint)   same, contrast faded out when the footprint (m)
 //                                   approaches the wake spacing (anti-aliasing for distant views)
 //   float wakeMinDensity()          lower bound of wakeDensity() for the current pattern (for culling)
@@ -20,6 +21,7 @@ uniform vec4 uWakeGen[3];     // [0] older, [1] younger generation: (amplitude s
 uniform vec3 uWakeSel;        // per generation: 0 -> field A (xy), 1 -> field B (zw)
 uniform float uWakeOn;        // 0 / 1
 uniform vec4 uWakeShape;      // (ln gamma, 1/Rc^2, min density factor, max density factor)
+uniform float uWakeMassK;     // mass correction of the dense part (wakeDensity), measured by the ring-layer pass
 
 // Wave normal n and wavenumber |k| (rad/m) of generation g (mean mode, sheared).
 void wakeGenGeom(int g, out vec2 n, out float km) {
@@ -118,13 +120,23 @@ vec2 wakeGenInverse(int g, vec2 x, out float J) {
   return q;
 }
 
-// Eulerian surface-density factor (mean ~1) at local position x.
-float wakeDensity(vec2 x) {
+// Density factor 1 / (J_young J_old) of the single-branch inverse (mean ~0.88-0.9, see wakeDensity).
+float wakeDensityRaw(vec2 x) {
   if (uWakeOn < 0.5) return 1.0;
   float J1, J0;
   vec2 q1 = wakeGenInverse(1, x, J1);
   wakeGenInverse(0, q1, J0);
   return clamp(1.0 / (J1 * J0), uWakeShape.z * 0.9, uWakeShape.w * 1.1);
+}
+// Eulerian surface-density factor (mean 1) at local position x. Where the envelope's local wavenumber exceeds the
+// mean by more than ~gamma^a / (1 - gamma^a) the forward map folds in the wake cores (the particles pile up
+// there); the single-branch inverse misses the folded branches, so wakeDensityRaw lacks ~10 % of the mass, all of
+// it in the dense wakes (gaps within ~2 % of the binned density of forward-mapped particles). The excess over the
+// mean is scaled to restore it: W = Wraw + (k - 1) max(Wraw - 1, 0), k = uWakeMassK measured from the live field
+// (RingLayerPass wake-statistics probe), so <W> = 1 like the particle density.
+float wakeDensity(vec2 x) {
+  float w = wakeDensityRaw(x);
+  return w + (uWakeMassK - 1.0) * max(w - 1.0, 0.0);
 }
 
 // Same, with the contrast faded out as the footprint (m) approaches the local wake spacing.

@@ -7,11 +7,11 @@ follow [Adding a tool](#adding-a-tool) so the next session can run it too.
 
 | command | what it checks | runtime* |
 |---|---|---|
-| `npm test` | smoke + physics + counts + seam + exposure against one private dev server; summary table | ~5.5 min |
+| `npm test` | smoke + physics + counts + seam + exposure against one private dev server; summary table | ~6.5 min |
 | `npm run test:smoke` | every place loads and renders cleanly (errors, fallbacks, NaN / negative pixels) | ~1.5 min |
 | `npm run test:physics` | Sun ephemeris, orbital frequencies, near-field particle kinematics | ~15 s |
 | `npm run test:counts` | drawn particle counts vs the analytic expectation, HUD count line, radius sampler | ~30 s |
-| `npm run test:seam` | near field + medium vs medium alone (seams/arcs), particle flux vs render scale | ~2.2 min |
+| `npm run test:seam` | near field + medium vs medium alone (seams/arcs), particle flux vs render scale, the medium's wake representations vs a reference field across the march → sheet handover | ~3.2 min |
 | `npm run test:fps` | uncapped fps table: places × particle quality (informational) | ~2.5 min |
 | `npm run test:exposure` | the camera-pinned astronaut doesn't change the auto exposure (meter mask) | ~45 s |
 | `node scripts/shot.mjs …` / `node scripts/shots.mjs …` | screenshots (one / batch spec) | — |
@@ -93,7 +93,7 @@ run caught tiny negative radiances from the F-ring line profiles, since fixed).
    in `nearCommon.glsl`) reproduces the target density τmax a⁻ᵠ/(π I₂) in every radius bin: |ratio − 1| ≤ 0.02
    when the slot cap does not bind (measured 2e-5).
 
-### seam — `scripts/test/seam.mjs` (`--only seam,flux`, `--views id,…`)
+### seam — `scripts/test/seam.mjs` (`--only seam,flux,handover`, `--views id,…`)
 1. **seam**: per view, mean HDR radiance (`hdrRT`, after the ring layer and before glare / tone mapping, so
    exposure doesn't matter) in horizontal strips over the view's ring rows, averaged over `--realizations 6`
    particle / wake realizations (the frame anchor id is bumped to re-seed), with the near field on and off
@@ -104,17 +104,63 @@ run caught tiny negative radiances from the F-ring line profiles, since fixed).
 
    | view | rows | measured ratios | max step (limit) | notes |
    |---|---|---|---|---|
-   | `arc-repro` | 0.42–1.0 | 0.972 … 1.005 | 0.012 (0.06) | the user-reported arc: 2 km above the unlit A ring, yaw 60, pitch −22 |
-   | `a-ring-1km` | 0.25–1.0 | 0.928 … 1.035 | 0.044 (0.06) | preset |
-   | `a-ring-30m` | 0.35–0.78, 6 strips | 0.952 … 1.019 | 0.056 (0.08) | few large particles per strip → realization noise ±5 % |
-   | `lit-500m` | 0.0–0.55 | 0.914 … 0.967 | 0.019 (0.06) | 500 m below the lit A ring looking up; particles 3–9 % darker than the medium near the camera |
-   | `under-rings` | 0.0–0.45 | 0.974 … 1.080 | 0.075 (0.09) | known: unlit-face particles ~5–8 % brighter than the medium → soft step where the particle range ends |
+   | `arc-repro` | 0.42–1.0 | 1.000 … 1.015 | 0.006 (0.06) | the user-reported arc: 2 km above the unlit A ring, yaw 60, pitch −22 |
+   | `a-ring-1km` | 0.25–1.0 | 0.899 … 0.985 | 0.024 (0.06) | preset; particles 2–10 % darker than the medium (see below) |
+   | `a-ring-30m` | 0.35–0.78, 6 strips | 0.913 … 1.022 | 0.095 (0.10) | few large particles per strip → realization noise ±5 %; grazing far strip ~9 % particle deficit (below) |
+   | `lit-500m` | 0.0–0.55 | 0.887 … 0.945 | 0.021 (0.06) | 500 m below the lit A ring looking up; particles 5–11 % darker than the medium |
+   | `under-rings` | 0.0–0.45 | 0.959 … 1.011 | 0.016 (0.09) | unlit face from below (the former +5–8 % particle excess is gone, limit kept) |
+
+   Measured 2026-11-08 after the sun-path fix (before: arc-repro 0.972 … 1.005 / 0.012, a-ring-1km 0.928 … 1.035 /
+   0.044, a-ring-30m 0.952 … 1.019 / 0.056, lit-500m 0.914 … 0.967 / 0.019, under-rings 0.974 … 1.080 / 0.075). The
+   particles' and the medium's statistical sun paths used 2 fixed wake-density samples that brightened both by up to
+   ~25 % (most for mid-plane boulders); with the shared stratified nodes both are unbiased, the unlit-face particle
+   excess vanished, and what remains on the lit face (particles darker than the medium) is mostly the clipmap
+   prefilter excess of the medium's explicit field (handover, known residual 1); in the grazing far strip of
+   `a-ring-30m` the medium barely changed (its visible top layer has short sun paths) while the boulders darkened
+   ~22 %.
 2. **flux**: particle-only flux (ring layer pass disabled) in the near strips of `a-ring-30m` at render scale
    0.5 vs 1, 4 realizations: sub-pixel particles are rasterized differently at the two scales but the expected
    flux must not change — ratio 1 ± 0.08 (measured 0.983).
+3. **handover** (`--only handover`, `--hviews id,…`, `--hstrips 13`, `--hreal 1`): the medium's own wake
+   representations, near field and far field off, each forced through the ring-layer pass's test hook
+   (`uRlForce` in rlMarch.glsl, installed after the pass's update every frame): `explicit` (march, clipmap wake field
+   with the prefilter correction), `stat` (march, statistical branch), `sheet` (far-field sheet everywhere),
+   `default` (production blend) and `reference` (the shared `wakeDensity` evaluated at every march step and at 12
+   stratified sun-path nodes: no clipmap prefilter — the field the particles follow). Per view, 13 strips × two
+   column regions (left / right half: typically along / across the wakes): reflected radiance L (debug view 0,
+   far pass off) and transmission T (debug view 2); the march weight wM (debug view 12) marks the **handover band**
+   (0.02 < wM < 0.98), strips outside the clipmap's coverage (wake source from debug view 12) are excluded. Checks in
+   the band: sheet / reference within 1 ± 0.08 (L) and 0.06 (T); explicit / reference T within 0.06, L within 0.22
+   (known prefilter excess, below); stat / sheet within 0.03; production / reference step between neighbouring band
+   strips ≤ 0.04 (a seam where the representations meet). Per-view overrides (with their reason) in
+   `HANDOVER_VIEWS`. ~55 s.
 
-The near-field photometry offsets in the table (particles a few % darker on the lit face near the camera,
-5–8 % brighter on the unlit face) are the current state, not targets: tighten the limits when they are fixed.
+   | view (region) | L sheet/ref | L expl/ref | L stat/sheet | L step | T sheet/ref | T expl/ref | T stat/sheet | T step |
+   |---|---|---|---|---|---|---|---|---|
+   | `a-ring-1km` along | 0.988 … 1.001 | 1.082 … 1.128 | 1.001 … 1.002 | 0.031 | 1.010 … 1.032 | 1.000 … 1.016 | 0.998 … 1.001 | 0.016 |
+   | `a-ring-1km` across | 1.040 … 1.048 | 1.027 … 1.033 | 1.002 … 1.003 | 0.008 | 0.983 … 1.049 | 0.895 … 0.980 (0.12) | 0.986 … 1.010 | 0.030 |
+   | `a-1km-yaw120` left | 1.144 … 1.170 (0.18) | 1.052 … 1.068 | 0.940 … 0.992 (0.07) | 0.029 | 0.870 … 1.009 (0.15) | 0.873 … 0.982 (0.15) | 0.987 … 1.017 | 0.041 (0.05) |
+   | `a-1km-yaw120` right | 1.034 … 1.053 | 1.133 … 1.196 | 0.996 … 0.999 | 0.038 | 1.004 … 1.022 | 1.030 … 1.049 | 0.996 … 1.002 | 0.015 |
+   | `unlit-2km` left | 0.912 … 0.965 (0.12) | 1.093 … 1.113 | 1.006 … 1.007 | 0.019 | 1.010 … 1.051 | 0.998 … 1.009 | 1.000 … 1.001 | 0.012 |
+   | `unlit-2km` right | 0.998 … 1.021 | 1.073 … 1.088 | 1.002 … 1.007 | 0.016 | 1.039 … 1.068 (0.08) | 0.980 … 0.992 | 0.999 … 1.001 | 0.024 |
+
+   Measured 2026-11-08 (limits in parentheses where a view overrides the default). Before the Nov 2026 fix (same
+   view, diagnostic probes): the explicit field was 15–26 % brighter than a 32-node sun-path reference (two fixed
+   sun-path samples: through the convexity of exp(−τWs/μ0) their variance leaks into the mean), the statistical
+   transmission 0.60–0.87 of the explicit one across the wakes (the two-column means decorrelated far too fast),
+   the clipmap's explicit transmission 0.57–0.97 of the unfiltered field (density prefilter), and `wakeDensity`
+   carried only ~88 % of the particles' mass (folds of the forward map missed by the single-branch inverse).
+   **Known residuals**: (1) the clipmap's density prefilter makes the explicit field's *reflection* 3–20 % too bright
+   — the wake cores are ~4 m wide (0.1 λ), so even 2–4 m texels spread core material into well-lit gap edges (the
+   sub-texel anti-correlation of density and illumination is lost; with the density taken directly and the sun
+   path from the clipmap the excess disappears, 0.993–0.996): a fix needs resolved cores or a sub-texel model;
+   (2) the two-column *reflection* model (uRlWakeHeff) is within ~5 % at low phase but 10–17 % off at high phase
+   along the wakes (yaw120) and on the unlit face along them; (3) at the band's grazing far end the homogeneous
+   march and sheet already differ by up to ~6 % at high phase (base radiative transfer).
+
+The near-field photometry offsets in the seam table (particles 2–11 % darker than the medium on the lit face, ~9 %
+in the grazing far strip of `a-ring-30m`) and the handover residuals are the current state, not targets: tighten
+the limits when they are fixed.
 
 ### fps — `scripts/test/fps.mjs` (informational unless `--min-fps N`)
 `--presets` (overview, a-ring-1km, a-ring-30m, a-ring-inside, b-ring-inside, c-ring-inside) × `--qualities

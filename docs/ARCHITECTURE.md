@@ -99,6 +99,15 @@ Implications:
   depth-validated upsample) using a per-frame 256×64 LUT of the shared `ringExtinction`/`ringLayerTauBeyond`
   (medium = σ_unres). Own τ pyramid storing ⟨e^{−τ/m}⟩ for path factors m = 1…0.008 (exact footprint-averaged
   transmission at any angle), granola-bar wakes in the sheet, a 6-level wake-density clipmap near the camera.
+  **Wake representations** (must agree in the mean; `npm run test:seam -- --only handover` compares them with a
+  reference explicit field): the march's explicit field (clipmap, ≥ 5 px per wake spacing at the slab crossing),
+  its statistical branch and the sheet (two wake columns fB/Wb/Wg; ≤ 2.5 px), blended over 5 → 2.5 px. The sun
+  path's wake density is the mean at the shared stratified column nodes (`ringSunNodeRise`); the statistical
+  transmission is a per-column Gamma model of the path density with class means/variances/floors measured on the
+  live field (path-statistics probe, `uRlKerT/F` vs χ = H|dir·n|/(|dir_z| λ)); the explicit transmission is
+  corrected for the clipmap's density prefilter (χ_eff = √(χ² + (0.5 d/λσ̄)²), contrast fade); Saturnshine uses the
+  same two columns. Known residual: the clipmap prefilter makes the explicit field's *reflection* 3–20 % too bright
+  (the ~4 m wake cores' sub-texel anti-correlation of density and illumination is lost; scripts/test/README.md).
   Sandbox `sandbox/rings.html`: `debug=1–6` visual views, `debug=7–10` raw values, `phase=0` Lambert diagnostics,
   `half=0` full-resolution march, `near=1`/`far=real` to include the other passes; `window.__rl`.
 
@@ -129,11 +138,17 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   (one particle's draw probability: count contract, display pixels via `uLodPixelAngle`), `lodCarry(a,k,s,dz)`
   (the share of class k the medium leaves out: exact class mean of the former; `a` unused), `ringExtinction(s, z, tau, H, W, out sigTot, out
   sigUnres)`, `ringLayerTauBeyond(z, tau, H, dirSign)`, `ringSlabHalfThickness(H)`, `ringLayerProfile`,
-  `ringLayerColumn`, `ringLayerSegmentTau`. The part of τ in particles below 1 mm (true dust: D ring, gaps,
+  `ringLayerColumn`, `ringLayerSegmentTau`, `ringColumnCentroid(qa, qb)` (column-centroid table `uLodColC` of the
+  total profile, `RingLod.columnCentroidTable`) and `ringSunNodeRise(j, qs, hp)`: the `LOD_SUN_NODES` (6)
+  stratified nodes along the sun path at which every pass averages the wake density (march, particles, astronaut;
+  2 fixed nodes overestimated the sunlight by 15–26 % at 8° sun through the convexity of exp(−τWs/μ0)). The part of
+  τ in particles below 1 mm (true dust: D ring, gaps,
   F/G/E rings, Roche Division) is a never-drawn layer (`uLodTauSub`, σ_z = `uLodSigZSub`) included in all of
   these, so the medium total always equals the local τ. The top class absorbs any aMax > 16.4 m.
 * `sv_wakes` (mirror of `src/rings/WakeField.ts`): `wakeDisplacement(q)`, `wakeDensity(x)` (local frame, m;
-  range [γ^s, γ^−s]), `wakeDensityFiltered(x, footprint)`, `wakeMinDensity()`. Two transient sheared
+  range [γ^s, γ^−s]; mean 1: the single-branch inverse `wakeDensityRaw` misses the folds of the forward map in the
+  wake cores, ~10 % of the mass, restored by scaling the excess over 1 with `uWakeMassK`, measured live by the
+  ring-layer pass), `wakeDensityFiltered(x, footprint)`, `wakeMinDensity()`. Two transient sheared
   generations (`uWakeGen[0..1]` = amplitude, shear, offsets; sin² envelopes, lifetime 3/Ω), narrow-band random
   fields with phase dislocations and a non-shell-crossing profile (`uWakeShape` = ln γ, 1/Rc², Wmin, Wmax).
   Spacing at peak = Toomre λ (≈ 40 m mid-A, 51–55 m in B), pitch ≈ 20° trailing; contrast γ = 0.16 (A), 0.24 (B);

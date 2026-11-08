@@ -12,11 +12,12 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
 ## Commands
 - `npm run dev` → http://127.0.0.1:5173 (often already running; check with `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5173/`)
 - `npm run typecheck` (tsc --noEmit) and `npm run build` (typecheck + vite build) — keep both clean
-- **Regression suite** (real GPU, starts its own private Vite server unless `--base` answers; ~5.5 min):
+- **Regression suite** (real GPU, starts its own private Vite server unless `--base` answers; ~6.5 min):
   `npm test` = `test:smoke` (every preset: console/page/GL errors, pass fallbacks, NaN/negative pixels) +
   `test:physics` (ephemeris, J2–J6 frequencies, particle kinematics vs the exact Hill solution) +
   `test:counts` (drawn particles vs the analytic expectation, HUD "complete") + `test:seam` (near field +
-  medium vs medium alone, incl. the old arc repro) + `test:exposure` (the astronaut doesn't change the auto
+  medium vs medium alone, incl. the old arc repro; `--only handover`: the medium's explicit wake field, its
+  statistics and the sheet vs a reference explicit field across the march -> sheet handover) + `test:exposure` (the astronaut doesn't change the auto
   exposure). `npm run test:fps` = informational fps table per preset × quality. Details, tolerances, measured
   values and the shared helpers: `scripts/test/README.md`.
 - Screenshots on the real GPU (headless Chrome, ANGLE/Metal); console errors and page errors are printed:
