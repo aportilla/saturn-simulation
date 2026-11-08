@@ -24,6 +24,11 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
   GLSL vs CPU mirrors, projected-area and photometry contracts; prints new constants when the relief changes).
   `npm run test:fps` = informational fps table per preset × quality. Details, tolerances, measured values and the
   shared helpers: `scripts/test/README.md`.
+- **Bibliography**: `npm run check:refs` (no GPU, ~1 s; also first in `npm test`) — every author–year citation in
+  README.md, docs/ring-physics.md and docs/data-sources.md needs an entry in `src/app/references.ts` (the in-app
+  Sources panel, key G) and every entry must be cited; `-- --online` re-verifies DOIs / arXiv ids. A new citation in
+  the docs needs an entry there (verified against Crossref etc., never invented). `npm run test:sources` (also in
+  `npm test`) = the panel and the per-place Sources lines (`src/app/placeSources.ts`) in the browser.
 - Screenshots on the real GPU (headless Chrome, ANGLE/Metal); console errors and page errors are printed:
   - one page: `node scripts/shot.mjs "<url>" <out.png> --until "window.__svReady===true" --wait 3000 [--w --h --dpr --eval "<js>"]`
   - batch: `node scripts/shots.mjs <spec.json> <outDir> [--w --h] [--uncapped] [--base URL] [--keep-storage]`
@@ -86,6 +91,7 @@ mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,ove
 | moon ephemerides and rotation | `src/moons/*`; data `public/data/moons/`, rebuilt by `scripts/data/moons/*` |
 | measured small-moon shapes (ridges of Pan/Atlas/Daphnis, shepherds, co-orbitals) | `src/moons/shapes.ts`, `traceShapedMoon` in `src/render/far/glsl/moons.ts`; data `public/data/moons/shapes.*` by `scripts/data/moons/build_shapes.mjs`; check `scripts/test/specs/moon-shapes.json` |
 | app shell, places, settings, camera controllers, HUD, labels | `src/app/*`, `src/camera/*`, `src/ui/*` |
+| bibliography, Sources panel (key G), per-place citations | `src/app/references.ts`, `src/app/placeSources.ts`, `src/ui/SourcesPanel.ts`; check `scripts/check-refs.mjs` |
 | data build scripts (download originals into git-ignored `data-raw/`, write `public/data/`) | `scripts/data/**` |
 
 ## Invariants — don't break these

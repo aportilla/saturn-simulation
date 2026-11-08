@@ -56,6 +56,7 @@ const HELP: [string, [string, string][]][] = [
     ['H', 'hide / show the HUD'],
     ['V', 'hide / show the astronaut (1.9 m, for scale)'],
     ['I', 'show the explainer for this place'],
+    ['G', 'sources: the research and data behind it'],
     ['O', 'settings'],
     ['?', 'this help'],
   ]],
@@ -86,15 +87,17 @@ const HELP: [string, [string, string][]][] = [
 
 export class Help {
   readonly root: HTMLElement;
-  constructor(parent: HTMLElement) {
+  /** onSources: opens the Sources panel (key G) from the help card */
+  constructor(parent: HTMLElement, opts: { onSources?: () => void } = {}) {
     const cols = h('div', { class: 'cols' });
     for (const [title, rows] of HELP) {
       cols.append(h('div', null, h('h3', { text: title }), ...rows.map(([k, v]) => h('div', { class: 'kr' }, h('span', { text: k }), h('span', { text: v })))));
     }
     const card = h('div', { class: 'card panel' },
       h('button', { class: 'btn close', text: 'Close', on: { click: () => this.setOpen(false) } }),
+      opts.onSources ? h('button', { class: 'btn src-open', text: 'Sources', title: 'The papers and data behind the simulation (G)', on: { click: () => opts.onSources?.() } }) : null,
       h('h2', { text: 'Saturn, to scale and in real time' }),
-      h('p', { class: 'lead', html: 'Everything is at true size and moves at its true speed. Default time is <b>now</b> at 1×: inside the rings that means near-stillness — neighbouring particles drift by at centimeters per second. Speed time up to watch the dynamics.' }),
+      h('p', { class: 'lead', html: 'Everything is at true size and moves at its true speed. Default time is <b>now</b> at 1×: inside the rings that means near-stillness — neighbouring particles drift by at centimeters per second. Speed time up to watch the dynamics. Every number comes from published research and spacecraft data — press <kbd>G</kbd> for the sources.' }),
       cols);
     this.root = h('div', { class: 'sv-hidden', attrs: { id: 'help' }, on: { click: (e) => { if (e.target === this.root) this.setOpen(false); } } }, card);
     parent.append(this.root);
@@ -111,20 +114,28 @@ export class Help {
 export class Explainer {
   readonly root: HTMLElement;
   private body: HTMLElement;
+  /** static footer (the Sources line): not rewritten by update(), so its links keep focus */
+  private foot: HTMLElement;
   private kicker: HTMLElement;
   private hideTimer = 0;
   dismissed = false;
   constructor(parent: HTMLElement) {
     this.kicker = h('div', { class: 'kicker', text: 'What you are seeing' });
     this.body = h('div');
+    this.foot = h('div', { class: 'foot' });
     this.root = h('div', { class: 'panel sv-chrome sv-hidden', attrs: { id: 'explainer' } },
-      h('button', { class: 'x', text: '×', title: 'Close (I to reopen)', on: { click: () => this.close() } }), this.kicker, this.body);
+      h('button', { class: 'x', text: '×', title: 'Close (I to reopen)', on: { click: () => this.close() } }), this.kicker, this.body, this.foot);
+    // don't auto-hide while the reader is pointing at or tabbing through the card
+    const hold = () => window.clearTimeout(this.hideTimer);
+    this.root.addEventListener('pointerenter', hold);
+    this.root.addEventListener('focusin', hold);
     parent.append(this.root);
   }
-  show(title: string, html: string, autoHideMs = 0): void {
+  show(title: string, html: string, autoHideMs = 0, footHtml = ''): void {
     this.dismissed = false;
     setText(this.kicker, title);
     setHtml(this.body, html);
+    setHtml(this.foot, footHtml);
     setClass(this.root, 'sv-hidden', false);
     window.clearTimeout(this.hideTimer);
     if (autoHideMs > 0) this.hideTimer = window.setTimeout(() => this.close(), autoHideMs);
