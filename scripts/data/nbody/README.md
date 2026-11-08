@@ -109,9 +109,47 @@ $PY scripts/data/nbody/analyze.py data-raw/nbody/B105-sd-reco --raycast 10 --gra
 
 $PY scripts/data/nbody/compare.py $R/A128-ident.json $R/A128-ident-proc.json $R/A128-ident-reco.json
 $PY scripts/data/nbody/compare.py --runs data-raw/nbody/A128-ident data-raw/nbody/A128-sd ...   # the runs table below
-$PY scripts/data/nbody/procedural.py check-inverse --json $R/check_inverse_A128.json
-$PY scripts/data/nbody/procedural.py check-inverse --a-km 105000 --tau 2.5 --sigma 600 --strength 0.5 --box 4 \
+$PY scripts/data/nbody/procedural.py check-inverse --legacy --json $R/check_inverse_A128.json   # the model before Nov 2026
+$PY scripts/data/nbody/procedural.py check-inverse --legacy --a-km 105000 --tau 2.5 --sigma 600 --box 4 \
     --json $R/check_inverse_B105.json
+```
+
+**The implemented model (Nov 2026, docs/ring-physics.md §10.11).** The N-body runs are only read (their `params.json`
+is all `synth` / `calibrate` need; copy them into your own `data-raw/nbody/<run>/` in a worktree):
+
+```sh
+# re-calibration with the new map (local wave number, gap gamma, Newton inverse, asynchrony; fold penalty)
+calib --target $R/A128-ident.json --like data-raw/nbody/A128-ident --name A128-ident-v2 --legacy-defaults \
+    --stages contrast,gap,async,async2,dislocations,gap,contrast2
+calib --target $R/A128-ident.json --like data-raw/nbody/A128-ident --name A128-ident-v2b --jobs 6 \
+    --start $R/calib_A128-ident-v2.json --stages spacing,morphology,async2,dislocations,contrast2   # log: calib_A128-ident-v2b.log (stopped after morphology)
+calib --target $R/B105-sd.json --like data-raw/nbody/B105-sd --name B105-sd-v2 --legacy-defaults --jobs 5 --exclude pitch_spec \
+    --stages contrast,gap,morphology,async,async2,dislocations,gap,contrast2
+# scores of the app as implemented (WAKE_SETS), with the old model and without asynchrony for reference
+calib --target $R/A128-ident.json --like data-raw/nbody/A128-ident --name A128-ident-impl --legacy-defaults --stages asyncoff
+calib --target $R/A128-sd.json --like data-raw/nbody/A128-sd --name A128-sd-impl --legacy-defaults --stages asyncoff \
+    --exclude pitch_med,pitch_iqr,pitch_iqr_inst,pitch_drift --pitch-target 21
+calib --target $R/B105-sd.json --like data-raw/nbody/B105-sd --name B105-sd-impl --legacy-defaults --stages '' --exclude pitch_spec
+# as-implemented runs (6 orbits) and analyses: the "as implemented" columns of §10.2 / §10.5
+for r in A128-ident A128-sd B105-sd; do
+  $PY scripts/data/nbody/procedural.py synth --like data-raw/nbody/$r --name $r-v2 --orbits 6
+  $PY scripts/data/nbody/analyze.py data-raw/nbody/$r-v2 --raycast 10 --granola 20 --json $R/$r-v2.json
+done
+$PY scripts/data/nbody/analyze.py data-raw/nbody/A128-sd-v2 --field tau --raycast 0 --json $R/A128-sd-v2.tau.json
+$PY scripts/data/nbody/analyze.py data-raw/nbody/B105-sd-v2 --field tau --raycast 0 --json $R/B105-sd-v2.tau.json
+$PY scripts/data/nbody/compare.py $R/A128-ident.json $R/A128-ident-proc.json $R/A128-ident-reco.json $R/A128-ident-v2.json
+# wakeDensity accuracy (§10.8): as implemented, and the old model with the per-particle statistics
+$PY scripts/data/nbody/procedural.py check-inverse --json $R/check_inverse_A128-v2.json
+$PY scripts/data/nbody/procedural.py check-inverse --a-km 105000 --tau 2.5 --sigma 600 --box 4 --json $R/check_inverse_B105-v2.json
+$PY scripts/data/nbody/procedural.py check-inverse --legacy --json $R/check_inverse_A128-legacy.json
+$PY scripts/data/nbody/procedural.py check-inverse --legacy --strength 1 --a-km 105000 --tau 2.5 --sigma 600 --box 4 \
+    --json $R/check_inverse_B105-legacy-s1.json
+# outer A ring (§10.6): the a_max = 3 m run's particles at several strengths (results/outerA/)
+for s in 0.15 0.3 0.45; do
+  $PY scripts/data/nbody/procedural.py synth --like data-raw/nbody/A135-amax3 --name A135-amax3-s$s --orbits 2 --strength $s \
+      --gamma 0.12 --gamma-gap 0.09 --t-life 6 --async-d 0.25 --async-ell 2
+  $PY scripts/data/nbody/analyze.py data-raw/nbody/A135-amax3-s$s --raycast 0 --json $R/outerA/A135-amax3-s$s.json
+done
 ```
 
 (The shell loops are for reading; run one command per process when you want them in parallel.)
@@ -148,8 +186,10 @@ run before starting it. Analysis: ~1–3 min per run (`--granola` adds ~2 min; t
 | `<run>.json` | analysis of an N-body run (surface-mass-density field), `<run>.tau.json` the same for the cross-section field |
 | `<run>-proc.json` | the same statistics for the procedural counterpart (with `noise_free`: the exact `wakeDensity()` field) |
 | `<run>-reco.json` | the procedural counterpart with the recommended parameters (docs/ring-physics.md §10.9) |
-| `calib_<name>.json` | calibration: target metrics, the app's defaults and their score, every candidate, the best parameters |
-| `check_inverse_<site>.json` | `wakeDensity()` vs the exact density of the forward displacement map |
+| `<run>-v2.json` (`.tau.json`) | the procedural counterpart as implemented in Nov 2026 (§10.11) |
+| `calib_<name>.json` | calibration: target metrics, the app's defaults and their score (and the old model's with `--legacy-defaults`), every candidate, the best parameters; `-v2*`: the new map; `-impl`: the app as implemented |
+| `check_inverse_<site>.json` | `wakeDensity()` vs the exact density of the forward displacement map (`A128`, `B105`: the model before Nov 2026 as published; `-legacy*`: the same with the per-particle statistics; `-v2`: as implemented) |
+| `outerA/` | outer A ring: synthetic runs with the a_max = 3 m and zone-size particle sets at strengths 0.15–0.45 (§10.6) |
 
 The files are strict JSON; undefined values (e.g. no side peak in an ACF) are `null`. Most statistics are
 `[mean, standard error of 1-orbit block means]`. Main numbers and the recommendations derived from them:

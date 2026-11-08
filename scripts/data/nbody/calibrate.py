@@ -21,7 +21,8 @@ Coordinate search over the stages given by --stages, in that order, each startin
   envelope    plateau envelope with crossfade width env_w x T_LIFE, T_LIFE 4-7 with matching m0x; envelope2: T_LIFE
               -1..+2, env_w 0.05/best/0.2, m0x +-1 around the best
   async       local asynchrony: handover phase spread async_d 0.2-0.8 x correlation length async_ell 2-5 lambda
-              (docs/ring-physics.md 10.11); async2: async_d +-0.15, T_LIFE +-1, m0x +-1 around the best
+              (docs/ring-physics.md 10.11); async2: async_d +-0.15, T_LIFE +-1, m0x +-1 around the best; asyncoff: the
+              best without asynchrony (to weigh its benefit against its shader cost)
   contrast2   gamma x 0.8 .. 1.25 around the best (gap ratio kept)
 Metrics (21): spectral peak and power-weighted spacing / lambda, D quantiles p5 p25 p75 p95 p99 (lambda/16), ACF L_par
 and L_perp (1/e) / lambda, first minimum and side-peak height across crests, skeleton end and branch points per
@@ -295,6 +296,9 @@ def main(argv):
             cands = [dict(b, async_d=min(max(d0 + dd, 0.0), dmax), t_life=T, m0x=m) for dd in (-0.15, 0.0, 0.15)
                      for T in (T0 - 1, T0, T0 + 1) for m in (m0 - 1, m0, m0 + 1)
                      if not (dd == 0 and T == T0 and m == m0) and T >= 3]
+        elif stage == 'asyncoff':
+            # the same parameters without local asynchrony (its benefit vs its cost: 2-3x the shader time)
+            cands = [dict(b, async_d=0.0)] if b.get('async_d', 0.0) > 0 else []
         elif stage == 'contrast2':
             cands = [with_gamma(b, b['gamma'] * f) for f in (0.8, 0.9, 1.1, 1.25)]
         elif stage == 'spacing':
@@ -313,6 +317,8 @@ def main(argv):
         else:
             raise SystemExit(f'unknown stage {stage}')
         print(f'stage {stage}: {len(cands)} candidates')
+        if not cands:
+            continue
         bb = run_batch(cands)
         if bb['score'] < best['score']:
             best = bb

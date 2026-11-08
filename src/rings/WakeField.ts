@@ -31,8 +31,9 @@
 //  * The two generations are composed (older first): x = M_young(M_old(q)); the particles evaluate the map at their
 //    epicyclic position (guiding center + epicycle), so random velocities move them through the pattern without
 //    smearing it. wakeDensity(x) = 1/(J_young J_old) inverts each map along its normal (closed-form guess exact for
-//    a locally linear phase + 2 Newton steps): the medium's density factor is that of the drawn particles (the
-//    exact forward-map density on ~98 % of the particles to 20 %, mean 1.00 +- 0.02; procedural.py check-inverse).
+//    a locally linear phase + 2 Newton steps): the medium's density factor is that of the drawn particles (within
+//    20 % for 99.4 % (A set) / 97.4 % (B set) of the particles, area mean 0.998 / 0.997; procedural.py check-inverse,
+//    docs/ring-physics.md 10.8, 10.11).
 import { DataArrayTexture, DataTexture, FloatType, LinearFilter, RGBAFormat, RepeatWrapping, Vector2, Vector4 } from 'three';
 import { G } from '../core/constants';
 import type { RingFrame } from '../core/FrameState';
@@ -50,9 +51,12 @@ const DELTA_SIGMA = 2.5;
 const DELTA_KAPPA = 0.8;
 /** lower clamp of the local wave number (fraction of the mean): bounds the displacement by ~lambda_w/2 per generation */
 export const WAKE_K_MIN = 0.65;
-/** wakeDensity clamp: [CLAMP_LO gammaGap^s, CLAMP_HI gammaCore^-s] */
-const CLAMP_LO = 0.5;
+/** wakeDensity clamp: [CLAMP_LO gammaGap^s, CLAMP_HI gammaCore^-s]. The particles' density reaches 0.82 / 0.98 gammaGap^s
+ * at its minimum (A / B sets; procedural.py), so the floor (= wakeMinDensity, the culling bound) is a true lower bound. */
+const CLAMP_LO = 0.8;
 const CLAMP_HI = 4.0;
+/** generation-index offset per test realization (WakeField.realization) */
+const REALIZATION_STRIDE = 104729;
 
 function mulberry32(seed: number) {
   return () => {
@@ -94,6 +98,8 @@ export interface WakeShape {
   asyncD: number;
   /** correlation length of the asynchrony field (Toomre wavelengths) */
   asyncEll: number;
+  /** tile = lambda * WAKE_TILE_PER_LAMBDA * tileScale: crest spacing at the envelope peak = tileScale * lambda */
+  tileScale: number;
 }
 
 /**
@@ -101,8 +107,8 @@ export interface WakeShape {
  * identical-particle mid-A-ring run (A128-ident, checked against A128-sd), B from the B-ring run (B105-sd, Sigma 600).
  */
 export const WAKE_SETS: { A: WakeShape; B: WakeShape } = {
-  A: { gamma: 0.1, gammaGap: 0.1, spreadPar: 1.6, spreadPerp: 5.0, rc: 0.8, tLife: 7, m0x: 1, envW: 0.1, asyncD: 0, asyncEll: 3 },
-  B: { gamma: 0.136, gammaGap: 0.136, spreadPar: 2.4, spreadPerp: 9.0, rc: 0.45, tLife: 6, m0x: 2, envW: 0.2, asyncD: 0, asyncEll: 3 },
+  A: { gamma: 0.132, gammaGap: 0.073, spreadPar: 1.6, spreadPerp: 5.0, rc: 0.8, tLife: 6, m0x: 1, envW: 0.1, asyncD: 0.25, asyncEll: 2, tileScale: 1.2 },
+  B: { gamma: 0.126, gammaGap: 0.069, spreadPar: 1.2, spreadPerp: 9.0, rc: 0.6, tLife: 6, m0x: 2, envW: 0.2, asyncD: 0, asyncEll: 3, tileScale: 1 },
 };
 
 /**
@@ -120,6 +126,7 @@ export function wakeShapeFor(local: RingLocal): WakeShape {
     spreadPar: lin(a.spreadPar, b.spreadPar), spreadPerp: lin(a.spreadPerp, b.spreadPerp),
     rc: lin(a.rc, b.rc), tLife: lin(a.tLife, b.tLife), m0x: Math.round(lin(a.m0x, b.m0x)),
     envW: lin(a.envW, b.envW), asyncD: lin(a.asyncD, b.asyncD), asyncEll: lin(a.asyncEll, b.asyncEll),
+    tileScale: lin(a.tileScale, b.tileScale),
   };
 }
 
@@ -140,6 +147,9 @@ export class WakeField {
   omega = 1e-4;
   qShear = 1.5;
   enabled = true;
+  /** realization index (tests: an independent wake pattern at the same time and place; 0 in the app): offsets the
+   * generation hash, so the generations' offsets and the asynchrony frame are redrawn (scripts/test/seam.mjs) */
+  realization = 0;
   shape: WakeShape = { ...WAKE_SETS.A };
   private texKey = '';
   private readonly seed: number;
@@ -353,13 +363,13 @@ export class WakeField {
     this.qShear = ring.qShear;
     const sigma = Math.max(local.sigma, 1e-3);
     this.lambda = (4 * Math.PI * Math.PI * G * sigma) / (ring.kappa * ring.kappa);
-    this.tile = Math.max(this.lambda * WAKE_TILE_PER_LAMBDA, 1);
     // wakes only exist when the Toomre wavelength comfortably exceeds the largest particles
     const sizeOk = Math.min(1, Math.max(0, (this.lambda / Math.max(local.aMax, 0.1) - 2) / 4));
     this.strength = local.macroscopic ? Math.min(1, local.wake * sizeOk) : 0;
     this.shape = { ...wakeShapeFor(local), ...(this.shapeOverride ?? {}) };
     const sh = this.shape;
-    sh.asyncD = Math.min(Math.max(sh.asyncD, 0), Math.max(0, 1 - 2 * sh.envW));
+    this.tile = Math.max(this.lambda * WAKE_TILE_PER_LAMBDA * sh.tileScale, 1);
+    sh.asyncD = Math.min(Math.max(sh.asyncD, 0), Math.max(0, 1 - 2 * sh.envW), 0.95);
     const key = `${sh.spreadPar.toFixed(6)}/${sh.spreadPerp.toFixed(6)}/${sh.m0x}`;
     if (key !== this.texKey) this.buildTexture(sh);
     this.uniforms.uWakeTile.value = this.tile;
@@ -382,13 +392,14 @@ export class WakeField {
     const P = 0.5 * sh.tLife;
     const ny = Math.floor(tau / P);
     const phi = tau / P - ny;
+    const rz = REALIZATION_STRIDE * this.realization;
     for (let g = 0; g < 2; g++) {
       const n = ny - 1 + g; // g = 0 -> older generation, g = 1 -> younger
       const age = tau - n * P; // [P, 2P) for the older one, [0, P) for the younger
-      this.uniforms.uWakeGen.value[g].set(this.qShear * age, hashFloat(n, 1), hashFloat(n, 2), ((n % 2) + 2) % 2);
+      this.uniforms.uWakeGen.value[g].set(this.qShear * age, hashFloat(n + rz, 1), hashFloat(n + rz, 2), ((n % 2) + 2) % 2);
     }
     this.uniforms.uWakeClock.value.set(phi, sh.asyncD, 2 * sh.envW, on ? this.strength : 0);
-    this.uniforms.uWakeDelta.value.set(hashFloat(ny, 3), hashFloat(ny, 4), this.qShear * (tau - ny * P), this.dscale / this.tile);
+    this.uniforms.uWakeDelta.value.set(hashFloat(ny + rz, 3), hashFloat(ny + rz, 4), this.qShear * (tau - ny * P), this.dscale / this.tile);
     this._tau = tau;
   }
   private _tau = 0;

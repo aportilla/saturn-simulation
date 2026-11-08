@@ -71,15 +71,15 @@ K_SOFT = 0.1           # softness of the lower clamp of the local wave number (f
 
 # Wake sets of src/rings/WakeField.ts (WAKE_SETS): the A- and B-ring calibrations (docs/ring-physics.md 10.11).
 WAKE_SETS = {
-    'A': dict(gamma=0.10, gamma_gap=0.10, spread_par=1.6, spread_perp=5.0, rc=0.8, t_life=7.0, m0x=1.0, env_w=0.1,
-              async_d=0.0, async_ell=3.0),
-    'B': dict(gamma=0.136, gamma_gap=0.136, spread_par=2.4, spread_perp=9.0, rc=0.45, t_life=6.0, m0x=2.0, env_w=0.2,
-              async_d=0.0, async_ell=3.0),
+    'A': dict(gamma=0.132, gamma_gap=0.073, spread_par=1.6, spread_perp=5.0, rc=0.8, t_life=6.0, m0x=1.0, env_w=0.1,
+              async_d=0.25, async_ell=2.0, tile_scale=1.2),
+    'B': dict(gamma=0.126, gamma_gap=0.069, spread_par=1.2, spread_perp=9.0, rc=0.6, t_life=6.0, m0x=2.0, env_w=0.2,
+              async_d=0.0, async_ell=3.0, tile_scale=1.0),
 }
 # model structure (not zone parameters): m0y, the pitch at the envelope peak that sets the tile, a tile scale for the
 # calibration (1 in the app), the local wave number (False: the old global-k map), its clamp, Newton steps, and the clamp
 # of wakeDensity: [clamp_lo gamma_gap^s, clamp_hi gamma_core^-s]
-MODEL_DEFAULTS = dict(m0y=6.0, pitch_peak_deg=20.0, tile_scale=1.0, local_k=True, k_min=0.65, newton=2, clamp_lo=0.5,
+MODEL_DEFAULTS = dict(m0y=6.0, pitch_peak_deg=20.0, tile_scale=1.0, local_k=True, k_min=0.65, newton=2, clamp_lo=0.8,
                       clamp_hi=4.0, fd_central=True, j_min=0.06)
 SET_KEYS = tuple(WAKE_SETS['A'].keys())
 MODEL_KEYS = SET_KEYS + tuple(MODEL_DEFAULTS.keys())
@@ -431,19 +431,20 @@ class WakeFieldPort:
             K = km + 0 * th
         return th, K
 
-    def gen_eval(self, g, x, y, nx, ny, km):
-        """(Theta, a, K) of generation g at (x, y): one texture fetch (+ the delta fetch)."""
+    def gen_eval(self, g, x, y, nx, ny, km, delta=None):
+        """(Theta, a, K) of generation g at (x, y): one texture fetch (+ the delta fetch unless delta is given)."""
         u, v = self._uv(g, x, y)
         T = _bilinear(self.tex[self.gens[g][3]], u, v)
         th, K = self._phase_k(g, T, u, v, nx, ny, km)
-        delta, _, _ = self._delta(x, y)
+        if delta is None:
+            delta, _, _ = self._delta(x, y)
         a = self._amp(g, T[..., 0] ** 2 + T[..., 1] ** 2, delta)
         return th, a, K
 
-    def gen_eval_d(self, g, x, y, nx, ny, km):
+    def gen_eval_d(self, g, x, y, nx, ny, km, dl=None):
         """(Theta, a, K) at (x, y) and their derivatives along n: central differences over WAKE_FD_H (fetches at
         p -+ h/2 n; exact for the quadratic rise of the strength taper at a dislocation), the values at p the midpoint
-        averages; delta and its gradient from one delta fetch. Two texture fetches (+ one delta fetch)."""
+        averages; delta and its gradient dl = (delta, d/dx, d/dy) given, or from one delta fetch. Two texture fetches."""
         S = self.gens[g][0]
         central = self.p['fd_central']
         hh = 0.5 * WAKE_FD_H if central else 0.0     # legacy: forward difference from p
@@ -458,7 +459,7 @@ class WakeFieldPort:
         T1 = _bilinear(L, u0 + du, v0 + dv)
         th0, K0 = self._phase_k(g, T0, u0, v0, nx, ny, km)
         _, K1 = self._phase_k(g, T1, u0 + du, v0 + dv, nx, ny, km)
-        delta, gx, gy = self._delta(x, y)
+        delta, gx, gy = self._delta(x, y) if dl is None else dl
         dd = WAKE_FD_H * (nx * gx + ny * gy)
         a0 = self._amp(g, T0[..., 0] ** 2 + T0[..., 1] ** 2, delta - (0.5 * dd if central else 0.0))
         a1 = self._amp(g, T1[..., 0] ** 2 + T1[..., 1] ** 2, delta + (0.5 * dd if central else dd))
@@ -493,7 +494,9 @@ class WakeFieldPort:
 
     def gen_inverse(self, g, x, y, newton=None):
         """Lagrangian point and Jacobian of generation g's map at the Eulerian point (x, y): closed-form guess from the
-        fields at x (exact for a locally linear phase), then Newton steps on t - D(x - t n) = 0 (t = displacement)."""
+        fields at x (exact for a locally linear phase), then Newton steps on t - D(x - t n) = 0 (t = displacement). The
+        asynchrony phase is sampled at every Newton point (it is sheared with the flow: extrapolating it from x with its
+        gradient put 2-15 % of the particles > 20 % off)."""
         nx, ny, km = self._geom(g)
         th, a, K = self.gen_eval(g, x, y, nx, ny, km)
         weak = a < 1e-4
@@ -769,7 +772,7 @@ def verify(args):
     ref = json.loads(res.stdout)
     ok = True
     ts_key = dict(gamma='gamma', gamma_gap='gammaGap', spread_par='spreadPar', spread_perp='spreadPerp', rc='rc',
-                  t_life='tLife', m0x='m0x', env_w='envW', async_d='asyncD', async_ell='asyncEll')
+                  t_life='tLife', m0x='m0x', env_w='envW', async_d='asyncD', async_ell='asyncEll', tile_scale='tileScale')
     for c, rc in zip(cases, ref['cases']):
         zk = zone_for_km(c['rKm'])
         z = ZONES[zk]

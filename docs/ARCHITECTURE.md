@@ -189,7 +189,7 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   these, so the medium total always equals the local τ. The top class absorbs any aMax > 16.4 m.
 * `sv_wakes` (mirror of `src/rings/WakeField.ts`; Python port with a bit-exact `--verify`:
   `scripts/data/nbody/procedural.py`): `wakeDisplacement(q)` (particles, at their epicyclic position), `wakeDensity(x)`
-  (local frame, m; the density of exactly those particles: mean 1, clamped to `uWakeBounds.xy` = [0.5 γ_gap^s,
+  (local frame, m; the density of exactly those particles: mean 1, clamped to `uWakeBounds.xy` = [0.8 γ_gap^s,
   4 γ_core^−s]), `wakeDensityFiltered(x, footprint)`, `wakeMinDensity()` (true lower bound, for culling); hooks for the
   next work package, identities now: `wakeDisplacementP(q, p)` (participation p of a size class) and
   `wakeDensityTau(x)` = 1 + p̄ (D − 1) (`uWakePartTau` = `WakeField.participationTau` = 1). Two transient sheared

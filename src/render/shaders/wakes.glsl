@@ -6,7 +6,7 @@
 //   vec2  wakeDisplacement(vec2 q)  displacement (m) of a particle whose undisplaced (epicyclic) position is q
 //   float wakeDensity(vec2 x)       Eulerian surface-density factor at x (mean 1): the density of the particles placed by
 //                                   wakeDisplacement (each generation's map inverted along its wave normal; clamped to
-//                                   uWakeBounds.xy = [0.5 gammaGap^s, 4 gammaCore^-s])
+//                                   uWakeBounds.xy = [0.8 gammaGap^s, 4 gammaCore^-s])
 //   float wakeDensityFiltered(vec2 x, float footprint)   same, contrast faded out when the footprint (m)
 //                                   approaches the wake spacing (anti-aliasing for distant views)
 //   float wakeMinDensity()          lower bound of wakeDensity() for the current pattern (for culling)
@@ -91,16 +91,18 @@ float wakeCInv(float X, float a) {
   float ph = atan(sin(X), g * cos(X));
   return 2.0 * atan(sin(0.5 * ph), gm * cos(0.5 * ph));
 }
-// (Theta, a, K) of generation g at p: one texture fetch (+ the delta fetch).
-vec3 wakeGenEval(int g, vec2 p, vec3 geo) {
+// (Theta, a, K) of generation g at p for asynchrony phase delta: one texture fetch.
+vec3 wakeGenEvalAt(int g, vec2 p, vec3 geo, float delta) {
   vec2 u = wakeUV(g, p);
   vec4 T = texture(uWakeTex, vec3(u, uWakeGen[g].w));
   vec2 tk = wakePhaseK(g, T, u, geo);
-  return vec3(tk.x, wakeAmp(g, dot(T.xy, T.xy), wakeDelta(p).x), tk.y);
+  return vec3(tk.x, wakeAmp(g, dot(T.xy, T.xy), delta), tk.y);
 }
+// The same with delta sampled at p (the particles' map): one texture fetch (+ the delta fetch).
+vec3 wakeGenEval(int g, vec2 p, vec3 geo) { return wakeGenEvalAt(g, p, geo, wakeDelta(p).x); }
 // (Theta, a, K) at p (midpoint averages) and their derivatives along n (central differences over WAKE_FD_H: exact for
-// the quadratic rise of the strength near a dislocation): two texture fetches (+ one delta fetch).
-void wakeGenEvalD(int g, vec2 p, vec3 geo, out vec3 v, out vec3 d) {
+// the quadratic rise of the strength near a dislocation), given delta and its gradient at p (dl): two texture fetches.
+void wakeGenEvalD(int g, vec2 p, vec3 geo, vec3 dl, out vec3 v, out vec3 d) {
   float S = uWakeGen[g].x;
   vec2 u = wakeUV(g, p);
   vec2 du = vec2(geo.x, geo.y + S * geo.x) * (0.5 * WAKE_FD_H / uWakeTile);
@@ -108,7 +110,6 @@ void wakeGenEvalD(int g, vec2 p, vec3 geo, out vec3 v, out vec3 d) {
   vec4 T1 = texture(uWakeTex, vec3(u + du, uWakeGen[g].w));
   vec2 k0 = wakePhaseK(g, T0, u - du, geo);
   vec2 k1 = wakePhaseK(g, T1, u + du, geo);
-  vec3 dl = wakeDelta(p);
   float dd = 0.5 * WAKE_FD_H * dot(geo.xy, dl.yz);
   float a0 = wakeAmp(g, dot(T0.xy, T0.xy), dl.x - dd);
   float a1 = wakeAmp(g, dot(T1.xy, T1.xy), dl.x + dd);
@@ -145,7 +146,9 @@ vec2 wakeDisplacement(vec2 q) {
 
 // Inverse of one generation's map at Eulerian position x: returns the Lagrangian point and the map's Jacobian
 // determinant J there (density factor of this generation = 1/J). Closed-form guess from the fields at x (exact for a
-// locally linear phase and constant strength / wave number), then Newton steps on t - D(x - t n) = 0 along n.
+// locally linear phase and constant strength / wave number), then Newton steps on t - D(x - t n) = 0 along n. (The
+// asynchrony phase is sampled at every Newton point: it is sheared with the flow, so extrapolating it from x with its
+// gradient put 2-15 % of the particles > 20 % off.)
 vec2 wakeGenInverse(int g, vec2 x, out float J) {
   vec3 geo = wakeGeo(g);
   vec3 v = wakeGenEval(g, x, geo);
@@ -156,7 +159,8 @@ vec2 wakeGenInverse(int g, vec2 x, out float J) {
   vec3 ve = v, d = vec3(0.0);
   for (int i = 0; i < WAKE_NEWTON; i++) {
     vec3 vp;
-    wakeGenEvalD(g, x - t * geo.xy, geo, vp, d);
+    vec2 p = x - t * geo.xy;
+    wakeGenEvalD(g, p, geo, wakeDelta(p), vp, d);
     float D = (wakeCMap(vp.x, vp.y).x - vp.x) / vp.z;
     float tn = clamp(t - (t - D) / max(wakeJac(vp, d), WAKE_J_FLOOR), -tmax, tmax);
     float dt = tn - t;

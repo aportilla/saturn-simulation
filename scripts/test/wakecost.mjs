@@ -9,8 +9,12 @@
 // Informational (no thresholds): run it on two checkouts under the same conditions (e.g. before / after a wake-model
 // change: `git archive <rev> | tar -x -C <dir>` + a node_modules symlink, then this script from each tree), interleaved;
 // other GPU users skew the absolute numbers. The wake set under test is the one of the place (--preset).
+// --scatter R: incoherent access like the near-field particles (each call at a hashed random point within +-R m of the
+// camera instead of on a grid: texture-cache misses dominate; this is the cost that matters for nearUpdate /
+// nearDraw.vert, ~2-5x the coherent one).
 // usage: node scripts/test/wakecost.mjs [--base URL] [--out DIR] [--preset a-ring-1km] [--t ISO] [--size 512] [--k 8]
-//        [--reps 8] [--trials 9] [--step 0.37] [--async D]  (--async: override the asynchrony depth if the tree has it)
+//        [--reps 8] [--trials 9] [--step 0.37] [--scatter R] [--async D]  (--async: override the asynchrony depth if the
+//        tree has it)
 import { openApp, table, withHarness } from './lib.mjs';
 
 await withHarness('wakecost', {
@@ -19,9 +23,10 @@ await withHarness('wakecost', {
   const preset = args.str('preset', 'a-ring-1km');
   const size = args.num('size', 512), K = args.num('k', 8), reps = args.num('reps', 8), trials = args.num('trials', 9);
   const step = args.num('step', 0.37);
+  const scatter = args.num('scatter', 0);
   const asyncD = args.has('async') ? args.num('async', 0) : null;
   const { page } = await openApp(browser, base, { preset, t: args.str('t', '2026-11-08T12:00:00Z'), paused: 1, hud: 0, labels: 0, astronaut: 0 }, { settle: 2500 });
-  const res = await page.evaluate(async (size, K, reps, trials, step, asyncD) => {
+  const res = await page.evaluate(async (size, K, reps, trials, step, asyncD, scatter) => {
     const { FullscreenPass } = await import(/* @vite-ignore */ '/src/render/fullscreen.ts');
     const { SV_HEADER_ALL } = await import(/* @vite-ignore */ '/src/render/shaders/chunks.ts');
     const sv = window.__sv;
@@ -39,7 +44,7 @@ await withHarness('wakecost', {
     rt.setSize(size, size);
     const V4 = p.ctx.hdrRT.viewport.constructor; // three's Vector4 (no bare-module import in the page)
     const cam = sv.frame.ring.camLocal;
-    const uP = new V4(cam.x - 0.5 * size * step, cam.y - 0.5 * size * step, step, 1);
+    const uP = new V4(cam.x - 0.5 * size * step, cam.y - 0.5 * size * step, step, scatter);
     const mk = (expr) => new FullscreenPass({
       fragmentShader: `${SV_HEADER_ALL}
 uniform vec4 uP;
@@ -50,6 +55,7 @@ void main() {
   vec2 dacc = vec2(0.0);
   for (int i = 0; i < ${K}; i++) {
     vec2 q = xy + vec2(float(i) * 7.31, float(i) * -3.17);
+    if (uP.w > 0.0) q = uP.xy + 0.5 * float(${size}) * uP.z + (vec2(hash13(vec3(gl_FragCoord.xy, float(i))), hash13(vec3(gl_FragCoord.yx, float(i) + 0.5))) - 0.5) * (2.0 * uP.w);
     ${expr}
   }
   outColor = vec4(acc, dacc, 1.0);
@@ -92,7 +98,7 @@ void main() {
     rt.dispose();
     const st = p.stats();
     return { ms: out, probe, glErr, wakeOn: wakes.uniforms.uWakeOn.value, strength: wakes.strength, shape: wakes.shape, stats: { mean: st['rings.wakeMean'] ?? st['rings.wakeMassK'] } };
-  }, size, K, reps, trials, step, asyncD);
+  }, size, K, reps, trials, step, asyncD, scatter);
   const calls = size * size * K * reps;
   const b = 0.5 * (res.ms.baseline0 + res.ms.baseline1);
   const ns = (ms) => ((ms - b) * 1e6) / calls;
@@ -102,13 +108,13 @@ void main() {
     ['wakeDisplacement', res.ms.wakeDisplacement.toFixed(1), (1000 * ns(res.ms.wakeDisplacement)).toFixed(1)],
   ];
   console.log(`\n${preset}: wakes ${res.wakeOn ? 'on' : 'OFF'}, strength ${res.strength.toFixed(3)}, ${size}^2 px x ${K} calls x ${reps} reps, median of ${trials}` +
-    (res.shape && 'asyncD' in res.shape ? `, asyncD ${res.shape.asyncD}` : ''));
+    (res.shape && 'asyncD' in res.shape ? `, asyncD ${res.shape.asyncD}` : '') + (scatter > 0 ? `, scattered within +-${scatter} m` : ', coherent grid'));
   console.log(table(['variant', 'median ms', 'ps / call (GPU throughput)'], rows));
   console.log(`read-back of pixel (0, 0) per variant (sanity: the draws ran): ${JSON.stringify(res.probe)}; gl error ${res.glErr}`);
   rep.check('the benchmark draws ran (finite, non-zero read-back, no GL error)', res.glErr === 0 &&
     ['wakeDensity', 'wakeDisplacement'].every((k) => res.probe[k] && res.probe[k].slice(0, 3).some((v) => Number.isFinite(v) && v !== 0)),
   JSON.stringify(res.probe));
-  rep.data = { preset, size, K, reps, trials, ms: res.ms, nsPerCall: { wakeDensity: ns(res.ms.wakeDensity), wakeDisplacement: ns(res.ms.wakeDisplacement) }, shape: res.shape, strength: res.strength };
+  rep.data = { preset, size, K, reps, trials, scatter, ms: res.ms, nsPerCall: { wakeDensity: ns(res.ms.wakeDensity), wakeDisplacement: ns(res.ms.wakeDisplacement) }, shape: res.shape, strength: res.strength };
   rep.check('wakes are on at the benchmark place', res.wakeOn > 0.5, `strength ${res.strength.toFixed(3)}`);
   await page.close();
 });

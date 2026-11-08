@@ -28,7 +28,8 @@
 //          seam between the representations is a step the reference does not have). Per-view overrides (documented
 //          in HANDOVER_VIEWS) for known residuals. Before Nov 2026 the explicit field was 15-26 % too bright (two
 //          fixed sun-path samples) and the statistical T 30-40 % too low across the wakes.
-//          --hviews id,... --hstrips 13 --hreal 1 (realizations: anchor bumps)
+//          --hviews id,... --hstrips 13 --hreal 3 (realizations: independent wake patterns, WakeField.realization;
+//          the statistics are the ensemble mean, one pattern's strip means scatter by +-5 % along the wakes)
 // The default render scale (0.5) is used unless --scale is given; astronaut=0 throughout.
 import { join } from 'node:path';
 import { canvasChroma, fmt, hdrMeans, openApp, retry, setPassEnabled, sleep, strips, table, waitFrames, withHarness } from './lib.mjs';
@@ -59,7 +60,10 @@ const COMMON = { hud: 0, labels: 0, paused: 1, astronaut: 0 };
 //   step        production / reference between neighbouring strips  0.04 (a seam at the handover)
 export const HANDOVER_VIEWS = [
   // the explicit field's T across the wakes at the far end of the band is 5-10 % low (the chi_eff model of the
-  // clipmap prefilter is incomplete for strongly decorrelated paths; production T there stays within 5 %)
+  // clipmap prefilter is incomplete for strongly decorrelated paths; production T there stays within 5 %). Open
+  // (README handover residual 4): across the wakes the statistical T is up to ~14 % above the reference -- the sheet
+  // and the march's statistics take chi with the local Toomre lambda (rlToomre, ~ Sigma(r)), the explicit field and
+  // the probe's chi unit have the anchor's; with the anchor's lambda (uRlWakeLamRef.x) every check of this view passes
   { id: 'a-ring-1km', note: 'preset at the Cassini-compare time: left half along the wakes, right half across (Saturn behind)', params: { preset: 'a-ring-1km', t: '2026-11-08T12:00:00Z' }, rows: [0.3, 0.95], regions: [[0.02, 0.48], [0.52, 0.98]], lim: { TE: 0.12 } },
   // (below the ring plane, z < 0: pitch up to look at the layer). High phase (looking toward the Sun's azimuth): the
   // two-column reflection is ~10-15 % above the explicit field along the wakes, the statistical and explicit T up to
@@ -67,15 +71,21 @@ export const HANDOVER_VIEWS = [
   // (base radiative transfer, not the wakes)
   { id: 'a-1km-yaw120', note: 'the preset position (lit face, 1 km) looking the other way (yaw 120, high phase)', params: { cam: 'ring', r: 128000e3, phi: 96.2, z: -1000, yaw: 120, pitch: 24, t: '2026-11-08T12:00:00Z' }, rows: [0.05, 0.7], regions: [[0.02, 0.48], [0.52, 0.98]], lim: { L: 0.18, T: 0.15, TE: 0.15, statSheet: 0.07, step: 0.05 } },
   // the unlit face from 2 km: along the wakes the two-column reflection is up to ~10 % below the explicit field;
-  // across them the statistical T 4-7 % above it
+  // across them the statistical T 3-9 % above it (the lambda mismatch of a-ring-1km: within 2 % with the anchor's lambda)
   { id: 'unlit-2km', note: '2 km above the unlit A ring (arc-repro camera)', params: { cam: 'ring', r: 133374e3, z: 1970, yaw: 60, pitch: -22, t: '2026-11-08T01:02:55Z' }, rows: [0.45, 0.95], regions: [[0.02, 0.48], [0.52, 0.98]], lim: { L: 0.12, T: 0.08 } },
 ];
 const HLIM = { L: 0.08, T: 0.06, LE: 0.22, TE: 0.06, statSheet: 0.03, step: 0.04, wBand: 0.02 };
 const HANDOVER_MODES = ['default', 'sheet', 'stat', 'explicit', 'reference'];
 
-// Strip means averaged over `nReal` realizations: bumping the frame anchor id re-seeds the particles and the wake
-// field (same seed sequence in the near-field and the medium-only runs), which beats the shot noise of the few
-// large particles close to the camera far better than moving the time.
+// Strip means averaged over `nReal` realizations: bumping the frame anchor id re-seeds the particles, and the wake
+// field's realization index draws an independent wake pattern (same sequence in the near-field and the medium-only
+// runs); this beats the shot noise of the few large particles close to the camera, and the pattern noise of strips
+// covering only a few wake tiles, far better than moving the time.
+const nextRealization = (page, k) => page.evaluate((k) => {
+  const sv = window.__sv;
+  sv.anchor.anchorId += 7919;
+  if (sv.pipeline.ctx.wakes) sv.pipeline.ctx.wakes.realization = k;
+}, k);
 async function stripMeans(browser, base, params, rects, nReal, { shot, chromaRect } = {}) {
   return retry(async () => {
     const { page } = await openApp(browser, base, params, { settle: 2000 });
@@ -83,7 +93,7 @@ async function stripMeans(browser, base, params, rects, nReal, { shot, chromaRec
       const acc = new Array(rects.length).fill(0);
       for (let k = 0; k < nReal; k++) {
         if (k > 0) {
-          await page.evaluate(() => { window.__sv.anchor.anchorId += 7919; });
+          await nextRealization(page, k);
           await sleep(1500);
         }
         const v = await hdrMeans(page, rects);
@@ -144,7 +154,7 @@ async function handoverMeans(browser, base, params, mode, rects, nReal) {
       const setDebug = (v) => page.evaluate((v) => { window.__sv.app.settings.render.debugView = v; }, v);
       const acc = { L: rects.map(() => 0), T: rects.map(() => 0), wM: rects.map(() => 0), cover: rects.map(() => 0) };
       for (let k = 0; k < nReal; k++) {
-        if (k > 0) await page.evaluate(() => { window.__sv.anchor.anchorId += 7919; });
+        if (k > 0) await nextRealization(page, k);
         await setDebug(0);
         await waitFrames(page, 4);
         await sleep(k > 0 ? 1500 : 300);
@@ -167,7 +177,7 @@ async function handoverMeans(browser, base, params, mode, rects, nReal) {
   }, { label: `handover ${mode}` });
 }
 
-await withHarness('seam', { usage: 'node scripts/test/seam.mjs [--base URL] [--out DIR] [--only seam,flux,handover] [--views a,b] [--hviews a,b] [--realizations 6] [--hreal 1] [--strips N] [--scale S]' }, async ({ args, out, rep, base, browser }) => {
+await withHarness('seam', { usage: 'node scripts/test/seam.mjs [--base URL] [--out DIR] [--only seam,flux,handover] [--views a,b] [--hviews a,b] [--realizations 6] [--hreal 3] [--strips N] [--scale S]' }, async ({ args, out, rep, base, browser }) => {
   const only = new Set(args.list('only', ['seam', 'flux', 'handover']));
   const scale = args.has('scale') ? { scale: args.num('scale', 0.5) } : {};
   const nReal = args.num('realizations', 6);
@@ -228,7 +238,7 @@ await withHarness('seam', { usage: 'node scripts/test/seam.mjs [--base URL] [--o
 
   if (only.has('handover')) {
     const want = new Set(args.list('hviews', HANDOVER_VIEWS.map((v) => v.id)));
-    const nS = args.num('hstrips', 13), nR = args.num('hreal', 1);
+    const nS = args.num('hstrips', 13), nR = args.num('hreal', 3);
     rep.data.handover = {};
     for (const v of HANDOVER_VIEWS.filter((x) => want.has(x.id))) {
       console.log(`\n[handover] ${v.id} — ${v.note}`);

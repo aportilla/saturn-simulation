@@ -75,11 +75,11 @@ but mostly not axisymmetric (ingress/egress correlation < 0.35 at < 2 km scales)
 | C 79,000–84,000 | 3.16 | 4.1 mm–10 m | 5 | 40 | 0.21,0.20,0.18 | 0 | 0.01 | 410 |
 | C outer 84,000–90,620 | 3.16 | 4.1 mm–10 m | 5 | 15 | 0.21,0.20,0.18 | 0 | 0.01 | 115 |
 | C ramp 90,620–91,975 | 3.16 | 3.8 mm–10 m | 5 | 50 | 0.32,0.30,0.26 | 0 | 0.01 | 340 |
-| B1 91,975–99,000 | 2.9 | 5 cm–3 m | 10 | 400 | 0.62,0.56,0.45 | 0.6 | 0 | 280 |
-| B2 99,000–104,000 | 3.2 | 5 cm–2 m | 15 | 420 | 0.66,0.59,0.47 | 0.5 | 0 | 170 |
-| B3 104,000–110,000 | 3.2 | 5 cm–2 m | 15 | 680 | 0.66,0.59,0.47 | 0.5 | 0 | 210 |
-| B4 110,000–116,500 | 3.1 | 5 cm–2.5 m | 12 | 700 | 0.66,0.59,0.47 | 0.6 | 0 | 300 |
-| B5 116,500–117,700 | 2.9 | 5 cm–3 m | 10 | 520 | 0.66,0.59,0.47 | 0.5 | 0 | 340 |
+| B1 91,975–99,000 | 2.9 | 5 cm–3 m | 10 | 400 | 0.62,0.56,0.45 | 1 (B set) | 0 | 280 |
+| B2 99,000–104,000 | 3.2 | 5 cm–2 m | 15 | 420 | 0.66,0.59,0.47 | 1 (B set) | 0 | 170 |
+| B3 104,000–110,000 | 3.2 | 5 cm–2 m | 15 | 680 | 0.66,0.59,0.47 | 1 (B set) | 0 | 210 |
+| B4 110,000–116,500 | 3.1 | 5 cm–2.5 m | 12 | 700 | 0.66,0.59,0.47 | 1 (B set) | 0 | 300 |
+| B5 116,500–117,700 | 2.9 | 5 cm–3 m | 10 | 520 | 0.66,0.59,0.47 | 1 (B set) | 0 | 340 |
 | CD 117,700–120,900 | 2.9 | 4.1 mm–9 m | 4 | 8 + 60τ (~15) | 0.30,0.28,0.25 | 0 | 0.01 | 65 |
 | CD ramp 120,900–122,050 | 3.05 | 3.3 mm–10 m | 5 | 840τ (~130) | 0.42,0.39,0.33 | 0 | 0.005 | 580 |
 | A inner 122,050–133,423 | 2.9 | 2 cm–5 m | 10 | 433τ (~330) | 0.58,0.52,0.43 | 1.0 | 0.001 | 300 |
@@ -147,10 +147,12 @@ over ±40 km, except across dust ↔ macroscopic boundaries (gap and ring edges 
   sphere 2.67), so the per-particle factor that enforces the power law stays within ~0.96–1.18 for α ≤ 90°.
   The opposition surge stays an α-only factor (the medium's intrinsic surge).
 
-**Wakes** (0–1, relative). Strongest in the inner/mid A ring, where the azimuthal brightness asymmetry and
-occultation wake signal peak (Colwell et al. 2006; Hedman et al. 2007; French et al. 2007). Weaker beyond the
-Encke gap. Present but packed with narrow gaps in the B ring (Colwell et al. 2007; Nicholson & Hedman 2010).
-Absent in the C ring and CD (Toomre λ ≈ 1–2 m is smaller than the particles).
+**Wakes** (0–1, relative; the strength is this value × smooth(0.15, 0.4, τ) × the λ/a_max test of `WakeField`).
+Strongest in the inner/mid A ring, where the azimuthal brightness asymmetry and occultation wake signal peak (Colwell
+et al. 2006; Hedman et al. 2007; French et al. 2007). Weaker beyond the Encke gap (§10.11). In the B ring as strong and
+coherent as in the A ring at its surface density (N-body, §10.5): strength 1 with the B-ring parameter set ("B set",
+zone field `wakeB`; Colwell et al. 2007; Nicholson & Hedman 2010). Absent in the C ring and CD (Toomre λ ≈ 1–2 m is
+smaller than the particles).
 
 **Dust** (fraction of τ in ≲ 100 µm grains). The A and C rings "lack the persistent icy dust" of the F ring
 (Harbison et al. 2013). Small values are kept for the C ring and CD, which brighten at high phase. Dusty zones are
@@ -478,34 +480,36 @@ area) is stated. Uncertainties are standard errors of 1-orbit block means.
 ### 10.2 Mid-A ring (128,000 km): wake morphology
 
 The table compares A128-ident (identical 1 m particles, τ 0.6, measured over 12 orbits) with the app's field at the same
-site (strength 1, γ 0.16, spreads 1.6/5.0, R_C 0.45, T_LIFE 3) and with the recommended parameters of §10.9 (6-orbit
-synthetic runs with the same particles). The surface-mass-density field is smoothed at λ_T/16 for the quantiles and
+site before Nov 2026 (strength 1, γ 0.16, spreads 1.6/5.0, R_C 0.45, T_LIFE 3), with the recommended parameters of §10.9
+(old map) and with the model as implemented (§10.11: A set; `results/A128-ident-v2.json`). Procedural columns are 6-orbit
+synthetic runs with the same particles. The surface-mass-density field is smoothed at λ_T/16 for the quantiles and
 skeleton, and at λ/32 for spectra, the ACF and orientations.
 
-| statistic | N-body (1 m identical) | app (defaults) | app, recommended (§10.9) |
-|---|---|---|---|
-| spectral peak spacing / λ_T | 1.67 ± 0.11 | 1.06 ± 0.02 | 1.22 ± 0.16 |
-| power-weighted spacing 2π/⟨k⟩ / λ_T | 1.59 | 1.01 | 1.15 |
-| ACF spacing (2 × first-minimum lag) / λ_T | 0.72 | 0.94 | 0.72 |
-| pitch: crest orientation median (IQR) [deg] | 19.8 (13–26) | 21.0 (18–25) | 17.3 (12–25) |
-| pitch: spectral peak / ACF axis [deg] | 15.3 / 18.7 | 21.4 / 21.5 | 23.9 / 16.6 |
-| pitch within a snapshot: IQR / drift of the median over time (std) [deg] | 12.7 / 1.4 | 7.6 / 2.3 | 5.8 / 7.9 |
-| share of crest energy trailing | 0.98 | 0.99 | 0.99 |
-| along-crest correlation length (1/e) / λ_T | 0.85 | 1.35 | 0.95 |
-| across-crest correlation length (1/e) / λ_T | 0.130 | 0.106 | 0.099 |
-| ACF across crests: first minimum / next maximum | −0.17 / −0.04 | −0.27 / +0.13 | −0.19 / +0.01 |
-| crest end points per λ_T² | 0.98 ± 0.01 | 0.47 ± 0.02 | 0.81 ± 0.06 |
-| crest branch points per λ_T² | 0.82 ± 0.01 | 0.66 ± 0.05 | 0.97 ± 0.08 |
-| mean filament length 2L/n_end / λ_T | 3.1 | 8.3 ± 0.4 | 4.6 ± 0.5 |
-| D quantiles p5 / p25 / p50 / p75 / p95 / p99 (λ/16) | 0.08 / 0.34 / 0.75 / 1.42 / 2.77 / 3.86 | 0.13 / 0.32 / 0.65 / 1.49 / 2.97 / 3.71 | 0.11 / 0.35 / 0.75 / 1.41 / 2.89 / 3.88 |
-| wakes (D > 1): area fraction f_B | 0.389 | 0.369 | 0.386 |
-| mean D in wakes / gaps | 1.87 / 0.45 | 2.03 / 0.43 | 1.92 / 0.46 |
-| mass fraction in wakes | 0.73 | 0.73 | 0.72 |
-| τ_dyn in wakes / gaps | 1.12 / 0.27 | 1.22 / 0.26 | 1.15 / 0.28 |
-| vertical τ_phot: all / gaps / wakes / cores | 0.53 / 0.21 / 1.41 / 3.11 | 0.45 / 0.21 / 1.05 / 2.10 | 0.44 / 0.20 / 0.97 / 1.90 |
-| granola fit (slant rays): S/W, H/W, τ_G, pitch | 3.70, 0.44, 0.26, 19° | 7.12, 0.90, 0.28, 21° | 7.49, 1.07, 0.28, 16° |
-| shearing-frame correlation C(0.1 / 0.2 / 0.3 / 0.5 orbit) | 0.85 / 0.58 / 0.36 / 0.12 | 0.51 / 0.13 / 0.01 / 0.00 | 0.70 / 0.62 / 0.38 / 0.04 |
-| correlation half-life [orbits] | 0.24 | 0.10 | 0.25 |
+| statistic | N-body (1 m identical) | app before | app, recommended (§10.9) | **as implemented** (§10.11) |
+|---|---|---|---|---|
+| spectral peak spacing / λ_T | 1.67 ± 0.11 | 1.06 ± 0.02 | 1.22 ± 0.16 | 1.34 ± 0.12 |
+| power-weighted spacing 2π/⟨k⟩ / λ_T | 1.59 | 1.01 | 1.15 | 1.23 |
+| ACF spacing (2 × first-minimum lag) / λ_T | 0.72 | 0.94 | 0.72 | 0.84 |
+| pitch: crest orientation median (IQR) [deg] | 19.8 (13–26) | 21.0 (18–25) | 17.3 (12–25) | 15.5 (11–21) |
+| pitch: spectral peak / ACF axis [deg] | 15.3 / 18.7 | 21.4 / 21.5 | 23.9 / 16.6 | 21.9 / 16.2 |
+| pitch within a snapshot: IQR / drift of the median over time (std) [deg] | 12.7 / 1.4 | 7.6 / 2.3 | 5.8 / 7.9 | 8.3 / 6.1 |
+| share of crest energy trailing | 0.98 | 0.99 | 0.99 | 0.99 |
+| along-crest correlation length (1/e) / λ_T | 0.85 | 1.35 | 0.95 | 1.33 |
+| across-crest correlation length (1/e) / λ_T | 0.130 | 0.106 | 0.099 | 0.122 |
+| ACF across crests: first minimum / next maximum | −0.17 / −0.04 | −0.27 / +0.13 | −0.19 / +0.01 | −0.25 / +0.02 |
+| crest end points per λ_T² | 0.98 ± 0.01 | 0.47 ± 0.02 | 0.81 ± 0.06 | 0.87 ± 0.04 |
+| crest branch points per λ_T² | 0.82 ± 0.01 | 0.66 ± 0.05 | 0.97 ± 0.08 | 1.05 ± 0.06 |
+| mean filament length 2L/n_end / λ_T | 3.1 | 8.3 ± 0.4 | 4.6 ± 0.5 | 3.8 ± 0.1 |
+| D quantiles p5 / p25 / p50 / p75 / p95 / p99 (λ/16) | 0.08 / 0.34 / 0.75 / 1.42 / 2.77 / 3.86 | 0.13 / 0.32 / 0.65 / 1.49 / 2.97 / 3.71 | 0.11 / 0.35 / 0.75 / 1.41 / 2.89 / 3.88 | 0.09 / 0.34 / 0.75 / 1.41 / 2.92 / 3.88 |
+| wakes (D > 1): area fraction f_B | 0.389 | 0.369 | 0.386 | 0.387 |
+| mean D in wakes / gaps | 1.87 / 0.45 | 2.03 / 0.43 | 1.92 / 0.46 | 1.92 / 0.45 |
+| mass fraction in wakes | 0.73 | 0.73 | 0.72 | 0.73 |
+| τ_dyn in wakes / gaps | 1.12 / 0.27 | 1.22 / 0.26 | 1.15 / 0.28 | 1.15 / 0.27 |
+| vertical τ_phot: all / gaps / wakes / cores | 0.53 / 0.21 / 1.41 / 3.11 | 0.45 / 0.21 / 1.05 / 2.10 | 0.44 / 0.20 / 0.97 / 1.90 | 0.46 / 0.21 / 1.06 / 2.10 |
+| granola fit (slant rays): S/W, H/W, τ_G, pitch | 3.70, 0.44, 0.26, 19° | 7.12, 0.90, 0.28, 21° | 7.49, 1.07, 0.28, 16° | 5.40, 0.63, 0.26, 18° |
+| shearing-frame correlation C(0.1 / 0.2 / 0.3 / 0.5 orbit) | 0.85 / 0.58 / 0.36 / 0.12 | 0.51 / 0.13 / 0.01 / 0.00 | 0.70 / 0.62 / 0.38 / 0.04 | 0.84 / 0.64 / 0.41 / 0.01 |
+| correlation half-life [orbits] | 0.24 | 0.10 | 0.25 | 0.26 |
+| calibration score (21 metrics + fold term; §10.9, §10.11) | – | 312 (294 without the fold term) | 96 with the new map (72 with the old, no fold term) | **65** |
 
 Granola-bar split at D = 1: W_wake = f_B·λ_w, W_gap = (1 − f_B)·λ_w. With λ_w = λ_T (41 m) that is 16 m and 25 m for the
 N-body (S/W = 1.6); with the spectral λ_w (69 m) it is 27 m and 42 m.
@@ -615,26 +619,29 @@ covariance of two random halves of those particles. p = 1 means "follows the wak
 ### 10.5 B ring (105,000 km)
 
 B105-sd uses the B3 zone's sizes (q = 3.2, 0.2–2 m) at τ = 2.5 and Σ = 600 kg m⁻². The simulated τ is 1.34 (the
-particles below 0.2 m carry the rest), the box is 4 λ_T = 191 m, and orbits 4–6 were measured. The app column is the
-zone's present field (strength 0.5, γ 0.24, spreads 2.4/6.0, R_C 0.45, T_LIFE 3; H = 15 m). Mass field at λ_T/16.
+particles below 0.2 m carry the rest), the box is 4 λ_T = 191 m, and orbits 4–6 were measured. The "app before" column is
+the zone's field before Nov 2026 (strength 0.5, γ 0.24, spreads 2.4/6.0, R_C 0.45, T_LIFE 3; H = 15 m). Mass field at
+λ_T/16.
 
-| statistic | N-body | app (B3 zone now) | app, B calibration (§10.9) |
-|---|---|---|---|
-| spacing: spectral peak / power-weighted / λ_T | 1.05 ± 0.13 / 1.00 | 0.99 / 0.95 | 0.95 ± 0.08 / 0.89 |
-| pitch: median (IQR) [deg]; share of crest energy trailing | 18.7 (12–25); 0.96 | 18.4 (2–31); 0.79 | 16.8 (13–22); 0.99 |
-| pitch within a snapshot: IQR / drift of the median [deg] | 13.6 / 1.5 | 36.6 / 5.9 | 7.7 / 5.1 |
-| along-crest correlation length (1/e) / λ_T | 0.75 | 0.87 | 0.95 |
-| crest end / branch points per λ_T²; filament length / λ_T | 0.65 / 0.68; 5.3 | 2.12 / 2.48; 2.0 | 0.50 / 0.68; 10.2 |
-| D quantiles p5 / p25 / p50 / p75 / p95 / p99 | 0.03 / 0.20 / 0.66 / 1.52 / 3.05 / 4.20 | 0.45 / 0.68 / 0.94 / 1.29 / 1.81 / 2.17 | 0.13 / 0.31 / 0.70 / 1.53 / 2.93 / 3.72 |
-| τ_dyn in wakes / gaps (D ≷ 1) | 2.70 / 0.50 | 1.80 / 0.99 | 2.65 / 0.59 |
-| vertical τ_phot: all / gaps / wakes / cores | 0.75 / 0.33 / 2.63 / 7.56 | 1.22 / 0.90 / 1.83 / 2.65 | 0.71 / 0.40 / 1.75 / 3.19 |
-| granola fit (slant rays): S/W, H/W, τ_G, pitch | 2.03, 0.37, 0.21, 19° | 7.0, 0.66, 1.06, 19° | 3.5, 0.89, 0.42, 20° |
-| shearing-frame correlation C(0.1 / 0.2 / 0.3 / 0.5 orbit); half-life [orbits] | 0.85 / 0.57 / 0.34 / 0.10; 0.23 | 0.67 / 0.29 / 0.04 / −0.01; 0.14 | 0.67 / 0.53 / 0.29 / 0.00; 0.21 |
-| mid-plane filling: mean; wake cores λ/32 / λ/16 / λ/8 | 0.29; 0.69 / 0.64 / 0.52 | 0.16; 0.33 / 0.29 / 0.23 | 0.16; 0.57 / 0.46 / 0.31 |
-| mid-plane filling, 99.9th percentile λ/32 / λ/16 / λ/8 / λ/4 | 0.83 / 0.77 / 0.68 / 0.52 | 0.87 / 0.54 / 0.34 / 0.23 | 1.38 / 0.82 / 0.46 / 0.27 |
-| mass-weighted rms height [m]; Toomre Q | 1.96; 1.7 | 3.33; 1.2 | 3.33; 1.2 |
+| statistic | N-body | app before (B3 zone) | app, B calibration (§10.9) | **as implemented** (§10.11) |
+|---|---|---|---|---|
+| spacing: spectral peak / power-weighted / λ_T | 1.05 ± 0.13 / 1.00 | 0.99 / 0.95 | 0.95 ± 0.08 / 0.89 | 1.03 ± 0.10 / 0.96 |
+| pitch: median (IQR) [deg]; share of crest energy trailing | 18.7 (12–25); 0.96 | 18.4 (2–31); 0.79 | 16.8 (13–22); 0.99 | 15.2 (11–21); 0.99 |
+| pitch within a snapshot: IQR / drift of the median [deg] | 13.6 / 1.5 | 36.6 / 5.9 | 7.7 / 5.1 | 8.6 / 6.0 |
+| along-crest correlation length (1/e) / λ_T | 0.75 | 0.87 | 0.95 | 0.93 |
+| crest end / branch points per λ_T²; filament length / λ_T | 0.65 / 0.68; 5.3 | 2.12 / 2.48; 2.0 | 0.50 / 0.68; 10.2 | 0.52 / 0.72; 6.0 |
+| D quantiles p5 / p25 / p50 / p75 / p95 / p99 | 0.03 / 0.20 / 0.66 / 1.52 / 3.05 / 4.20 | 0.45 / 0.68 / 0.94 / 1.29 / 1.81 / 2.17 | 0.13 / 0.31 / 0.70 / 1.53 / 2.93 / 3.72 | 0.09 / 0.28 / 0.69 / 1.51 / 3.05 / 3.82 |
+| τ_dyn in wakes / gaps (D ≷ 1) | 2.70 / 0.50 | 1.80 / 0.99 | 2.65 / 0.59 | 2.69 / 0.56 |
+| vertical τ_phot: all / gaps / wakes / cores | 0.75 / 0.33 / 2.63 / 7.56 | 1.22 / 0.90 / 1.83 / 2.65 | 0.71 / 0.40 / 1.75 / 3.19 | 0.75 / 0.40 / 1.96 / 4.21 |
+| granola fit (slant rays): S/W, H/W, τ_G, pitch | 2.03, 0.37, 0.21, 19° | 7.0, 0.66, 1.06, 19° | 3.5, 0.89, 0.42, 20° | 2.87, 0.66, 0.43, 19° |
+| shearing-frame correlation C(0.1 / 0.2 / 0.3 / 0.5 orbit); half-life [orbits] | 0.85 / 0.57 / 0.34 / 0.10; 0.23 | 0.67 / 0.29 / 0.04 / −0.01; 0.14 | 0.67 / 0.53 / 0.29 / 0.00; 0.21 | 0.73 / 0.60 / 0.36 / 0.00; 0.24 |
+| mid-plane filling: mean; wake cores λ/32 / λ/16 / λ/8 | 0.29; 0.69 / 0.64 / 0.52 | 0.16; 0.33 / 0.29 / 0.23 | 0.16; 0.57 / 0.46 / 0.31 | 0.15; 0.58 / 0.48 / 0.33 |
+| mid-plane filling, 99.9th percentile λ/32 / λ/16 / λ/8 / λ/4 | 0.83 / 0.77 / 0.68 / 0.52 | 0.87 / 0.54 / 0.34 / 0.23 | 1.38 / 0.82 / 0.46 / 0.27 | 1.33 / 0.84 / 0.48 / 0.28 |
+| mass-weighted rms height [m]; Toomre Q | 1.96; 1.7 | 3.33; 1.2 | 3.33; 1.2 | 3.33; 1.2 |
+| calibration score (20 metrics + fold term) | – | 1210 | 57 (old map, no fold term) | **48** |
 
-The third column is the B optimum of §10.9 (strength 1, plateau envelope) with the present vertical law (H = 15 m).
+The third column is the B optimum of §10.9 (strength 1, plateau envelope) with the present vertical law (H = 15 m); the
+fourth the B set as implemented (`results/B105-sd-v2.json`).
 
 | radius (m) | 0.20–0.35 | 0.35–0.60 | 0.60–1.00 | 1.00–1.75 | 1.75–2.00 |
 |---|---|---|---|---|---|
@@ -692,6 +699,18 @@ al. 2016). So the 7 m a_max of `A_out` is too large for its Σ: the biggest bodi
 Toomre-stable dispersion. The τ deficit is largest here (55–62 %, the weakest damping of all runs), and the app's
 λ/aMax test still gives a wake strength of 0.38.
 
+**Decision (Nov 2026): weak wakes with the zone's sizes.** The wake signal of the outer A ring is observed: the azimuthal
+brightness asymmetry persists beyond the Encke gap and weakens outward (Dones et al. 1993; French et al. 2007), and
+occultations find wakes there, weaker and less coherent than in the mid A ring (Colwell et al. 2006; Hedman et al.
+2007). The occultation size data constrain a_min (Becker et al. 2016) but give no smaller a_max than the 5–10 m of the
+A ring (§3), so a_max stays 7 m (particle counts unchanged). The wake strength stays the zone value 0.6 × the λ/a_max
+test: 0.36–0.39 inside 135,000 km, falling to ~0.2 at the outer edge (λ ∝ Σr³ shrinks outward). That is the level
+of the weak wakes of the a_max = 3 m run: synthetic runs with its particles at strength 0.15 / 0.3 / 0.45 give density
+quantiles p5/p25 0.16/0.32, 0.14/0.31, 0.11/0.28 against 0.12/0.25 for A135-amax3 (`results/outerA/`), i.e. ~0.4.
+Weaker than that the procedural wakes would vanish in the particle noise (crest orientation 51–54 % trailing up to
+s = 0.45, as for no wakes). The N-body result itself (wakeless with 7 m bodies) points to fewer multi-metre bodies, or
+more cohesion, than the model assumes; it is not used to remove the observed wakes.
+
 ### 10.7 Optical depth and the granola-bar view
 
 * **Normal optical depth.** Clumping lowers τ_phot below τ_dyn (Salo et al. 2004; Robbins et al. 2010).
@@ -721,18 +740,33 @@ Toomre-stable dispersion. The τ deficit is largest here (55–62 %, the weakest
 
 ### 10.8 Accuracy of `wakeDensity()`
 
-`procedural.py check-inverse` compares `wakeDensity()` (one Newton step per generation) with the exact density of the
-forward map that places the particles.
+`procedural.py check-inverse` compares `wakeDensity()` with the exact density of the forward map that places the
+particles: per area (a fine Lagrangian lattice mapped and binned at λ/32) and per particle (mapped random points against
+1/det of the forward map's Jacobian; this also counts the particles in folds). 8 times, A: 6 λ box, B: 4 λ.
 
-At A-mid settings (strength 1, γ = 0.16):
-* It differs by > 20 % on 2.6 % of the area on average (up to 8 % at some times), and by > ×2 on 0.6 %.
-* 0.7 % of the area sits at the clamp of 6.9, while the particles reach 10–15× the mean density at λ/32. These are the
-  speckled lines visible in the noise-free maps.
-* The area mean is 0.968, down to 0.895 at some times: the medium loses on average 3 % and at times 10 % of its τ.
+| statistic (mean over times; worst time) | A128, before (γ 0.16, 1 Newton step) | **A128, as implemented** (A set) | B105, before at strength 1 (γ 0.24) | **B105, as implemented** (B set) |
+|---|---|---|---|---|
+| area where it differs by > 20 % / > 2× | 2.6 % (8.1 %) / 0.58 % | **0.58 % (2.1 %) / 0.14 %** | 1.4 % (3.3 %) / 0.19 % | **2.0 % (3.4 %) / 0.38 %** |
+| particles off by > 20 % / > 2× | 7.4 % (17.9 %) / 2.6 % | **0.63 % (2.7 %) / 0.17 %** | 4.1 % (8.4 %) / 1.2 % | **2.6 % (4.1 %) / 0.55 %** |
+| particles in folds of the forward map | 0.53 % (2.0 %) | **0.00 %** | 0.21 % (0.89 %) | **0.09 % (0.29 %)** |
+| area mean of wakeDensity (particles: 1) | 0.968 (0.895) | **0.998 (0.974–1.015)** | 0.982 (0.966) | **0.997 (0.983–1.010)** |
+| area at the clamp; clamp | 0.70 %; 6.9 | **0 %; [0.058, 30]** | 0.70 %; 4.6 | **0.01 %; [0.055, 32]** |
+| p99.9 / max density: wakeDensity vs particles (λ/32) | 6.8 / 6.9 vs 8.2 / 10.5 | **7.6 / 10.0 vs 6.7 / 7.3** | 4.6 / 4.6 vs 5.7 / 6.3 | **8.0 / 16 vs 6.7 / 7.3** |
 
-At B settings (strength 0.5, γ = 0.24) it is exact to < 1 % everywhere.
+(`results/check_inverse_*`: `A128` = before as published, `A128-legacy`/`B105-legacy-s1` = the old model recomputed with
+the per-particle statistics, `-v2` = as implemented. The B ring's old field had strength 0.5, at which the old inverse was
+exact to < 1 % — but at a third of the N-body contrast, §10.5.)
+
+The old inverse lost mass in the folds of its map (where the local wave number exceeded the mean) and clipped the dense
+cores at 6.9; the new map (§10.11) does not fold, and the inverse follows it to ~1 %. The remaining errors sit next to
+the envelope's dislocations, where the strength changes quadratically over a few metres. The probe in the ring-layer pass
+measures the window mean on the GPU: 0.995–1.006 in the A and B rings (stats `rings.wakeMean`; no correction applied).
 
 ### 10.9 Recommended targets for the procedural model
+
+*(Status Nov 2026: the plateau envelope, the A/B parameter sets, strength 1 without the "chaos" in the B ring, the
+`wakeDensity` fix, the separate gap γ and local asynchrony are implemented and re-calibrated: §10.11; the outer A ring:
+§10.6. The size rules, the medium's τ_dyn and the vertical law below are open.)*
 
 The calibration (`calibrate.py`) scores Σ((m − m_N-body)/tol)² over 21 metrics: spacing, density quantiles, ACF, crest
 skeleton, pitch (pooled, within-snapshot spread and drift) and shearing-frame correlation. The tolerance is max(15 %, a
@@ -880,8 +914,114 @@ Score differences below ~20 are noise in this box.
 * **Comparison method.**
   * The synthetic runs use the N-body run's Toomre λ with κ = Ω; the app's J2-corrected λ is 1 % longer.
   * The calibration uses 2-orbit candidates, so score differences < 5 (A ring) or ~20 (B ring) are not significant.
-  * Of the structural changes, the plateau envelope and the extra generations were tested in the port only; local
-    asynchrony is not yet implemented anywhere.
+  * The extra generations were tested in the port only; the plateau envelope, the separate gap γ and local asynchrony
+    are implemented (§10.11).
+
+### 10.11 Implemented model (Nov 2026)
+
+`WakeField.ts` + `wakes.glsl`, mirrored by `procedural.py` (`--verify`: every texel of both texture layers and of the
+asynchrony texture, the wake set and every uniform, bit-exact), calibrated with `calibrate.py` against A128-ident
+(21 metrics), A128-sd (17) and B105-sd (20), each plus a fold term ((share of the particles in folds of the forward map /
+0.003)²: `wakeDensity` follows one branch, so folds are inconsistencies).
+
+**Map.**
+* Each of the two generations displaces along its mean wave normal n by D = (C(Θ) − Θ)/K, K the *local* wave number along
+  n: K = k + n·∇ψ, ∇ψ the phase gradient of the envelope W (stored per texel, regularised as Im(W*∇W)/max(|W|², 0.02)),
+  with a smooth lower clamp at 0.65 k (both generations together then move ≤ tile/6.3, inside the near field's culling
+  margin tile/6). The old map divided by the mean k and folded where the local wave number exceeded it by more than
+  γ^a/(1 − γ^a): 0.5 % of the particles at the old A settings, ~1 % at the §10.9 parameters, mass the single-branch
+  inverse missed. Compressing each local wavelength into its own core removes that mechanism; what folds now (the
+  strength gradient at the envelope's dislocations, the curvature of K) is 0.00 % (A set) and 0.09 % (B set) of the
+  particles.
+* C is the composite circle map C = G_g∘M_γ, M_γ(Θ) = 2 atan(γ tan(Θ/2)), G_g(φ) = atan(g tan φ): C′(0) = gγ, C′(π) = g/γ,
+  so the core density 1/γ_core = 1/(gγ) and the gap density γ_gap = γ/g are independent. Both factors are monotone (no
+  shell crossing) and the inverse is closed-form. The plain circle map tied the gap floor to the core (γ vs 1/γ); with
+  γ_gap ≈ 0.55 γ_core the gaps are as empty as in the N-body (p5 0.09 vs 0.08 in A; 0.09 vs 0.03 in B, was 0.13) without
+  higher peaks.
+* Local strength a = s e (1 − exp(−|W|²/R_C²)) as before, e the envelope below.
+
+**Inverse** (`wakeDensity`). Per generation at the Eulerian point x: a closed-form guess from the fields at x (exact for a
+locally linear phase with constant strength and K: Θ_L = C⁻¹(Θ(x))), then 2 Newton steps on t − D(x − t n) = 0 with
+J = 1 + ∂D/∂n from central differences (±0.75 m along n, exact for the quadratic rise of the strength at a dislocation; the
+old forward difference was ~4× less accurate there); |J| ≥ 0.06 at the end. wakeDensity = 1/(J_young J_old), clamped to
+[0.8 γ_gap^s, 4 γ_core^−s]; the particles reach 0.82–0.98 γ_gap^s at their minimum, so the floor, also `wakeMinDensity()`,
+stays a true lower bound. Accuracy: §10.8. The mass correction `uWakeMassK` (×1.24 on the dense part in the A ring) is
+removed; the ring-layer probe still measures the window mean (`rings.wakeMean`, 0.995–1.006 on the GPU) as a check.
+
+**Local asynchrony.** Within each half-life cycle (phase φ ∈ [0, 1)) the younger generation takes over at the local phase
+φ − d δ(x): e_young = smoothstep(0, 2 env_w, φ − d δ), e_old = 1 − e_young. δ ∈ [0, 1) is a smooth random field (64²
+texture, Gaussian spectrum, 1/e correlation length ℓ λ) read in a frame advected with the shear (the younger generation's
+shear, offsets per cycle) and re-drawn every cycle. That is continuous: every handover is complete (d + 2 env_w ≤ 1) before
+the next birth, when δ's frame changes. Each map's strength depends only on its own input point, so particles and density
+stay exactly consistent. With two generations a snapshot holds at most two ages, and late-switching regions keep the older,
+shallower and finer pattern longer; so d trades the drift (6 → 2.5° from d = 0.25 to 0.8) against spacing (1.34 → 0.7 λ_T)
+and pitch (16 → 10°). Calibrated: d = 0.25, ℓ = 2 λ in the A ring (score 65 vs 106 without: C(0.1 orbit) 0.84 vs 0.70 and
+half the drift penalty), none in the B ring (79–170 vs 54: longer filaments, shallower pitch). A complete asynchrony would
+need ≥ 3 generations in flight with spatial ownership, at 3–4× the map cost.
+
+**Parameter sets** (`WAKE_SETS`; zone field `wakeB`: A_in, A_out → A, B1–B5 → B, blended like every zone parameter, which
+never mixes them because the wake-free Cassini Division lies between):
+
+| set | γ_core | γ_gap | spreadPar / spreadPerp | R_C | T_LIFE (1/Ω) | m0 | env_w | async d / ℓ (λ) | tile scale |
+|---|---|---|---|---|---|---|---|---|---|
+| A (`calib_A128-ident-v2`, `-v2b.log`) | 0.132 | 0.073 | 1.6 / 5.0 | 0.8 | 6 | (1, 6) | 0.1 | 0.25 / 2 | 1.2 |
+| B (`calib_B105-sd-v2`) | 0.126 | 0.069 | 1.2 / 9.0 | 0.6 | 6 | (2, 6) | 0.2 | 0 | 1 |
+
+* A: the §10.9 plateau set re-calibrated with the new map (contrast, gap, asynchrony with T_LIFE 6, then the tile ×1.2:
+  spacing 1.34 instead of 1.06 λ_T). The morphology stage's best (spreads 1.6/9.0, R_C 0.7: 64.3 vs 65.0, within noise)
+  put 0.4 % of the particles in folds, so 1.6/5.0/0.8 was kept.
+* B: the §10.9 B optimum re-calibrated: spreadPar 2.4 → 1.2 (with the new map 2.4 folded 1.3 % of the particles: a ±38 %
+  spread of the local wave number varies K faster than the compression allows), R_C 0.6, contrast and gap.
+* Strength: the B zones 1 (was 0.5–0.6), no τ-dependent "chaos"; A_out unchanged at 0.6 × the λ/a_max test (§10.6).
+
+**Scores** (`calib_*-impl.json`; 2-orbit candidates, differences < 5 (A) / ~20 (B) are noise; the fold term adds 13 to
+the old model):
+
+| target | app before | §10.9, old map (no fold term) | §10.9 parameters, new map | **as implemented** | as implemented, no asynchrony |
+|---|---|---|---|---|---|
+| A128-ident (21 + fold) | 312 | 72 | 96 | **65** | 106 |
+| A128-sd (17 + fold) | 105 | 25 | – | **25** | 26 |
+| B105-sd (20 + fold) | 1210 | 57 | 99 | **48** | – |
+
+**What still deviates** (as-implemented columns of §10.2 and §10.5):
+* Synchrony: within-snapshot pitch IQR 8.3° (A) / 8.6° (B) vs 12.7° / 13.6°; drift of the snapshot median 6.1° / 6.0° vs
+  1.4° / 1.5° (two generations, see above).
+* Pitch median 15.5° (A) / 15.2° (B) vs 19.8° / 18.7°: the older pattern stays visible longer.
+* A ring: spacing 1.34 vs 1.67 λ_T; crests long along their length (L_par 1.33 vs 0.85 λ_T: the tile scale lengthens
+  them); filaments 3.8 vs 3.1 λ_T; granola S/W 5.4 vs 3.7 (was 7.1).
+* B ring: gap floor p5 0.09 vs 0.03; wake cores less opaque (vertical τ_phot 4.2 vs 7.6); granola H/W 0.66 vs 0.37 (the
+  layer is twice too thick: the vertical law, next package).
+* All sizes follow the wakes fully (p = 1): A128-sd's τ field has more contrast than the N-body's (p5/p95 0.06/3.06 vs
+  0.28/2.47) — the participation rule of §10.9 (hooks: `wakeDisplacementP`, `wakeDensityTau`, `participationTau`).
+* The medium's τ: with strength 1 the B-ring medium τ_zone·D transmits like a lower τ through its deep gaps (the N-body
+  ring is 45 % more transparent than its τ_dyn); the profile τ is photometric, so the τ_dyn normalisation of §10.9 is
+  now the larger open item (next package).
+* The medium's statistical wakes (far-field sheet, the march's statistical branch) see the field through the ring-layer
+  probe, which the port reproduces to 3 decimals, and their Gamma transmission model with the probe's table matches
+  explicit paths through the new field within ±4 % (χ ≤ 1.25). But they take the path parameter χ = H|V·n|/(μλ) with
+  the local Toomre λ ∝ Σ(r) (`rlToomre`), while the explicit field, and so the probe's unit of χ, has the anchor's λ:
+  a few km from the anchor, where Σ differs, the statistical transmission across the wakes is up to 14 % above the
+  explicit field at the march → sheet handover (`test:seam`, handover; with the anchor's λ in `rlMainSheet` and the
+  march's statistical branch every handover check of a-ring-1km and unlit-2km passes). The fix belongs to the
+  ring-layer shaders (scripts/test/README.md, handover residual 4).
+
+**Cost** (`npm run test:wakecost`, GPU throughput per call, median of 3 runs interleaved with the previous revision on the
+same machine; a-ring-1km / b-ring-inside):
+
+| function, place | coherent grid (clipmap-like): before → now | scattered within ±2 km (particle-like): before → now |
+|---|---|---|
+| wakeDensity, A ring | 69 → 196 ps (90 without asynchrony) | 1.49 → 2.52 ns (1.78 without) |
+| wakeDisplacement, A ring | 24 → 48 ps (22 without) | 0.79 → 1.23 ns (0.77 without) |
+| wakeDensity, B ring | 120 → 234 ps | 1.52 → 2.60 ns |
+| wakeDisplacement, B ring | 59 → 59 ps | 0.77 → 0.70 ns |
+
+The near field is the main consumer (wakeDisplacement per candidate slot in nearUpdate, 6 wakeDensity per drawn vertex in
+nearDraw.vert). Inside the B ring the drawn count also rose (b-ring-inside: 180 k → ~1.1 M particles ≥ 1 px): the deep
+gaps at strength 1 let the view reach farther, and the culling bound `wakeMinDensity()` fell from 0.44 to 0.055. Frame
+rates on the shared machine varied 3× between runs of identical code; qualitatively a-ring-1km is unchanged, a-ring-30m
+~2× and b-ring-inside ~2–3× slower. `WAKE_SETS.A.asyncD = 0` returns the A ring's wake cost to its old level (score
+65 → 106). Extrapolating δ inside the inverse instead of sampling it failed (it is sheared with the flow: 2–15 % of the
+particles > 20 % off).
 
 ## References
 
