@@ -70,10 +70,19 @@ struct RingStream {
 };
 
 // ---------------------------------------------------------------- hooks (later work packages)
-// Vertical relief of the material at Lagrangian offset aL (m) and azimuth offset dth: (height (m), d/da', d/dS).
-vec3 ringStructureRelief(float aL, float dth) { return vec3(0.0); }
-// Multiplicative 2-D optical-depth modulation at Lagrangian offset aL and azimuth offset dth.
-float ringStructureTauMod(float aL, float dth) { return 1.0; }
+// One stub per source so that independent work packages fill different functions (each may move its body into a
+// chunk of its own; keep the names and signatures, or update the sums below and their documentation).
+// Vertical relief sources at Lagrangian offset aL (m) and azimuth offset dth: (height (m), d/da', d/dS) each.
+vec3 rsReliefWaves(float aL, float dth) { return vec3(0.0); }       // bending waves, C-ring corrugation (relief package)
+vec3 rsReliefSites(float aL, float dth) { return vec3(0.0); }       // B-ring-edge structures, embedded moonlets (relief package)
+vec3 rsReliefPropellers(float aL, float dth) { return vec3(0.0); }  // propeller moonlets (texture / propeller package)
+vec3 ringStructureRelief(float aL, float dth) {
+  return rsReliefWaves(aL, dth) + rsReliefSites(aL, dth) + rsReliefPropellers(aL, dth);
+}
+// Multiplicative 2-D optical-depth modulation sources at Lagrangian offset aL and azimuth offset dth.
+float rsTauModTexture(float aL, float dth) { return 1.0; }     // azimuthal fine texture (texture / propeller package)
+float rsTauModPropellers(float aL, float dth) { return 1.0; }  // propeller partial gaps, moonlet wakes (same package)
+float ringStructureTauMod(float aL, float dth) { return rsTauModTexture(aL, dth) * rsTauModPropellers(aL, dth); }
 
 // ---------------------------------------------------------------- moonlet response table
 // group g at (b, t): (F, dF/db, dF/dt); 0 outside the time range and beyond b_hi; b >= b_lo (caller clamps)
