@@ -22,6 +22,7 @@ import { installShaderErrorHook, loadPasses, type LoadedPasses } from './passes'
 import { loadMoons, SafeMoons } from './moons';
 import { loadSettings, parseUrl, saveSettings, type AppSettings, type UrlParams } from './settings';
 import { PRESETS, findPreset, moonView, type Preset } from './presets';
+import { PLACE_SOURCES, contextSources } from './placeSources';
 import { computeLiveInfo, type LiveInfo } from './liveInfo';
 import { Hud } from '../ui/Hud';
 import { TimeBar } from '../ui/TimeBar';
@@ -29,6 +30,7 @@ import { PlacesPanel } from '../ui/PlacesPanel';
 import { SettingsPanel } from '../ui/SettingsPanel';
 import { Labels } from '../ui/Labels';
 import { Explainer, Help, Loading, Stats, Toast } from '../ui/Overlays';
+import { SourcesPanel, sourcesLineHtml } from '../ui/SourcesPanel';
 import { h, ICONS, setClass } from '../ui/dom';
 import { duration as fmtDuration, esc } from '../ui/format';
 import '../ui/styles.css';
@@ -64,6 +66,7 @@ export class App {
   private settingsPanel!: SettingsPanel;
   private labels!: Labels;
   private help!: Help;
+  private sources!: SourcesPanel;
   private toast!: Toast;
   private explainer!: Explainer;
   private stats!: Stats;
@@ -334,10 +337,32 @@ export class App {
     if (!p.explain || !this.explainer) return;
     const info = this.computeInfo();
     try {
-      this.explainer.show(p.title, this.explainHtml(p, info), 45_000);
+      this.explainer.show(p.title, this.explainHtml(p, info), 45_000, sourcesLineHtml(PLACE_SOURCES[p.id] ?? this.contextSourceIds(info)));
     } catch (e) {
       console.warn('[app] explainer failed', e);
     }
+  }
+
+  /** References for a view without a place list: the orbited moon, else what lies at the camera's radius. */
+  private contextSourceIds(x: LiveInfo): string[] {
+    const a = this.rig.active;
+    const moon = a instanceof OrbitController ? a.target : null;
+    return contextSources({ moon, rKm: x.rCyl / 1e3, zM: x.z, altKm: x.alt / 1e3 });
+  }
+
+  /** Open the Sources panel (key G), optionally at one entry. */
+  private openSources(id?: string): void {
+    this.help.setOpen(false);
+    this.closePanels();
+    this.sources.show(id);
+  }
+
+  /** Clicks on the explainer's citations open the panel at that entry; modifier / middle clicks follow the link. */
+  private onSourceLink(e: MouseEvent): void {
+    const a = (e.target as Element | null)?.closest?.('a[data-ref], a[data-sources]');
+    if (!a || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    this.openSources(a.getAttribute('data-ref') ?? undefined);
   }
 
   /** Preset explainer + a live note when the spot happens to be in Saturn's shadow right now. */
@@ -376,8 +401,10 @@ export class App {
       copyLink: () => void this.copyLink(),
     });
     this.explainer = new Explainer(this.ui);
+    this.explainer.root.addEventListener('click', (e) => this.onSourceLink(e));
     this.stats = new Stats(this.ui);
-    this.help = new Help(document.body);
+    this.sources = new SourcesPanel(document.body);
+    this.help = new Help(document.body, { onSources: () => this.openSources() });
     const btnPlaces = h('button', { class: 'btn', title: 'Places (M)', html: `${ICONS.places}<span>Places</span>`, on: { click: () => this.togglePanel('places') } });
     const btnInfo = h('button', { class: 'btn icon', title: 'What am I seeing? (I)', html: ICONS.info, on: { click: () => this.toggleExplainer() } });
     const btnSet = h('button', { class: 'btn icon', title: 'Settings (O)', html: ICONS.gear, on: { click: () => this.togglePanel('settings') } });
@@ -423,7 +450,7 @@ export class App {
       return;
     }
     if (this.currentPreset?.explain) this.showExplainer(this.currentPreset);
-    else this.explainer.show('Here', this.genericExplain(), 30_000);
+    else this.explainer.show('Here', this.genericExplain(), 30_000, sourcesLineHtml(this.contextSourceIds(this.info ?? this.computeInfo())));
   }
 
   private genericExplain(): string {
@@ -486,6 +513,7 @@ export class App {
 
   private onKey(e: KeyboardEvent): void {
     if (isTypingTarget(e.target) || e.metaKey || e.ctrlKey) return;
+    if (this.sources?.open) return; // a modal; it handles its own keys (Esc, G)
     const f = this.frame;
     const code = e.code;
     if (e.key === '?' || code === 'F1') {
@@ -521,6 +549,10 @@ export class App {
       case 'KeyM': this.togglePanel('places'); break;
       case 'KeyO': this.togglePanel('settings'); break;
       case 'KeyI': this.toggleExplainer(); break;
+      case 'KeyG':
+        e.preventDefault(); // focus moves to the panel's search field: don't type this "g" into it
+        this.openSources();
+        break;
       case 'KeyP': this.timebar.togglePause(); break;
       case 'KeyK': this.timebar.stepWarp(-1); break;
       case 'KeyL': this.timebar.stepWarp(1); break;

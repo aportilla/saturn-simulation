@@ -1,0 +1,15 @@
+{
+  "until": "window.__svReady===true",
+  "shots": [
+    { "name": "explainer-a-ring-inside", "url": "?preset=a-ring-inside&hud=1&labels=0&t=2026-11-08T12:00:00Z&paused=1", "wait": 2500 },
+    { "name": "panel", "url": "?preset=a-ring-inside&hud=1&labels=0&t=2026-11-08T12:00:00Z&paused=1", "eval": "{ window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyG', key: 'g' })); document.querySelector('#sources').open }", "wait": 800 },
+    { "name": "panel-at-entry", "url": "?preset=a-ring-inside&hud=1&labels=0&t=2026-11-08T12:00:00Z&paused=1", "eval": "{ __sv.app.sources.close(); const a = document.querySelectorAll('#explainer .src-line a[data-ref]')[2]; a.click(); [a.dataset.ref, document.activeElement && document.activeElement.dataset.id] }", "wait": 800 },
+    { "name": "panel-search", "url": "?preset=a-ring-inside&hud=1&labels=0&t=2026-11-08T12:00:00Z&paused=1", "eval": "{ const s = document.querySelector('#sources input[type=search]'); s.value = 'propeller'; s.dispatchEvent(new Event('input')); document.querySelector('#sources .src-count').textContent }", "wait": 600 },
+    { "name": "panel-topic-moons", "url": "?preset=a-ring-inside&hud=1&labels=0&t=2026-11-08T12:00:00Z&paused=1", "eval": "{ const s = document.querySelector('#sources input[type=search]'); s.value = ''; s.dispatchEvent(new Event('input')); const t = document.querySelector('#sources select'); t.value = 'moons'; t.dispatchEvent(new Event('change')); document.querySelector('#sources .src-count').textContent }", "wait": 600 },
+    { "name": "panel-data-unverified", "url": "?preset=a-ring-inside&hud=1&labels=0&t=2026-11-08T12:00:00Z&paused=1", "eval": "{ const t = document.querySelector('#sources select'); t.value = ''; t.dispatchEvent(new Event('change')); const s = document.querySelector('#sources input[type=search]'); s.value = 'marouf'; s.dispatchEvent(new Event('input')); document.querySelector('#sources .src-count').textContent }", "wait": 600 },
+    { "name": "g-closes", "url": "?preset=a-ring-inside&hud=1&labels=0&t=2026-11-08T12:00:00Z&paused=1", "eval": "{ document.querySelector('#sources .src-list').dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyG', key: 'g', bubbles: true })); [document.querySelector('#sources').open, document.activeElement && document.activeElement.tagName] }", "wait": 600 },
+    { "name": "explainer-encke-gap", "url": "?preset=encke-gap&hud=1&labels=0&t=2026-11-08T12:00:00Z&paused=1", "wait": 2500 },
+    { "name": "explainer-titan", "url": "?preset=titan&hud=1&labels=0&t=2026-11-08T12:00:00Z&paused=1", "wait": 2500 },
+    { "name": "help", "url": "?preset=titan&hud=1&labels=0&t=2026-11-08T12:00:00Z&paused=1", "eval": "{ window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Slash', key: '?' })); document.querySelector('#help .src-open') ? 'sources button present' : 'missing' }", "wait": 600 }
+  ]
+}

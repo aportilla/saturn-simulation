@@ -150,7 +150,7 @@ kbd {
 .date-edit input { font: 12px var(--mono); color: var(--text); background: rgba(255,255,255,0.06); border: 1px solid var(--line-strong); border-radius: 6px; padding: 5px 6px; color-scheme: dark; }
 
 /* ------------------------------------------------------------------ explainer */
-#explainer { position: absolute; right: 14px; bottom: 74px; width: 344px; padding: 12px 14px 12px; line-height: 1.5; font-size: 12px; color: rgba(236, 232, 223, 0.86); }
+#explainer { position: absolute; right: 14px; bottom: 74px; width: 344px; max-height: calc(100vh - 150px); overflow-y: auto; scrollbar-width: thin; padding: 12px 14px 12px; line-height: 1.5; font-size: 12px; color: rgba(236, 232, 223, 0.86); }
 #explainer b { color: var(--text); font-weight: 600; }
 #explainer .x { position: absolute; right: 8px; top: 6px; background: none; border: 0; color: var(--faint); cursor: pointer; font-size: 15px; line-height: 1; padding: 2px 4px; }
 #explainer .x:hover { color: var(--text); }
@@ -158,6 +158,12 @@ kbd {
 #explainer sup { font-size: 9px; }
 #explainer .note { margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--line); color: #cfc4ff; }
 .sv-ui.panel-open #explainer { display: none; }
+/* the Sources line (references for this view; src/app/placeSources.ts) */
+#explainer .src-line { margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line); font-size: 11px; line-height: 1.55; color: var(--faint); }
+#explainer .src-line .k { font: 600 9px/1 var(--font); letter-spacing: 0.14em; text-transform: uppercase; color: var(--dim); margin-right: 4px; }
+#explainer .src-line a { color: var(--ice); text-decoration: none; white-space: nowrap; }
+#explainer .src-line a:hover { text-decoration: underline; }
+#explainer a:focus-visible, #sources :focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; border-radius: 3px; }
 
 /* ------------------------------------------------------------------ stats */
 #stats { position: absolute; right: 14px; bottom: 14px; font: 10.5px/1.35 var(--mono); color: var(--faint); text-align: right; white-space: pre; pointer-events: none; text-shadow: 0 0 3px #000; }
@@ -193,6 +199,48 @@ kbd {
 #help .kr { display: grid; grid-template-columns: 118px 1fr; gap: 8px; padding: 3px 0; color: var(--dim); }
 #help .kr span:first-child { color: var(--text); }
 #help .close { float: right; }
+#help .src-open { float: right; margin-right: 6px; }
+
+/* ------------------------------------------------------------------ sources (key G; src/ui/SourcesPanel.ts) */
+#sources {
+  width: min(880px, calc(100vw - 32px)); max-width: calc(100vw - 16px); max-height: calc(100vh - 48px); padding: 0; margin: auto; box-sizing: border-box;
+  color: var(--text); background: rgb(12, 14, 19); border: 1px solid var(--line-strong); overflow: hidden;
+}
+#sources[open] { display: flex; flex-direction: column; }
+#sources::backdrop { background: rgba(0, 0, 0, 0.5); }
+#sources .src-head { flex: none; padding: 16px 20px 10px; border-bottom: 1px solid var(--line); }
+#sources h2 { margin: 0 0 4px; font-size: 16px; font-weight: 600; }
+#sources .close { float: right; }
+#sources .lead { margin: 0 0 10px; color: var(--dim); max-width: 64em; }
+#sources .src-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+#sources input[type=search], #sources select {
+  font: 12px var(--font); color: var(--text); background: rgba(255,255,255,0.06); border: 1px solid var(--line-strong);
+  border-radius: 7px; padding: 6px 8px; color-scheme: dark; min-width: 0; max-width: 100%;
+}
+#sources input[type=search] { flex: 1 1 220px; }
+#sources select { flex: 0 1 auto; }
+#sources .src-count { margin-left: auto; color: var(--faint); font-size: 11px; white-space: nowrap; }
+#sources .src-list { flex: 1 1 auto; overflow-y: auto; padding: 0 20px 18px; scrollbar-width: thin; outline: none; }
+#sources .src-list h3 {
+  position: sticky; top: 0; z-index: 1; margin: 0; padding: 14px 0 6px; background: rgb(12, 14, 19);
+  font: 600 9.5px/1 var(--font); letter-spacing: 0.14em; text-transform: uppercase; color: var(--gold);
+}
+#sources .src-entry { padding: 7px 10px 8px; margin: 0 -10px; border-radius: 8px; border: 1px solid transparent; line-height: 1.45; transition: background 0.4s, border-color 0.4s; }
+#sources .src-entry + .src-entry { box-shadow: 0 -1px 0 var(--line); }
+#sources .src-entry:focus { outline: none; }
+#sources .src-entry.hl { background: var(--gold-dim); border-color: rgba(241, 205, 140, 0.35); box-shadow: none; }
+#sources .cite { color: rgba(236, 232, 223, 0.86); }
+#sources .cite .ti { color: var(--text); font-weight: 550; }
+#sources .use { margin-top: 2px; color: var(--dim); }
+#sources .use .k { font: 600 9px/1 var(--font); letter-spacing: 0.12em; text-transform: uppercase; color: var(--faint); margin-right: 4px; }
+#sources .note { margin-top: 2px; color: var(--faint); font-size: 11px; }
+#sources .meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 7px; margin-top: 4px; font-size: 11px; color: var(--faint); }
+#sources .meta a { color: var(--ice); text-decoration: none; overflow-wrap: anywhere; }
+#sources .meta a:hover { text-decoration: underline; }
+#sources .meta .lic { color: var(--good); }
+#sources .meta .ok { color: var(--faint); }
+#sources .meta .unv { color: var(--warn); }
+#sources .src-empty { padding: 28px 0; color: var(--dim); text-align: center; }
 
 /* (the loading screen is styled inline in index.html so it renders before any script loads) */
 
@@ -210,4 +258,10 @@ kbd {
   .warps button { padding: 0 6px; }
   #stats { display: none; }
   #help .cols { grid-template-columns: 1fr; }
+  #sources { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); }
+  #sources .src-head { padding: 12px 14px 8px; }
+  #sources .lead { font-size: 11px; }
+  #sources .src-list { padding: 0 14px 14px; }
+  #sources select { flex: 1 1 40%; }
+  #sources .src-count { margin-left: 0; }
 }

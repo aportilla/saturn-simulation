@@ -48,7 +48,7 @@ which adds ~3 ms per frame inside the A ring at render scale 1). Settings persis
 | **Co-orbit mode** (in the rings) | drag or arrows to look · `Q` `E` roll · `W` `A` `S` `D` fly · `R`/`Space` up · `F`/`Ctrl` down · wheel or `[` `]` speed (1 mm/s – 100 km/s; `Shift` ×10, `Alt` ×0.1) |
 | | `B` ballistic: let go and orbit freely like a ring particle (exact Hill-frame solution) · `C` switch orbit ⇄ co-orbit |
 | **Time** | `P` pause · `K` / `L` slower / faster (1× … 10⁶×) · `J` reverse · `N` now |
-| **Other** | `O` settings · `I` "what you're seeing" · `H` hide HUD · `V` hide / show the astronaut · `?` help · `Esc` cancel a fly-to |
+| **Other** | `O` settings · `I` "what you're seeing" · `G` sources (the research and data behind it) · `H` hide HUD · `V` hide / show the astronaut · `?` help · `Esc` cancel a fly-to |
 
 URL parameters: `preset=<place>`, `t=<ISO time|now>`, `warp=<n>`, `paused=1`, `fov=<deg>`, `quality=high|medium|low`,
 `scale=<0.25–2>`, `fps=<30|60|0 (uncapped)>`, `ev=<EV offset>`, `exposure=auto|manual`, `bloom=`, `wakes=0`, `dustRings=0`, `stars=0`,
@@ -148,6 +148,23 @@ docs/         ARCHITECTURE.md (contracts), ring-physics.md, data-sources.md
 
 Full provenance, formats and accuracy: [`docs/data-sources.md`](docs/data-sources.md). The scripts in
 `scripts/data/` rebuild every data file from the original archives.
+
+## Sources in the app
+
+Press **`G`** (or **Sources** in the help, `?`) for the bibliography: every paper, data set, catalogue and code the
+simulation's numbers come from — about 140 entries, grouped by topic (ring structure, optical depth, particle sizes,
+photometry, wakes, N-body, gap edges and moonlets, eccentric edges, moons, ephemerides, Saturn, …), searchable and
+filterable by topic and type. Each entry gives the full citation, what in the simulator uses it, the licence of data
+products, and links (DOI, arXiv, ADS, archive pages) that open in a new tab. The explainer of every place (`I`) ends
+with a **Sources** line of the 3–8 references behind what that view shows; a click opens the entry in the panel
+(Ctrl/⌘-click goes straight to the DOI). `Esc` or `G` closes the panel.
+
+The list is [`src/app/references.ts`](src/app/references.ts) (per-place choices: `src/app/placeSources.ts`). Every
+entry's metadata were checked against Crossref / DataCite, arXiv or the archive's own record; the two that could not
+be (a 1991 thesis and a second-hand conference abstract) are marked unverified with the reason. `npm run check:refs`
+keeps it in sync with the docs (every author–year citation in this README, `docs/ring-physics.md` and
+`docs/data-sources.md` must resolve to an entry, and every entry must be cited somewhere); `-- --online` re-verifies
+every DOI and arXiv id against the registries.
 
 ## Known limitations
 

@@ -5,6 +5,10 @@ Owner: moons & sky data. Everything here is reproducible from the scripts in `sc
 (SEF = Saturn-centred, +Z = IAU 2015 Saturn pole at J2000, +X = node of Saturn's equator on the ICRF equator; ICRF→SEF
 via `ICRF_TO_SEF` in `src/core/ephemeris.ts`, pole RA 40.589°, Dec 83.537°).
 
+Every paper, data set, map and catalogue cited here is also an entry of the app's bibliography, `src/app/references.ts`
+(in-app Sources panel, key G; with licence, DOI or archive link and what uses it). `npm run check:refs` keeps the two
+in sync: a new citation here needs an entry there.
+
 ## Runtime APIs
 
 | module | export | data |

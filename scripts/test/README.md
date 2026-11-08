@@ -7,7 +7,9 @@ follow [Adding a tool](#adding-a-tool) so the next session can run it too.
 
 | command | what it checks | runtime* |
 |---|---|---|
-| `npm test` | smoke + physics + counts + seam (incl. handover) + exposure + edges + moonflux + particles against one private dev server; summary table | ~8 min |
+| `npm test` | refs + smoke + physics + counts + seam (incl. handover) + exposure + edges + moonflux + particles + sources against one private dev server; summary table | ~8.5 min |
+| `npm run check:refs` | bibliography ↔ docs sync, no browser: every author–year citation in README / ring-physics.md / data-sources.md has an entry in `src/app/references.ts`, every entry is cited; `-- --online` re-verifies DOIs / arXiv ids | ~1 s (online ~1 min) |
+| `npm run test:sources` | the Sources panel (key G) and every place's Sources line in the explainer: keys, focus, filtering, links | ~20 s |
 | `npm run test:smoke` | every place loads and renders cleanly (errors, fallbacks, NaN / negative pixels) | ~1.5 min |
 | `npm run test:physics` | Sun ephemeris, orbital frequencies, near-field particle kinematics | ~15 s |
 | `npm run test:counts` | drawn particle counts vs the analytic expectation, HUD count line, radius sampler | ~30 s |
@@ -247,8 +249,40 @@ code.
    axes near the orbit normal for large particles): 0.987 edge-on … 1.026 from above for a ≥ 0.6 m (NR_ISO 0.8;
    0.92 … 1.14 with the full shape spread).
 
+### sources — `scripts/test/sources.mjs` (`--place a-ring-inside`)
+The in-app bibliography (`src/ui/SourcesPanel.ts`, data `src/app/references.ts`, per-place lists
+`src/app/placeSources.ts`) with trusted key presses and clicks. Checks: every place (instant jumps) shows a Sources line
+in its explainer — ≥ 3 citations for a place with its own list, ≥ 1 from the context defaults otherwise — each a link
+with `target=_blank`, `rel=noopener` and a known `data-ref`; `G` opens the modal with every reference and focus in the
+search field (the `g` is not typed into it); typing filters ("propeller" → 6 entries); keys pressed inside never reach
+the app (`P` does not toggle pause); `Esc` closes, focus leaves the dialog and the app's keys work again; `G` closes it
+from the list; clicking an explainer citation opens the panel focused and highlighted at that entry; every panel link
+opens in a new tab, one `https://doi.org/` link per entry with a DOI; custom views (orbiting Tethys, 20 m above the B
+ring; no place) cite exactly the context defaults of `contextSources`; no console / page errors. Measured 2026-11-08:
+19/19 places (19 with their own list), 136 entries, 141 panel links (115 DOIs), 11/11 checks, ~16 s. Before/after
+screenshots: `node scripts/shots.mjs scripts/test/specs/sources.json <outDir> [--w 390 --h 844]` (explainer lines,
+panel, entry focus, search, topic filter, an unverified entry, help).
+
 ## Tools
 
+- `scripts/check-refs.mjs [--online] [--only id,…] [--verbose] [--out DIR]` (`npm run check:refs`, part of `npm test`
+  as `refs`) — keeps the bibliography `src/app/references.ts` (the in-app Sources panel, key G) in sync with the docs.
+  No browser, ~1 s. Fails when: an entry is malformed (unique id, known type / topics, authors, year, title, venue,
+  usedFor, DOI / arXiv syntax, a `verifiedBy` on every entry, a `note` on every unverified one, a licence on data
+  products and software); an author–year citation in README.md, docs/ring-physics.md or docs/data-sources.md does not
+  resolve (inline "Surname 2010", "A & B (2010)", "A, B & C 2009", "P. C. Thomas, J. Joseph & T. Ansty (2018)",
+  "Surname et al. 2007, 2013", "H&N 2016", and ring-physics.md's reference list, matched on first author, author form
+  and year / letter); a DOI, arXiv id, PDS volume id or Photojournal id in those docs belongs to no entry (`IGNORE_IDS`
+  lists deliberate exceptions); an entry is cited nowhere (docs, `src/` comments — references.ts and placeSources.ts
+  excluded — or a `placeSources.ts` list); a `placeSources.ts` id is unknown. Notes (not failures): ambiguous
+  citations (an unlettered "Hedman et al. 2007" against 2007a/b), loose ones ("Verbiscer 2007" for Verbiscer et al.
+  2007), places without their own list, and author–year citations in `src/` that are not in the bibliography
+  (rendering techniques, standards). `--online` (~1 min, network) re-verifies every entry: DOIs against Crossref
+  (DataCite for data DOIs: first author, year ±1, title, volume, first page), arXiv titles via the arXiv API, landing
+  pages HTTP 2xx. Measured 2026-11-08: 136 entries (134 verified), 205 doc citations resolved (1 loose), every entry
+  cited; online 136/136 agree. Adding a reference: an entry in references.ts (metadata from the publisher's record,
+  `verified` / `verifiedBy`), a citation in the docs or code (or a place list), then `npm run check:refs -- --online
+  --only <id>`.
 - `scripts/shot.mjs <url> <out.png> [--until expr] [--eval expr] [--wait ms] [--w --h --dpr] [--keep-storage]` —
   one screenshot, prints every console message / page error / failed request; exit 2 on a page error.
 - `scripts/shots.mjs <spec.json> <outDir> [--w --h] [--uncapped] [--base URL] [--keep-storage]` — batch: spec

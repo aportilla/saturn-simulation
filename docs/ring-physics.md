@@ -33,7 +33,7 @@ and by eye. NaN means no data: below 74,300 km (D ring, τ ~10⁻⁵–10⁻³, 
   0.02**. In the C-ring ramp and the CD ramp it is 1.7 (≈15 % of the visible τ is in particles ≲ 1 cm). In the
   A ring and B1 the ratio is lower (RSS/2 is 25–45 % below UVIS in A, ~40 % in B1). That is the self-gravity-wake
   effect: at low elevation the line of sight runs along the inter-wake gaps (Colwell et al. 2006; Hedman et al.
-  2007). The RSS profile is therefore multiplied by a smooth ratio map R(r) = ⟨τ_UVIS⟩/⟨τ_X/2⟩, with 50 km
+  2007b). The RSS profile is therefore multiplied by a smooth ratio map R(r) = ⟨τ_UVIS⟩/⟨τ_X/2⟩, with 50 km
   windows, ring material only, and eccentric-feature zones filled from their surroundings. R ≈ 1.0 in the C ring
   and CD, 1.15–1.4 in the ramps, 1.9 in the inner A ring falling to 1.35 in the outer A ring. The result has
   RSS fine structure on a visible, high-elevation calibration.
@@ -148,7 +148,7 @@ over ±40 km, except across dust ↔ macroscopic boundaries (gap and ring edges 
   The opposition surge stays an α-only factor (the medium's intrinsic surge).
 
 **Wakes** (0–1, relative). Strongest in the inner/mid A ring, where the azimuthal brightness asymmetry and
-occultation wake signal peak (Colwell et al. 2006; Hedman et al. 2007; French et al. 2007). Weaker beyond the
+occultation wake signal peak (Colwell et al. 2006; Hedman et al. 2007b; French et al. 2007). Weaker beyond the
 Encke gap. Present but packed with narrow gaps in the B ring (Colwell et al. 2007; Nicholson & Hedman 2010).
 Absent in the C ring and CD (Toomre λ ≈ 1–2 m is smaller than the particles).
 
@@ -884,6 +884,10 @@ Score differences below ~20 are noise in this box.
     asynchrony is not yet implemented anywhere.
 
 ## References
+
+The app's bibliography (in-app Sources panel, key G) is `src/app/references.ts`, with full titles, DOIs and what each
+reference is used for; `npm run check:refs` fails when a citation here has no entry there (or an entry is cited
+nowhere). Add new references to both.
 
 Afigbo, V. M., et al. 2025, JGR Planets (Kronoseismology VII; arXiv:2502.19265) · Albers, N., et al. 2012,
 Icarus 217, 367 · Altobelli, N., et al. 2014 (via Miller et al. 2024) · Baillié, K., et al. 2011, Icarus 216, 292 ·
