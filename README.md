@@ -199,14 +199,15 @@ every DOI and arXiv id against the registries.
   slope (Titan), the Mimas 4:2 wave is unscaled linear theory, and the weaker Mimas 7:4 / 8:5 waves are missing; the
   B-ring-edge structures are a phenomenological field matched to Cassini's equinox images, carried on their sunlit
   side only; Daphnis's vertical edge waves reach 0.1–0.5 km in the model (depending on its vertical phase) where
-  Cassini's shadows suggest 0.5–1.5 km; the Encke-gap ringlet clumps have no height yet, and the propellers' heights
-  tilt the shading of the distant ring but cast no shadows and don't yet lift the particles near the camera.
+  Cassini's shadows suggest 0.5–1.5 km; the Encke-gap ringlet clumps and the propellers have no height yet (the
+  propellers' equinox heights are computed, but stay out of the height field until they are filtered to the pixel
+  footprint and cast shadows).
 * Moonlet gap edges: the edge's azimuthal bunching, other perturbers (e.g. Prometheus on the Keeler outer edge) and
   the Encke-gap ringlets are not modelled; in the most compressed wave crests particles far from the camera may be
   missing.
 * Propellers: the giant propellers are much fainter than in Cassini's 2 km/px images (the bright lit-face /
-  dark unlit-face wings come mostly from the stirred, puffed-up material, whose height shades the ring but casts no
-  shadows yet; the loss of self-gravity wakes there is rendered); the belt propellers are statistical (positions
+  dark unlit-face wings come mostly from the stirred, puffed-up material, whose height is computed but not yet
+  drawn; the loss of self-gravity wakes there is rendered); the belt propellers are statistical (positions
   from a hash grid with the measured number density, not the catalogued individuals); Blériot's libration phase is
   estimated from the paper's figure; moonlet bodies don't yet shadow the near-field particles.
 * The sub-km texture's statistics (spectrum, amplitude, shear, lifetime) are a model consistent with occultations,

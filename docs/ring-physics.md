@@ -1146,9 +1146,9 @@ their guiding centre, lit relative to the local mid-plane) and the astronaut fol
 above the local mid-plane (station keeping includes the material's vertical motion, ~5 cm/s in the Mimas 5:3 wave).
 
 **Not modelled.** The Mimas 7:4 and 8:5 bending waves (third-order e'i' / i'³ terms; their shadow bands appear in
-PIA11676), the Encke-gap ringlet clumps (~600 m, PIA11676) and other ringlet structure, the propellers' shadows and
-their heights near the camera (their equinox heights, §12, enter z0 through `rsReliefPropellers` and tilt the sheet's
-shading, but not yet the relief bounds and shadows that the march and the near field follow), the vertical rift of the B-ring edge's other sites, non-linear bending-wave profiles
+PIA11676), the Encke-gap ringlet clumps (~600 m, PIA11676) and other ringlet structure, the propellers' vertical
+structure (their equinox heights, §12, are computed by `rsReliefPropellers` but stay out of z0 until they are
+prefiltered to the footprint and part of the relief bounds and shadows: `RS_PROPELLER_RELIEF`), the vertical rift of the B-ring edge's other sites, non-linear bending-wave profiles
 (the calibrations only scale linear theory), the waves' τ modulation by the tilted path (the occultation τ already
 contains it), multiple crossings of one ray through a strongly corrugated surface (the hit search returns the first),
 the sub-pixel bright walls of region A (prefiltered away from a distance).

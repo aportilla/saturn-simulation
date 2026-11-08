@@ -100,8 +100,17 @@ struct RingStream {
 // d/dS) each.
 vec3 rsReliefWaves(float aL, float dth, float fp) { return rrWaves(aL, dth, fp); }  // bending waves, 1983 corrugation (sv_ringRelief)
 vec3 rsReliefSites(float aL, float dth, float fp) { return rrSites(aL, dth, fp); }  // B-ring-edge region A, S/2009 S1 (sv_ringRelief)
+// The propellers' relief (rsReliefPropellers) is NOT part of z0 yet: its heights are not prefiltered to the footprint
+// (no fp argument), and neither the relief bounds (uRrCamN, ringReliefBound) nor the relief shadows include it, so only
+// the sheet would shade it -- inconsistent with the march and the near field (seam handover, a 1 km view inside a
+// propeller belt: the sheet 6-10 % off). Define RS_PROPELLER_RELIEF once those are in place (and set PROPELLER_RELIEF
+// in src/rings/RingStructure.ts, the CPU mirror).
 vec3 ringStructureRelief(float aL, float dth, float fp) {
-  return rsReliefWaves(aL, dth, fp) + rsReliefSites(aL, dth, fp) + rsReliefPropellers(aL, dth);
+  vec3 h = rsReliefWaves(aL, dth, fp) + rsReliefSites(aL, dth, fp);
+#ifdef RS_PROPELLER_RELIEF
+  h += rsReliefPropellers(aL, dth);
+#endif
+  return h;
 }
 // Multiplicative 2-D optical-depth modulation at Lagrangian offset aL, azimuth offset dth and radial footprint fp:
 // (mean factor, variance of the part below the footprint) of the product of independent sources, and the self-gravity-

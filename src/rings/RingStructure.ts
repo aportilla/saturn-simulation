@@ -9,9 +9,9 @@
 //   * is the CPU mirror: the camera's Lagrangian position for the near field, tau at the camera for the HUD,
 //     tests (window.__sv.pipeline.ctx.structure).
 //   * owns the vertical relief (src/rings/relief.ts: bending waves, the 1983 corrugation, B-ring-edge structures; GLSL
-//     sv_ringRelief / sv_ringReliefShade): ONE height field z0 = the moonlets' streamline zeta + the relief (+ the
-//     propellers' relief), exposed as StreamPoint.zeta / slopes, and the camera's local mid-plane height f.ring.zMid
-//     (every consumer takes heights relative to it; the ring frame stays in the SEF plane).
+//     sv_ringRelief / sv_ringReliefShade): ONE height field z0 = the moonlets' streamline zeta + the relief (the
+//     propellers' relief only with PROPELLER_RELIEF), exposed as StreamPoint.zeta / slopes, and the camera's local
+//     mid-plane height f.ring.zMid (every consumer takes heights relative to it; the ring frame stays in the SEF plane).
 // The 2-D optical-depth modulation M (tauMod hooks) comes from the sub-km texture (`texture`, src/rings/ringTexture.ts)
 // and the propeller moonlets (`propellers`, src/rings/propellers.ts); both are owned here (uniforms merged into this
 // object's, updated in update(), CPU mirrors through tauModAt / streamAt).
@@ -48,6 +48,11 @@ const DEFAULT_MOONLETS = [
 const ZETA_BOUND_PER_Z = 0.15;
 /** radial reach (m) around the camera in which relief sources make the march / near field evaluate z0 per step */
 const RELIEF_NEAR_MARGIN = 70e3;
+/**
+ * The propellers' relief in z0 (mirror of RS_PROPELLER_RELIEF in sv_ringStructure): off until it is prefiltered to the
+ * footprint and part of the relief bounds and shadows (see ringStructure.glsl ringStructureRelief).
+ */
+const PROPELLER_RELIEF = false;
 
 function emptyPoint(): StreamPoint {
   return { da: 0, J: 1, drda: 1, tauMod: 1, tauVar: 0, wakeMod: 1, zeta: 0, slopeR: 0, slopeT: 0 };
@@ -415,8 +420,10 @@ export class RingStructure {
       o[3] += this._h[0];
       o[4] += this._h[1];
       o[5] += this._h[2];
-      this.propellers.reliefAt(aL, dth, this._z);
-      o[3] += this._z[0]; o[4] += this._z[1]; o[5] += this._z[2];
+      if (PROPELLER_RELIEF) {
+        this.propellers.reliefAt(aL, dth, this._z);
+        o[3] += this._z[0]; o[4] += this._z[1]; o[5] += this._z[2];
+      }
     }
     const T = this.table;
     if (!T) return;
@@ -498,7 +505,8 @@ export class RingStructure {
       Object.assign(out, emptyPoint());
       if (wantZ) {
         this.relief.eval(dr, dth, fp, this._h);
-        this.propellers.reliefAt(dr, dth, this._z);
+        if (PROPELLER_RELIEF) this.propellers.reliefAt(dr, dth, this._z);
+        else this._z[0] = this._z[1] = this._z[2] = 0;
         out.zeta = this._h[0] + this._z[0];
         out.slopeR = this._h[1] + this._z[1];
         out.slopeT = this._h[2] + this._z[2];

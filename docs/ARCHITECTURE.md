@@ -182,9 +182,10 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   displaced edges; the ring layer has the same as `rlSampleP`); `ringSunTransmissionStream(p, fp)`. Hooks (one
   function per source, so work packages fill different functions): `ringStructureRelief(aL, dth, fp)` → (height,
   ∂/∂a', ∂/∂S) = `rsReliefWaves` (bending waves, the C-ring corrugation) + `rsReliefSites` (B-ring-edge region A,
-  S/2009 S1) (both chunk `sv_ringRelief`, included before `sv_ringStructure`) + `rsReliefPropellers` (the propellers'
-  equinox heights; they shade the sheet but are not yet in the relief bounds `uRrCamN` / `ringReliefBound` nor in the
-  relief shadows `rrSourcesSunVisSided`, so the march and the near field don't follow them);
+  S/2009 S1) (both chunk `sv_ringRelief`, included before `sv_ringStructure`); `rsReliefPropellers` (the propellers'
+  equinox heights) is NOT added yet (`#define RS_PROPELLER_RELIEF`, CPU `PROPELLER_RELIEF` in RingStructure.ts): it
+  has no footprint prefilter and is in neither the relief bounds (`uRrCamN`, `ringReliefBound`) nor the relief shadows
+  (`rrSourcesSunVisSided`), so only the sheet would have shaded it (6–10 % off the march in the seam handover);
   `vec3 ringStructureMod(aL, dth, fp)` → (mean M, variance of M below the footprint, wake factor) combines
   `rsTauModTexture` (chunk `sv_ringTexture`, `src/render/shaders/ringTexture.glsl`, CPU `src/rings/ringTexture.ts`:
   the sub-km 2-D sheared texture) and `rsPropellersMod` (chunk `sv_ringPropellers`, `ringPropellers.glsl`, CPU
@@ -388,7 +389,7 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   (rendered as geometry, see the relief contract above). Details and numbers: ring-physics.md §8.
 * **Vertical relief** (`src/rings/relief.ts`): bending waves (Mimas 5:3 and 4:2, Titan −1:0; SCL83 linear theory,
   phases from the live ephemeris), the 1983 C-ring corrugation (Hedman et al. 2011, 2015), B-ring-edge region A and
-  S/2009 S1 (Spitale & Porco 2010), plus the moonlets' ζ and the propellers' heights. ring-physics.md §13.
+  S/2009 S1 (Spitale & Porco 2010), plus the moonlets' ζ. ring-physics.md §13.
 * **Sub-km texture** (`RingTexture`, `sv_ringTexture`; ring-physics.md §11): τ × M with M = 1 + A F, F a 2-D
   random field with the former radial noise's power spectrum (6 octaves, 500 → 15.6 m) and amplitude law, built
   from value noise on lattices that are isotropic at birth and advected by the Keplerian (+J2–J6) flow — trailing
