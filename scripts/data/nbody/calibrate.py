@@ -10,12 +10,14 @@ parameters, particles drawn like the near field) analysed by analyze.py exactly 
 sum_i ((m_i - m_i^Nbody) / s_i)^2 over the metrics below (s_i = tolerance: max(15 % of the target, its standard
 error, a floor)). Coordinate search in three stages, each starting from the best candidate so far:
   contrast    gamma (strength fixed at the zone value; only -ln(gamma) * strength matters)    -> D quantiles
+  spacing     tile_scale (tile = lambda * 6 / sin 20 deg * tile_scale: crest spacing; 1 in the app) -> spectrum
   morphology  spreadPar x spreadPerp x R_C                                                    -> ACF, skeleton
   time        T_LIFE with the birth mode m0 = (m0x, 6) chosen so that the amplitude-weighted pitch stays near the
               N-body median (integer m0x keeps the texture tileable)                          -> C(dt), pitch
-Metrics: D quantiles p5 p25 p75 p95 p99 (lambda/16), ACF L_par and L_perp (1/e) / lambda, first minimum and side-peak
-height across crests, skeleton end and branch points per lambda^2 and filament length / lambda, orientation median and
-IQR, temporal C at 0.1, 0.2, 0.3 orbit.
+  contrast2   gamma x 0.8 .. 1.25 around the best
+Metrics: spectral peak and power-weighted spacing / lambda, D quantiles p5 p25 p75 p95 p99 (lambda/16), ACF L_par and
+L_perp (1/e) / lambda, first minimum and side-peak height across crests, skeleton end and branch points per lambda^2
+and filament length / lambda, orientation median and IQR, temporal C at 0.1, 0.2, 0.3 orbit.
 """
 import argparse
 import itertools
@@ -33,6 +35,8 @@ import nbcommon as nb  # noqa: E402
 
 METRICS = [
     # name, getter, floor
+    ('lam_peak', lambda r: r['spectrum']['lambda_w_over_lambda_T'][0], 0.08),
+    ('lam_mean', lambda r: r['spectrum']['lambda_mean_k_over_lambda_T'], 0.08),
     ('p5', lambda r: r['pdf']['sigma_lambda_16']['p5'][0], 0.03),
     ('p25', lambda r: r['pdf']['sigma_lambda_16']['p25'][0], 0.05),
     ('p75', lambda r: r['pdf']['sigma_lambda_16']['p75'][0], 0.08),
@@ -90,14 +94,15 @@ def evaluate(job):
     sargs = argparse.Namespace(like=job['like'], name=os.path.basename(wd), out=wd, orbits=job['orbits'], snap=0.05,
                                margin_lambda=1.0, gamma=p.get('gamma'), spread_par=p.get('spread_par'),
                                spread_perp=p.get('spread_perp'), rc=p.get('rc'), t_life=p.get('t_life'),
-                               strength=p.get('strength'), m0=f"{p['m0x']},{p.get('m0y', 6.0)}" if 'm0x' in p else None,
+                               strength=p.get('strength'), tile_scale=p.get('tile_scale'),
+                               m0=f"{p['m0x']},{p.get('m0y', 6.0)}" if 'm0x' in p else None,
                                seed=job.get('seed', 12345), t0=None, particles=True)
     import contextlib
     import io
     with contextlib.redirect_stdout(io.StringIO()):
         pr.synth(sargs)
         aargs = argparse.Namespace(run=wd, from_orbit=None, to_orbit=None, every=1, json=os.path.join(wd, 'analysis.json'),
-                                   plots=False, raycast=0, granola=0, rays=100000, quick=False)
+                                   plots=False, raycast=0, granola=0, rays=100000, quick=False, field=job.get('field', 'mass'))
         res = an.analyze(aargs)
     mv = metric_vector(res)
     if not job.get('keep'):
@@ -127,7 +132,7 @@ def main(argv):
     sc = pr.simulator_config(params)
     pitch_target = target['pitch_med']
     base = dict(gamma=sc['gamma'], strength=sc['strength'], spread_par=sc['spread_par'], spread_perp=sc['spread_perp'],
-                rc=sc['rc'], t_life=sc['t_life'], m0x=sc['m0x'], m0y=sc['m0y'])
+                rc=sc['rc'], t_life=sc['t_life'], m0x=sc['m0x'], m0y=sc['m0y'], tile_scale=sc['tile_scale'])
     work = os.path.join(nb.RAW_DIR, 'calib', name)
     os.makedirs(work, exist_ok=True)
     results = []
@@ -137,15 +142,18 @@ def main(argv):
         jobs = []
         for c in cands:
             k = next(counter)
-            jobs.append(dict(params=c, like=os.path.abspath(a.like), workdir=os.path.join(work, f'c{k:03d}'), orbits=a.orbits))
+            jobs.append(dict(params=c, like=os.path.abspath(a.like), workdir=os.path.join(work, f'c{k:03d}'), orbits=a.orbits,
+                             field=tres.get('field', '').startswith('cross') and 'tau' or 'mass'))
         with ProcessPoolExecutor(max_workers=a.jobs) as ex:
             out = list(ex.map(evaluate, jobs))
         for o in out:
             o['score'], o['parts'] = score(o['metrics'], target)
+            if not math.isfinite(o['score']):
+                o['score'] = float('inf')   # e.g. a metric undefined for this candidate
             results.append(o)
             pp = o['params']
             print(f"  score {o['score']:8.2f}  gamma {pp['gamma']:.3f} spreads {pp['spread_par']:.2f}/{pp['spread_perp']:.2f} "
-                  f"Rc {pp['rc']:.2f} T {pp['t_life']:.1f} m0x {pp['m0x']:+.0f}", flush=True)
+                  f"Rc {pp['rc']:.2f} T {pp['t_life']:.1f} m0x {pp['m0x']:+.0f} tile x{pp['tile_scale']:.2f}", flush=True)
         return min(out, key=lambda o: o['score'])
 
     print(f'calibrating against {a.target} ({name}); defaults: {base}')
@@ -160,10 +168,12 @@ def main(argv):
                      for rc in (0.45, 0.7, 1.0)]
         elif stage == 'time':
             cands = []
-            for T in (2.5, 3.0, 3.5, 4.0, 5.0):
+            for T in (3.0, 4.0, 5.0, 6.0, 7.0, 8.0):
                 cands.append(dict(b, t_life=T, m0x=m0x_for(T, pitch_target)))
         elif stage == 'contrast2':
             cands = [dict(b, gamma=b['gamma'] * f) for f in (0.8, 0.9, 1.1, 1.25)]
+        elif stage == 'spacing':
+            cands = [dict(b, tile_scale=s) for s in (0.8, 1.0, 1.2, 1.4, 1.6, 1.8) if abs(s - b['tile_scale']) > 1e-6]
         else:
             raise SystemExit(f'unknown stage {stage}')
         print(f'stage {stage}: {len(cands)} candidates')

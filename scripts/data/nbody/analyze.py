@@ -6,10 +6,14 @@ usage ($PY = the venv python, see README.md):
       [--json PATH] [--plots DIR] [--raycast N] [--granola N] [--quick]
   defaults: --from = the run's fine_from (start of the 0.05-orbit snapshots), all snapshots after it, results to
   scripts/data/nbody/results/<run>.json, plots (PNG) to data-raw/nbody/plots/<run>/ (not committed).
+  --field tau: D = cross-section per area (the photometric tau_dyn factor that the ring medium is scaled by)
+  instead of the surface mass density; written to results/<run>.tau.json.
 
 Both kinds of runs go through the same pipeline on a physical grid of cell h = lambda_T/32 over the box:
   * fields: particle masses, cross-sections (tau_dyn), mid-plane chords pi (a^2 - z^2) (filling factor), m z^2,
-    per-size-bin numbers / masses and momenta are deposited (cloud-in-cell) and Gaussian-smoothed with sigma_s in
+    per-size-bin numbers / masses and momenta are deposited (cloud-in-cell; particles larger than half a cell over
+    their footprint: projected disc with the column profile of a sphere for mass, uniform for the cross-section,
+    the mid-plane chord disc for the filling factor) and Gaussian-smoothed with sigma_s in
     PHYSICAL coordinates. N-body: the box is shear-periodic, so the deposit is done on the doubly periodic sheared grid
     (x, y + D x / Lx) and smoothed by FFT with the physical wavevector (kx' + ky D / Lx, ky) (exact); synthetic:
     the box plus a margin (1 lambda) is deposited and smoothed with scipy.ndimage, then cropped. D = Sigma / <Sigma>
@@ -31,9 +35,11 @@ Both kinds of runs go through the same pipeline on a physical grid of cell h = l
                local mass-weighted rms z vs D (log-log slope beta: sigma_z ~ D^beta)
     filling    mid-plane volume filling factor FF = sum pi (a^2 - z^2) / area (sigma lambda/16 and lambda/32):
                mean, mean in cores, 99th percentile, max; FF vs D
-    sizes      per size bin: participation p = cov(n_b, D_-b) / var(D_-b) (D_-b = density without the bin), contrast
-               <n_b>_wake / <n_b>_gap, mean D_-b at the particles; velocity dispersion (global and relative to the local
-               mean flow at lambda/8)
+    sizes      per size bin (lambda/8): participation p = cov(n_b, D_-b) / (var(D_-b) - var_noise(D_-b)) (D_-b = mass
+               density without the bin; its shot-noise variance from the same particles at random positions; p = 1:
+               follows the wakes exactly, as all sizes do in the procedural model), contrast <n_b>_wake / <n_b>_gap,
+               mean D_-b at the particles (lambda/16); velocity dispersion (global and relative to the local mean flow
+               at lambda/8)
     raycast    (every --raycast N snapshots) normal photometric optical depth by Monte-Carlo vertical rays through
                the spheres: tau_phot = -ln T overall, in gaps and in wakes
     granola-fit (every --granola N snapshots) transmission T(B, phi) for slant rays (B = 10..90 deg, phi = 0..165 deg),
@@ -54,6 +60,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import nbcommon as nb  # noqa: E402
 
 SIZE_EDGES = np.array([0.1, 0.2, 0.35, 0.6, 1.0, 1.75, 3.0, 5.0, 7.0])
+ZD_EDGES = np.array([0.0, 0.35, 0.7, 1.0, 1.4, 2.0, 2.8, 4.0, 1e9])   # local D bins for rms z per size bin
 QUANT = [0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 0.999]
 
 
@@ -109,31 +116,89 @@ def cic(nx, ny, u, v, weights, periodic):
     return [o.reshape(nx, ny) for o in out]
 
 
+GOLDEN = math.pi * (3 - math.sqrt(5))
+
+
+def footprints(radius, h, rng):
+    """Footprint sample points of particles larger than half a grid cell (sunflower pattern on the unit disc, random
+    rotation per particle). Returns (particle index, unit-disc offsets ux, uy, hemispherical weight, uniform weight),
+    weights normalised per particle. Particles with radius < h/2 get one point at the centre (plain cloud-in-cell)."""
+    a = np.asarray(radius)
+    need = 4 * (a / h) ** 2 + 8
+    groups = np.where(a < 0.5 * h, 1, 2 ** np.ceil(np.log2(np.maximum(need, 16))).astype(int))
+    idx, ux, uy, wh, wu = [], [], [], [], []
+    for M in np.unique(groups):
+        sel = np.nonzero(groups == M)[0]
+        if M == 1:
+            idx.append(sel), ux.append(np.zeros(len(sel))), uy.append(np.zeros(len(sel)))
+            wh.append(np.ones(len(sel))), wu.append(np.ones(len(sel)))
+            continue
+        k = np.arange(M)
+        rk = np.sqrt((k + 0.5) / M)
+        th = k * GOLDEN
+        rot = rng.uniform(0, 2 * np.pi, len(sel))[:, None]
+        px = rk[None, :] * np.cos(th[None, :] + rot)
+        py = rk[None, :] * np.sin(th[None, :] + rot)
+        w = np.sqrt(np.maximum(0.0, 1 - rk * rk))
+        idx.append(np.repeat(sel, M)), ux.append(px.ravel()), uy.append(py.ravel())
+        wh.append(np.tile(w / w.sum(), len(sel))), wu.append(np.full(len(sel) * M, 1.0 / M))
+    return (np.concatenate(idx), np.concatenate(ux), np.concatenate(uy), np.concatenate(wh), np.concatenate(wu))
+
+
 class Fields:
-    """Smoothed physical fields of one snapshot (see the module docstring)."""
+    """Smoothed physical fields of one snapshot (see the module docstring).
+    weights: {name: (per-particle values, kind)}; kind 'mass' deposits over the particle's projected disc with the
+    hemispherical column profile (a uniform sphere), 'area' uniformly over the projected disc, 'ff' uniformly over the
+    mid-plane chord disc of radius sqrt(a^2 - z^2), 'point' at the centre. Footprints matter wherever particles are
+    not small compared with the grid cell (lambda/32 ~ 1 m): a 5 m boulder covers ~50 cells."""
 
     def __init__(self, run, snap, weights, offset=None):
         self.run = run
         self.t = snap['t']
         pos = snap['pos']
         R = run
+        rng = np.random.default_rng(int(abs(snap['t'])) % (2 ** 31))
+        r = R.r
+        z = pos[:, 2]
+        kinds = {k for _, k in weights.values()}
+        pts = []   # (name list, x, y, values)
+        if kinds & {'mass', 'area'}:
+            pi_, ux, uy, wh, wu = footprints(r, R.h, rng)
+            px = pos[pi_, 0] + ux * r[pi_]
+            py = pos[pi_, 1] + uy * r[pi_]
+            names = [k for k, (_, kd) in weights.items() if kd in ('mass', 'area')]
+            vals = [weights[k][0][pi_] * (wh if weights[k][1] == 'mass' else wu) for k in names]
+            pts.append((names, px, py, vals))
+        if 'ff' in kinds:
+            c = np.sqrt(np.maximum(0.0, r * r - z * z))
+            hit = np.nonzero(c > 0)[0]
+            pi_, ux, uy, wh, wu = footprints(c[hit], R.h, rng)
+            pi_ = hit[pi_]
+            px = pos[pi_, 0] + ux * c[pi_]
+            py = pos[pi_, 1] + uy * c[pi_]
+            names = [k for k, (_, kd) in weights.items() if kd == 'ff']
+            pts.append((names, px, py, [weights[k][0][pi_] * wu for k in names]))
+        names = [k for k, (_, kd) in weights.items() if kd == 'point']
+        if names:
+            pts.append((names, pos[:, 0], pos[:, 1], [weights[k][0] for k in names]))
+        self.raw = {}
         if R.periodic:
             self.Dw = nb.wrap_offset(snap['D'], R.Ly) if offset is None else offset
-            x, y = pos[:, 0], pos[:, 1]
-            ys = y + self.Dw * x / R.Lx
-            u = (x + R.Lx / 2) / R.hx - 0.5
-            v = (ys + R.Ly / 2) / R.hy - 0.5
             self.gnx, self.gny = R.nx, R.ny
-            self.raw = dict(zip(weights.keys(), cic(R.nx, R.ny, u, v, list(weights.values()), True)))
+            for names, x, y, vals in pts:
+                u = (x + R.Lx / 2) / R.hx - 0.5
+                v = (y + self.Dw * x / R.Lx + R.Ly / 2) / R.hy - 0.5
+                self.raw.update(zip(names, cic(R.nx, R.ny, u, v, vals, True)))
             kx = 2 * np.pi * np.fft.fftfreq(R.nx, R.hx)[:, None]
             ky = 2 * np.pi * np.fft.fftfreq(R.ny, R.hy)[None, :]
             self.k2 = (kx + ky * self.Dw / R.Lx) ** 2 + ky ** 2
         else:
             n0x, n0y = R.nx + 2 * R.nm, R.ny + 2 * R.nm
-            u = (pos[:, 0] + R.Lx / 2 + R.margin) / R.h - 0.5
-            v = (pos[:, 1] + R.Ly / 2 + R.margin) / R.h - 0.5
             self.gnx, self.gny = n0x, n0y
-            self.raw = dict(zip(weights.keys(), cic(n0x, n0y, u, v, list(weights.values()), False)))
+            for names, x, y, vals in pts:
+                u = (x + R.Lx / 2 + R.margin) / R.h - 0.5
+                v = (y + R.Ly / 2 + R.margin) / R.h - 0.5
+                self.raw.update(zip(names, cic(n0x, n0y, u, v, vals, False)))
         self.cell = R.hx * R.hy
         self.cache = {}
         self.fft = {}
@@ -195,14 +260,14 @@ def particle_weights(run, snap):
     z = snap['pos'][:, 2]
     vel = snap['vel']
     vy = vel[:, 1] + 1.5 * run.Om * snap['pos'][:, 0]
-    w = dict(mass=m, area=np.pi * r * r, ff=np.pi * np.maximum(0.0, r * r - z * z), mz2=m * z * z,
-             mvx=m * vel[:, 0], mvy=m * vy, mvz=m * vel[:, 2])
+    w = dict(mass=(m, 'mass'), area=(np.pi * r * r, 'area'), ff=(np.pi * np.maximum(0.0, r * r - z * z), 'ff'),
+             mz2=(m * z * z, 'mass'), mvx=(m * vel[:, 0], 'mass'), mvy=(m * vy, 'mass'), mvz=(m * vel[:, 2], 'mass'))
     nb_ = len(run.bins) - 1
     if nb_ > 1:
         for b in range(nb_):
             sel = (run.bin_of == b).astype(np.float64)
-            w[f'n{b}'] = sel
-            w[f'm{b}'] = sel * m
+            w[f'n{b}'] = (sel, 'point')
+            w[f'm{b}'] = (sel * m, 'mass')
     return w
 
 
@@ -481,12 +546,12 @@ def covered(px, py, cx, cy, cr, nclass=14):
     return out
 
 
-def raycast_vertical(run, snap, F, npts, rng, sig):
+def raycast_vertical(run, snap, F, npts, rng, sig, fld='mass'):
     x, y, z, r = physical_particles(run, snap, run.r.max() + 1)
     px = rng.uniform(-run.Lx / 2, run.Lx / 2, npts)
     py = rng.uniform(-run.Ly / 2, run.Ly / 2, npts)
     cov = covered(px, py, x, y, r)
-    Dp = F.at('mass', sig, px, py) / F.mean_mass
+    Dp = F.at(fld, sig, px, py) / F.mean_fld
     out = dict(T=float(1 - cov.mean()), T_gap=float(1 - cov[Dp < 1].mean()), T_wake=float(1 - cov[Dp >= 1].mean()))
     q90 = np.quantile(Dp, 0.9)
     out['T_core'] = float(1 - cov[Dp >= q90].mean())
@@ -545,7 +610,8 @@ def fit_granola(B, phi, T):
 def temporal_procedural(run, lags_orb, nt=24):
     import procedural as pr
     sc = run.cfg['procedural']
-    wf = pr.WakeFieldPort(run.cfg.get('seed_proc', 12345), m0x=sc['m0x'], m0y=sc['m0y'], t_life=sc['t_life'], rc=sc['rc'])
+    wf = pr.WakeFieldPort(run.cfg.get('seed_proc', 12345), m0x=sc['m0x'], m0y=sc['m0y'], t_life=sc['t_life'], rc=sc['rc'],
+                          tile_scale=sc.get('tile_scale', 1.0))
     wf.configure(sc['lambda_m'], sc['strength'], sc['gamma'], sc['spread_par'], sc['spread_perp'], sc['omega'])
     xs = -run.Lx / 2 + (np.arange(0, run.nx, 2) + 0.5) * run.hx
     ys = -run.Ly / 2 + (np.arange(0, run.ny, 2) + 0.5) * run.hy
@@ -588,6 +654,7 @@ def fit_decay(res, min_lag=0.1):
 # ------------------------------------------------------------------ main analysis
 def analyze(args):
     R = Run(args.run)
+    fld = 'area' if getattr(args, 'field', 'mass') == 'tau' else 'mass'
     times = R.times()
     t_from = (args.from_orbit if args.from_orbit is not None else R.cfg.get('fine_from', 0.0)) * R.P
     t_to = (args.to_orbit if args.to_orbit is not None else 1e9) * R.P
@@ -601,7 +668,7 @@ def analyze(args):
           f'N = {len(R.r)}, box {R.Lx:.1f} m, lambda_T {lam:.2f} m, grid {R.nx}x{R.ny}, size bins {np.round(R.bins, 3).tolist()}')
     acc = SpecAcc(R, pad=2 if R.Lx / lam >= 6 else 4)
     rng = np.random.default_rng(11)
-    per = {k: [] for k in ('t', 'lamw', 'pitch', 'q16', 'q8', 'otsu', 'gr1', 'gro', 'ff16', 'ff32', 'skel', 'zr', 'zr_gap',
+    per = {k: [] for k in ('t', 'lamw', 'pitch', 'q16', 'q8', 'otsu', 'gr1', 'gro', 'skel', 'zr', 'zr_gap',
                            'zr_wake', 'zr_core', 'p_part', 'contrast', 'envD', 'cvel', 'cvel_loc', 'zr_m', 'thick',
                            'ffD', 'dens_q16', 'dens_skel', 'dens_consist', 'ray', 'gran')}
     hist_edges = np.linspace(-3, 3, 121)
@@ -616,6 +683,9 @@ def analyze(args):
     thick_den = np.zeros(len(Dbins) - 1)
     ffD_num = np.zeros(len(Dbins) - 1)
     ffD_den = np.zeros(len(Dbins) - 1)
+    zD_num = np.zeros((nbins, len(ZD_EDGES) - 1))
+    zD_cnt = np.zeros((nbins, len(ZD_EDGES) - 1))
+    noise_var = {}
     t_start = time.time()
     for n, i in enumerate(idx):
         s = nb.load_snapshot(R.snaps[i])
@@ -623,9 +693,10 @@ def analyze(args):
         F = Fields(R, s, particle_weights(R, s))
         F.mean_mass = R.m.sum() / (R.Lx * R.Ly) if R.periodic else F.raw['mass'].sum() / (F.gnx * F.gny * F.cell)
         mean_area = (np.pi * R.r ** 2).sum() / (R.Lx * R.Ly) if R.periodic else F.raw['area'].sum() / (F.gnx * F.gny * F.cell)
-        D16 = F.box('mass', s16) / F.mean_mass
-        D8 = F.box('mass', s8) / F.mean_mass
-        D32 = F.box('mass', s32) / F.mean_mass
+        F.mean_fld = F.mean_mass if fld == 'mass' else mean_area
+        D16 = F.box(fld, s16) / F.mean_fld
+        D8 = F.box(fld, s8) / F.mean_fld
+        D32 = F.box(fld, s32) / F.mean_fld
         per['t'].append(t)
         lw, pt, kxc, kyc = acc.add(D32, t)
         per['lamw'].append(lw)
@@ -643,15 +714,15 @@ def analyze(args):
         oh, oe, _, _ = orientation_hist(D32, h, lam)
         ohist += oh
         pad = 32 if R.periodic else min(32, R.nm)
-        Dpad = F.box('mass', s16, pad=pad) / F.mean_mass
+        Dpad = F.box(fld, s16, pad=pad) / F.mean_fld
         sk = skeleton_stats(Dpad, pad, h, lam, 1.0)
         per['skel'].append([sk['n_end'], sk['n_branch'], sk['length'], sk['filament'], sk['seg_median'], sk['seg_mean'], sk['wake_area']])
         # filling factor
         FF16 = F.box('ff', s16)
-        FF32 = F.box('ff', s32)
         core = D16 >= np.quantile(D16, 0.9)
-        per['ff16'].append([FF16.mean(), FF16[core].mean(), np.quantile(FF16, 0.99), FF16.max()])
-        per['ff32'].append([FF32.mean(), FF32[core].mean(), np.quantile(FF32, 0.99), FF32.max()])
+        for key, sg in (('ff32', s32), ('ff16', s16), ('ff8', s8), ('ff4', 2 * s8)):
+            FFs = FF16 if sg == s16 else F.box('ff', sg)
+            per.setdefault(key, []).append([FFs.mean(), FFs[core].mean(), np.quantile(FFs, 0.99), np.quantile(FFs, 0.999), FFs.max()])
         dbin = np.clip(np.digitize(D16, Dbins) - 1, 0, len(Dbins) - 2)
         ffD_num += np.bincount(dbin.ravel(), FF16.ravel(), len(Dbins) - 1)
         ffD_den += np.bincount(dbin.ravel(), minlength=len(Dbins) - 1)
@@ -666,7 +737,7 @@ def analyze(args):
             inb = (np.abs(x) < R.Lx / 2) & (np.abs(y) < R.Ly / 2)
         else:
             inb = np.ones(len(x), bool)
-        Dp = F.at('mass', s16, x, y) / F.mean_mass
+        Dp = F.at(fld, s16, x, y) / F.mean_fld
         q90 = np.quantile(D16, 0.9)
         zr, zg, zw, zc, cv, cvl = [], [], [], [], [], []
         vx, vy, vz = s['vel'][:, 0], s['vel'][:, 1] + 1.5 * R.Om * x, s['vel'][:, 2]
@@ -683,6 +754,9 @@ def analyze(args):
             zg.append(rms(zb[db < 1]))
             zw.append(rms(zb[db >= 1]))
             zc.append(rms(zb[db >= q90]))
+            kd = np.clip(np.digitize(db, ZD_EDGES) - 1, 0, len(ZD_EDGES) - 2)
+            zD_num[b] += np.bincount(kd, zb * zb, len(ZD_EDGES) - 1)
+            zD_cnt[b] += np.bincount(kd, minlength=len(ZD_EDGES) - 1)
             cv.append([rms(vx[sb]), rms(vy[sb]), rms(vz[sb])])
             cvl.append([rms(vx[sb] - mvx[sb]), rms(vy[sb] - mvy[sb]), rms(vz[sb] - mvz[sb])])
         per['zr'].append(zr)
@@ -695,15 +769,35 @@ def analyze(args):
         per['zr_m'].append([float(np.sqrt((wm * z[inb] ** 2).sum()))])
         if nbins > 1:
             pp, cc, ee = [], [], []
-            Mtot = F.box('mass', s16)
+            # participation p_b = cov(n_b, D_-b) / (var(D_-b) - var_noise(D_-b)) at lambda/8: D_-b is the mass density
+            # factor of all OTHER bins; its shot-noise variance (boulders!) is measured on the same particles at
+            # uniformly random positions (refreshed every 5th snapshot) so that p = 1 means "follows the wakes exactly"
+            Mtot = F.box('mass', s8)
             area_native = R.Lx * R.Ly if R.periodic else F.gnx * F.gny * F.cell
+            if n % 5 == 0 or not noise_var:
+                srand = dict(s)
+                pr_ = s['pos'].copy()
+                if R.periodic:
+                    pr_[:, 0] = rng.uniform(-R.Lx / 2, R.Lx / 2, len(pr_))
+                    pr_[:, 1] = rng.uniform(-R.Ly / 2, R.Ly / 2, len(pr_))
+                else:
+                    pr_[:, 0] = rng.uniform(-R.Lx / 2 - R.margin, R.Lx / 2 + R.margin, len(pr_))
+                    pr_[:, 1] = rng.uniform(-R.Ly / 2 - R.margin, R.Ly / 2 + R.margin, len(pr_))
+                srand['pos'] = pr_
+                wr = {'mass': (R.m, 'mass')}
+                wr.update({f'm{b}': ((R.bin_of == b) * R.m, 'mass') for b in range(nbins)})
+                Fr = Fields(R, srand, wr)
+                Mr = Fr.box('mass', s8)
+                for b in range(nbins):
+                    mr = Mr - Fr.box(f'm{b}', s8)
+                    noise_var[b] = float((mr / mr.mean()).var())
             for b in range(nbins):
-                nbx = F.box(f'n{b}', s16)
-                mbx = F.box(f'm{b}', s16)
+                nbx = F.box(f'n{b}', s8)
+                mbx = F.box(f'm{b}', s8)
                 mean_rest = F.mean_mass - F.raw[f'm{b}'].sum() / area_native   # mean density of all other bins
                 Dm = (Mtot - mbx) / mean_rest
                 nn = nbx / nbx.mean() if nbx.mean() > 0 else nbx
-                pp.append(float(np.cov(nn.ravel(), Dm.ravel())[0, 1] / Dm.var()))
+                pp.append(float(np.cov(nn.ravel(), Dm.ravel())[0, 1] / max(Dm.var() - noise_var[b], 0.05 * Dm.var())))
                 wk = Dm >= 1
                 cc.append(float(nn[wk].mean() / max(nn[~wk].mean(), 1e-9)))
                 sb = (R.bin_of == b) & inb
@@ -728,7 +822,7 @@ def analyze(args):
             per['dens_skel'].append([sk2['n_end'], sk2['n_branch'], sk2['length'], sk2['filament'], sk2['seg_median'], sk2['seg_mean'], sk2['wake_area']])
             per['dens_consist'].append([float(np.corrcoef(P16.ravel(), D16.ravel())[0, 1]), float(D16.mean()), float(P16.mean())])
         if args.raycast and n % args.raycast == 0:
-            rc = raycast_vertical(R, s, F, args.rays, rng, s16)
+            rc = raycast_vertical(R, s, F, args.rays, rng, s16, fld)
             rc['t'] = t
             per['ray'].append(rc)
         if args.granola and n % args.granola == 0:
@@ -746,6 +840,7 @@ def analyze(args):
         snaps_keep.append(dict(t=t, F=None))
     T = np.array(per['t'])
     out = dict(run=R.name, kind=R.kind, note=R.cfg.get('note'),
+               field='surface mass density' if fld == 'mass' else 'cross-section per area (tau_dyn)',
                params=dict(a_km=R.cfg['a_km'], sigma=R.cfg['sigma'], tau_full=R.cfg['tau'],
                            tau_sim=R.d.get('tau_sim', R.d.get('tau_sim_expected')), tau_deficit=R.d.get('tau_deficit'),
                            lambda_T=lam, box_m=R.Lx, box_lambda=R.Lx / lam, N=len(R.r), rho=R.d.get('rho'), r_h=R.d.get('r_h'),
@@ -835,8 +930,9 @@ def analyze(args):
         cache = {}
         for j in sorted(want):
             s = nb.load_snapshot(R.snaps[j])
-            F = Fields(R, s, dict(mass=R.m))
-            F.mean_mass = R.m.sum() / (R.Lx * R.Ly)
+            wv = R.m if fld == 'mass' else np.pi * R.r ** 2
+            F = Fields(R, s, {fld: (wv, fld)})
+            F.mean_mass = wv.sum() / (R.Lx * R.Ly)
             cache[j] = dict(t=s['t'], F=F)
         # pairs: base snapshots `sub`, partners from the cache
         xs = -R.Lx / 2 + (np.arange(R.nx) + 0.5) * R.hx
@@ -850,8 +946,8 @@ def analyze(args):
                 if j not in cache or abs(all_t[j] - all_t[i] - lag * R.P) > 0.01 * R.P:
                     continue
                 dt = all_t[j] - all_t[i]
-                b = cache[i]['F'].box('mass', s8) / cache[i]['F'].mean_mass
-                f2 = cache[j]['F'].at('mass', s8, X, Y - 1.5 * R.Om * X * dt) / cache[j]['F'].mean_mass
+                b = cache[i]['F'].box(fld, s8) / cache[i]['F'].mean_mass
+                f2 = cache[j]['F'].at(fld, s8, X, Y - 1.5 * R.Om * X * dt) / cache[j]['F'].mean_mass
                 cs.append(np.corrcoef(b.ravel(), f2.ravel())[0, 1])
             tr.append((lag, float(np.mean(cs)) if cs else float('nan'), len(cs)))
     out['temporal'] = dict(lags_orbits=[r[0] for r in tr], C=[round(r[1], 4) for r in tr], n_pairs=[r[2] for r in tr],
@@ -874,13 +970,26 @@ def analyze(args):
                            zrms_core_m=ms(zc, 3), zrms_mass_weighted_m=ms(zm, 3),
                            thickness_vs_D=dict(D=[round(float(v), 3) for v in Dc[okb]], sigma_z_mass_m=[round(float(v), 3) for v in thick[okb]],
                                                beta_all=beta, beta_wakes=beta_w))
-    ff16 = block_stats(per['ff16'], T, R.P)
-    ff32 = block_stats(per['ff32'], T, R.P)
+    # rms z per size bin in bins of the local D at the particle (D bin centres: geometric means, last bin open)
+    zDc = [0.2, 0.5, 0.85, 1.2, 1.7, 2.4, 3.4, 5.0]
+    zrows, zbeta = [], []
+    for b in range(nbins):
+        ok = zD_cnt[b] > 30
+        zz = np.where(ok, np.sqrt(zD_num[b] / np.maximum(zD_cnt[b], 1)), np.nan)
+        zrows.append([round(float(v), 3) if np.isfinite(v) else None for v in zz])
+        sel = ok & (np.array(zDc) >= 0.85)
+        zbeta.append(round(float(np.polyfit(np.log(np.array(zDc)[sel]), np.log(zz[sel]), 1)[0]), 3) if sel.sum() >= 3 else None)
+    out['vertical']['zrms_vs_D'] = dict(D_edges=ZD_EDGES[:-1].tolist() + ['inf'], D_centres=zDc, zrms_m=zrows,
+                                        beta_D_ge_0p85=zbeta, note='per size bin, D = local density factor at the particle')
     ffD = ffD_num / np.maximum(ffD_den, 1)
     okf = ffD_den > 0.002 * ffD_den.sum()
-    out['filling'] = dict(sigma_lambda_16=dict(zip(['mean', 'core_mean', 'p99', 'max'], [ms((a, b)) for a, b in zip(*ff16)])),
-                          sigma_lambda_32=dict(zip(['mean', 'core_mean', 'p99', 'max'], [ms((a, b)) for a, b in zip(*ff32)])),
-                          vs_D=dict(D=[round(float(v), 3) for v in Dc[okf]], FF=[round(float(v), 4) for v in ffD[okf]]))
+    out['filling'] = {f'sigma_lambda_{n}': dict(zip(['mean', 'core_mean', 'p99', 'p99.9', 'max'],
+                                                    [ms((a, b)) for a, b in zip(*block_stats(per[f'ff{n}'], T, R.P))]))
+                      for n in (32, 16, 8, 4)}
+    out['filling']['vs_D'] = dict(D=[round(float(v), 3) for v in Dc[okf]], FF=[round(float(v), 4) for v in ffD[okf]],
+                                  note='FF at lambda/16 averaged in bins of D (lambda/16)')
+    out['filling']['note'] = ('mid-plane volume filling factor sum pi (a^2 - z^2) / area; core = top 10 % of the area in D; '
+                              'maxima below the size of the largest particles are those of single boulders (1 inside a sphere)')
     cv = block_stats(per['cvel'], T, R.P)
     cvl = block_stats(per['cvel_loc'], T, R.P)
     out['velocity'] = dict(size_bins_m=bins, c_xyz_mm_s=[[round(1e3 * v, 4) for v in row] for row in cv[0]],
@@ -947,26 +1056,27 @@ def analyze(args):
                               [[round(float(a), 4), round(float(b), 4)] for a, b in zip(*sk2)])),
             particles_vs_field=dict(corr=dc[0][0], mean_D_particles=dc[0][1], mean_D_field=dc[0][2]),
             model=P)
-    path = args.json or os.path.join(nb.RESULTS_DIR, f'{R.name}.json')
+    path = args.json or os.path.join(nb.RESULTS_DIR, f'{R.name}{"" if fld == "mass" else ".tau"}.json')
     nb.write_json(path, out)
     print(f'wrote {path} ({time.time() - t_start:.0f} s)')
     if args.plots is not False:
-        plots(R, idx, args.plots or os.path.join(nb.RAW_DIR, 'plots', R.name), acc, per)
+        plots(R, idx, args.plots or os.path.join(nb.RAW_DIR, 'plots', R.name + ('' if fld == 'mass' else '.tau')), acc, per, fld)
     return out
 
 
-def plots(R, idx, outdir, acc, per):
+def plots(R, idx, outdir, acc, per, fld='mass'):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     os.makedirs(outdir, exist_ok=True)
     picks = [idx[0], idx[len(idx) // 3], idx[2 * len(idx) // 3], idx[-1]]
     fig, axs = plt.subplots(1, len(picks), figsize=(4.2 * len(picks), 4.4))
+    wv = R.m if fld == 'mass' else np.pi * R.r ** 2
     for ax, i in zip(axs, picks):
         s = nb.load_snapshot(R.snaps[i])
-        F = Fields(R, s, dict(mass=R.m))
-        F.mean_mass = R.m.sum() / (R.Lx * R.Ly) if R.periodic else F.raw['mass'].sum() / (F.gnx * F.gny * F.cell)
-        D = F.box('mass', R.lam / 16) / F.mean_mass
+        F = Fields(R, s, {fld: (wv, fld)})
+        F.mean_mass = wv.sum() / (R.Lx * R.Ly) if R.periodic else F.raw[fld].sum() / (F.gnx * F.gny * F.cell)
+        D = F.box(fld, R.lam / 16) / F.mean_mass
         ax.imshow(np.log(np.clip(D, 0.05, None)).T, origin='lower', cmap='magma', vmin=np.log(0.1), vmax=np.log(6),
                   extent=[-R.Lx / 2 / R.lam, R.Lx / 2 / R.lam, -R.Ly / 2 / R.lam, R.Ly / 2 / R.lam])
         ax.set_title(f'{R.name} t={s["t"] / R.P:.2f} orb')
@@ -1018,6 +1128,8 @@ def main(argv):
     p.add_argument('--granola', type=int, default=0, help='slant-ray granola-bar fit every N snapshots (0: off)')
     p.add_argument('--rays', type=int, default=400000)
     p.add_argument('--quick', action='store_true', help='every 4th snapshot (testing)')
+    p.add_argument('--field', choices=['mass', 'tau'], default='mass',
+                   help='D = surface mass density factor (default) or cross-section (tau_dyn) factor; results/<run>.tau.json')
     a = p.parse_args(argv)
     analyze(a)
 

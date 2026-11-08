@@ -46,7 +46,8 @@ import nbcommon as nb  # noqa: E402
 N_TEX = 256
 WAKE_FD_H = 1.5
 TWO_PI = 2 * math.pi
-DEFAULTS = dict(m0x=3.0, m0y=6.0, t_life=3.0, rc=0.45, pitch_peak_deg=20.0)
+# tile_scale: not a parameter of the app (= 1 there); scales the tile, i.e. the crest spacing (for calibration)
+DEFAULTS = dict(m0x=3.0, m0y=6.0, t_life=3.0, rc=0.45, pitch_peak_deg=20.0, tile_scale=1.0)
 
 # zone values of src/rings/ringRegions.ts used by the reference sites (checked against the TS by --verify)
 ZONES = {
@@ -172,7 +173,7 @@ class WakeFieldPort:
     def configure(self, lam, strength, gamma, spread_par, spread_perp, omega, q_shear=1.5):
         p = self.p
         self.lam = lam
-        self.tile = max(lam * p['m0y'] / math.sin(math.radians(p['pitch_peak_deg'])), 1.0)
+        self.tile = max(lam * p['m0y'] / math.sin(math.radians(p['pitch_peak_deg'])) * p['tile_scale'], 1.0)
         self.strength = strength
         self.gamma = gamma
         self.lng = math.log(gamma)
@@ -352,7 +353,7 @@ def synth(args):
     with open(os.path.join(like, 'params.json')) as f:
         params = json.load(f)
     over = dict(gamma=args.gamma, spread_par=args.spread_par, spread_perp=args.spread_perp, rc=args.rc,
-                t_life=args.t_life, strength=args.strength)
+                t_life=args.t_life, strength=args.strength, tile_scale=getattr(args, 'tile_scale', None))
     if args.m0:
         mx, my = (float(s) for s in args.m0.split(','))
         over.update(m0x=mx, m0y=my)
@@ -364,7 +365,7 @@ def synth(args):
     for fn in os.listdir(out):
         if fn.startswith(('snap_', 'dens_')):
             os.remove(os.path.join(out, fn))
-    wf = WakeFieldPort(args.seed, m0x=sc['m0x'], m0y=sc['m0y'], t_life=sc['t_life'], rc=sc['rc'])
+    wf = WakeFieldPort(args.seed, m0x=sc['m0x'], m0y=sc['m0y'], t_life=sc['t_life'], rc=sc['rc'], tile_scale=sc['tile_scale'])
     wf.configure(sc['lambda_m'], sc['strength'], sc['gamma'], sc['spread_par'], sc['spread_perp'], sc['omega'])
     Lx, Ly, lam = d['Lx'], d['Ly'], d['lambda_T']
     margin = args.margin_lambda * lam
@@ -556,6 +557,7 @@ def main(argv):
     s.add_argument('--rc', type=float)
     s.add_argument('--t-life', type=float)
     s.add_argument('--strength', type=float)
+    s.add_argument('--tile-scale', type=float, help='scale of the tile = crest spacing (app: 1)')
     s.add_argument('--m0', help='lattice mode at birth "mx,my" (default 3,6)')
     s.add_argument('--seed', type=int, default=12345)
     s.add_argument('--t0', type=float)

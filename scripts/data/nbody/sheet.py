@@ -75,6 +75,9 @@ def parse_args(argv):
     p.add_argument('--a-min-full', type=float, help='lower size of the full distribution (defines tau) (m)')
     p.add_argument('--a-min', type=float, help='smallest simulated radius (m)')
     p.add_argument('--a-max', type=float, help='largest radius (m)')
+    p.add_argument('--restore-tau', action='store_true',
+                   help='add proxy particles of radius a_min carrying the omitted cross-section (tau_sim = tau) with the '
+                        "omitted population's mass (Sigma and the other particles' density unchanged)")
     p.add_argument('--box', type=float, help='box side in Toomre wavelengths (square box)')
     p.add_argument('--orbits', type=float, help='run length (orbital periods)')
     p.add_argument('--fine-from', type=float, help='orbit from which snapshots are written every --snap-fine')
@@ -113,7 +116,7 @@ def parse_args(argv):
     cfg['name'] = a.name or a.preset or 'run'
     cfg['out'] = a.out or os.path.join(nb.RAW_DIR, cfg['name'])
     for k in ('snap_every', 'snap_fine', 'eps', 'ghost', 'theta2', 'softening', 'seed',
-              'checkpoint_every', 'resume', 'bench', 'check_mf'):
+              'checkpoint_every', 'resume', 'bench', 'check_mf', 'restore_tau'):
         cfg[k] = getattr(a, k)
     cfg['mf_correction'] = not a.no_mf_correction
     cfg['preset'] = a.preset
@@ -145,6 +148,14 @@ def derive(cfg):
         d['a_min_sim'], d['a_max_sim'] = a0, a1
     d['tau_deficit'] = 1 - d['tau_sim_expected'] / cfg['tau']
     d['N'] = int(round(d['n_per_m2'] * L * L))
+    if cfg.get('restore_tau') and 'radius' not in cfg:
+        # proxies: radius a_min, number such that tau_sim = tau; total mass = that of the omitted [a_min_full, a_min]
+        a0 = cfg['a_min']
+        d['n_proxy_per_m2'] = (cfg['tau'] - d['tau_sim_expected']) / (math.pi * a0 * a0)
+        d['N_proxy'] = int(round(d['n_proxy_per_m2'] * L * L))
+        d['proxy_mass_share'] = 1 - d['mass_share_simulated']
+        d['tau_sim_expected'] = cfg['tau']
+        d['tau_deficit'] = 0.0
     return d
 
 
@@ -155,8 +166,19 @@ def initial_conditions(cfg, d, rng):
     else:
         r = nb.sample_powerlaw(rng, N, cfg['a_min'], cfg['a_max'], cfg['q'])
     vol = 4 / 3 * math.pi * r ** 3
-    rho = cfg['sigma'] * L * L / vol.sum()
-    m = rho * vol
+    Np = d.get('N_proxy', 0)
+    if Np:
+        # proxies carry the omitted cross-section; the power-law particles keep (1 - share) of Sigma
+        share = d['proxy_mass_share']
+        rho = (1 - share) * cfg['sigma'] * L * L / vol.sum()
+        m = np.concatenate([rho * vol, np.full(Np, share * cfg['sigma'] * L * L / Np)])
+        r = np.concatenate([r, np.full(Np, cfg['a_min'])])
+        N = len(r)
+        d['N'] = N
+        d['rho_proxy'] = float(m[-1] / (4 / 3 * math.pi * cfg['a_min'] ** 3))
+    else:
+        rho = cfg['sigma'] * L * L / vol.sum()
+        m = rho * vol
     sz0 = 3.0
     pos = np.empty((N, 3))
     pos[:, 0] = rng.uniform(-L / 2, L / 2, N)
