@@ -23,6 +23,7 @@ flat in vec4 vTiny;
 flat in vec2 vT;
 flat in vec3 vFl;
 flat in vec3 vFd;
+flat in vec3 vLitN;   // local layer normal toward its lit face (vertical relief)
 flat in vec4 vDisp;
 flat in vec4 vRel;
 
@@ -187,7 +188,7 @@ void main() {
   float Sss = mu0S > 0.0 ? ringRegolithIF(mu0S, mu, dot(vSS.xyz, vdir), vAlb.w) : 0.0;
   // multiply-scattered ring light from the two half-spaces (toward the lit face / toward the dark face); the
   // normal weighting 1.5 (2 beta - 1) makes the disk average back-scatter the fraction beta, like the medium
-  float cl = 1.5 * (2.0 * uNearBeta.x - 1.0) * (uSunDir.z >= 0.0 ? 1.0 : -1.0) * n.z;
+  float cl = 1.5 * (2.0 * uNearBeta.x - 1.0) * dot(n, vLitN);
   vec3 Ed = vFl * (0.5 + 0.5 * cl) + vFd * (0.5 - 0.5 * cl);
   vec3 col = vAlb.rgb * albPatch * INV_PI * (vE.x * T * Ssun * vE.w + vE.y * Sss + Ed);
   if (uDebug == 32) {

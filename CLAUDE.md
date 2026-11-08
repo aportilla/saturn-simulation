@@ -12,7 +12,7 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
 ## Commands
 - `npm run dev` → http://127.0.0.1:5173 (often already running; check with `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5173/`)
 - `npm run typecheck` (tsc --noEmit) and `npm run build` (typecheck + vite build) — keep both clean
-- **Regression suite** (real GPU, starts its own private Vite server unless `--base` answers; ~9.5 min):
+- **Regression suite** (real GPU, starts its own private Vite server unless `--base` answers; ~10 min):
   `npm test` = `test:smoke` (every preset: console/page/GL errors, pass fallbacks, NaN/negative pixels) +
   `test:physics` (ephemeris, J2–J6 frequencies, particle kinematics vs the exact Hill solution) +
   `test:counts` (drawn particles vs the analytic expectation, HUD "complete") + `test:seam` (near field +
@@ -23,14 +23,18 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
   resolved brightness, measured shapes) + `test:particles` (resolved-particle regolith law / factor LUT / relief:
   GLSL vs CPU mirrors, projected-area and photometry contracts; prints new constants when the relief changes) +
   `test:propellers` (named propellers vs Tiscareno 2010 Table 1, sub-km texture statistics and footprint prefilter,
-  GPU τ vs the CPU model, near-field presence follows the modulation, moonlet bodies).
-  `npm run test:fps` = informational fps table per preset × quality. Details, tolerances, measured values and the
-  shared helpers: `scripts/test/README.md`.
+  GPU τ vs the CPU model, near-field presence follows the modulation, moonlet bodies) +
+  `test:relief` (the rings' vertical relief: bending-wave / corrugation model checks, GPU height field and slopes vs
+  the CPU mirror, ray/height-field hits, the S/2009 S1 equinox shadow length, near field and station keeping on the
+  local mid-plane). `npm run test:fps` = informational fps table per preset × quality. Details, tolerances,
+  measured values and the shared helpers: `scripts/test/README.md`.
 - **Bibliography**: `npm run check:refs` (no GPU, ~1 s; also first in `npm test`) — every author–year citation in
   README.md, docs/ring-physics.md and docs/data-sources.md needs an entry in `src/app/references.ts` (the in-app
   Sources panel, key G) and every entry must be cited; `-- --online` re-verifies DOIs / arXiv ids. A new citation in
   the docs needs an entry there (verified against Crossref etc., never invented). `npm run test:sources` (also in
   `npm test`) = the panel and the per-place Sources lines (`src/app/placeSources.ts`) in the browser.
+- Vertical-relief model numbers (bending waves, corrugation, sites, equinox shadow lengths):
+  `node scripts/data/rings/relief_check.mjs [--t ISO]`.
 - Screenshots on the real GPU (headless Chrome, ANGLE/Metal); console errors and page errors are printed:
   - one page: `node scripts/shot.mjs "<url>" <out.png> --until "window.__svReady===true" --wait 3000 [--w --h --dpr --eval "<js>"]`
   - batch: `node scripts/shots.mjs <spec.json> <outDir> [--w --h] [--uncapped] [--base URL] [--keep-storage]`
@@ -42,11 +46,13 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
   - exposure debugging: `node scripts/meter-debug.mjs "?preset=…&t=…"` (auto-exposure meter intermediates)
   - put screenshots in the session scratchpad, not the repo; view PNGs with the Read tool
 - Useful URLs: `/?preset=<place>` (ids in `src/app/presets.ts`: overview, rings-above, edge-on, a-ring-inside,
-  a-ring-30m, a-ring-1km, b-ring-inside, c-ring-inside, cassini-division, shadow, under-rings, encke-gap,
-  keeler-gap, propeller-bleriot, propeller-belt, f-ring, enceladus, titan, mimas, iapetus, cloud-tops) plus
-  `t=<ISO>` (fix the time for reproducible shots), `hud=0`, `labels=0`, `paused=1`, `warp=`, `fps=0` (uncapped), `scale=` (render scale),
+  a-ring-30m, a-ring-1km, b-ring-inside, c-ring-inside, cassini-division, shadow, under-rings, bending-wave,
+  encke-gap, keeler-gap, propeller-bleriot, propeller-belt, f-ring, enceladus, titan, mimas, iapetus, cloud-tops)
+  plus `t=<ISO>` (fix the time for reproducible shots), `hud=0`, `labels=0`, `paused=1`, `warp=`, `fps=0`
+  (uncapped), `scale=` (render scale),
   `quality=high|medium|low` (particle render fidelity), `debug=<n>`, feature toggles (`wakes=0`, `nearField=0`,
-  `astronaut=0` (the camera-pinned astronaut, key V), …). Full list: ARCHITECTURE.md → "The app".
+  `astronaut=0` (the camera-pinned astronaut, key V), …), `relief=0` (flat rings, for before/after; `relief=5`
+  exaggerates). Full list: ARCHITECTURE.md → "The app".
 - Sandbox pages for one subsystem in isolation: `sandbox/{far,rings,near,moons,ringplot,pipeline,app}.html`
   (`ringplot.html` plots the ring optical-depth profile against the raw occultations).
 
@@ -84,6 +90,7 @@ mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,bod
 | 2-D ring structure (streamline map: moonlet gap edges, normal modes of eccentric edges; hooks for relief and 2-D τ modulation) — every main-ring τ lookup goes through it | `src/rings/RingStructure.ts` + `src/rings/streamlines.ts` + `src/rings/ringModes.ts` (CPU) + `shaders/ringStructure.glsl`; table `public/data/rings/moonlet_response.*` from `scripts/data/rings/moonlet_response.mjs` |
 | sub-km 2-D τ texture (sheared, evolving; footprint prefilter → `rlApplyTauMod` in `rlOptics.glsl`) | `src/rings/ringTexture.ts` + `shaders/ringTexture.glsl` (chunk `sv_ringTexture`, included by `sv_ringStructure`) |
 | propeller moonlets (named giants, belts: positions, partial gaps / lobes / wakes, relief; moonlet bodies) | `src/rings/propellers.ts` + `shaders/ringPropellers.glsl` (chunk `sv_ringPropellers`), `src/render/passes/PropellerMoonletPass.ts` + `src/render/propellers/*`; presets `propeller-bleriot`, `propeller-belt`; Cassini views `scripts/test/specs/propellers.json` |
+| vertical relief: one height field z0 (bending waves, 1983 corrugation, B-ring-edge region A / S/2009 S1, moonlet ζ, propellers) that every renderer takes heights relative to | `src/rings/relief.ts` (model + CPU mirror, owned by `RingStructure`), `shaders/ringRelief.glsl` (sources, behind `ringStructure.glsl`'s `rsReliefWaves` / `rsReliefSites`), `shaders/ringReliefShade.glsl` (sheet hit, shadows, normals); numbers `scripts/data/rings/relief_check.mjs`; ring-physics.md §13 |
 | individual ring particles (near field) | `src/render/passes/NearFieldPass.ts`, `src/render/near/*` |
 | particle shape, spin, relief, regolith photometry (+ CPU mirrors) | `src/render/near/nearCommon.glsl` (`nearShape`, `nearOrientation`, `nearRelief`, `nearRegolithFactor`), `nearDraw.frag.glsl`, `NearRegolith.ts`, `NearRelief.ts`, `NearNoise.ts`; `ringRegolithIF` in `src/render/shaders/lighting.glsl` |
 | astronaut companion (camera-pinned, 1.9 m, for scale; lit like the particles) | `src/render/passes/AstronautPass.ts`, `src/render/astronaut/*` |

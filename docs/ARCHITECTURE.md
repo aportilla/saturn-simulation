@@ -102,8 +102,8 @@ Implications:
   The CPU `MoonShape.radiusAlong` is the same function (camera clearance via `moonSurfaceRadius`); MoonPoints
   integrates unresolved moons over the r_max disk with the same tracer. Debug views `?debug=40..44`: normal,
   self-shadow, cos i, march outcome, external shadows (r Saturn, g moons, b rings). (Debug-view numbers are shared
-  by all passes through `settings.debugView`: ring layer 1–12, near field 11–22 and 31–34, far-field moons 40–44,
-  propeller moonlets 45 = normals.)
+  by all passes through `settings.debugView`: ring layer 1–12 and 23–26 (relief), near field 11–22 and 31–34,
+  far-field moons 40–44, propeller moonlets 45 = normals.)
 * **Propeller moonlets** (`PropellerMoonletPass`, shaders `src/render/propellers/`): the bodies of the propellers'
   moonlets (named giants and the hash-grid belts, `src/rings/propellers.ts`) — the MAX_MOONS (32) sphere list can't
   hold them. Every 30 frames (or after the camera moved > max(0.1 |z|, 2 km)) the CPU mirror lists the moonlets within
@@ -122,8 +122,10 @@ Implications:
   across the nearer side of the overlay's screen box — so the exposure is the same with or without them (glare
   and tone mapping still include them; the suit may clip in full sun).
 * **Ring layer** (`RingLayerPass`): analytic sheet in the far field; inside/near the slab
-  (|z| < `ringSlabHalfThickness(H)`) an adaptive ray-march (half resolution inside the layer and below 1.5 km,
-  depth-validated upsample) using a per-frame 256×64 LUT of the shared `ringExtinction`/`ringLayerTauBeyond`
+  (|z| < `ringSlabHalfThickness(H)`, heights above the local mid-plane) an adaptive ray-march (half resolution inside
+  the layer and below 1.5 km, depth-validated upsample; where relief is near, blocks whose transmissions differ by > 0.5
+  — the layer's edge against the sky over a tilted mid-plane — are marched at full resolution) using a per-frame
+  256×64 LUT of the shared `ringExtinction`/`ringLayerTauBeyond`
   (medium = σ_unres). Own τ pyramid storing ⟨e^{−τ/m}⟩ for path factors m = 1…0.008 (exact footprint-averaged
   transmission at any angle), granola-bar wakes in the sheet, a 6-level wake-density clipmap near the camera.
   **Wake representations** (must agree in the mean; `npm run test:seam -- --only handover` compares them with a
@@ -154,8 +156,9 @@ Implications:
 
 ### Shared uniforms & GLSL (`src/render/SharedUniforms.ts`, `src/render/shaders/*.glsl`)
 Spread `ctx.shared.u` into your material's uniforms; start shaders with `SV_HEADER_ALL` (from `chunks.ts`) or
-include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile`, `sv_ringStructure`, `sv_lighting`,
-`sv_ringLod`, `sv_wakes`.
+include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile`, `sv_ringRelief`, `sv_ringStructure`,
+`sv_ringReliefShade`, `sv_lighting`, `sv_ringLod`, `sv_wakes` (`sv_ringRelief` holds the relief sources that
+`sv_ringStructure`'s hooks call; `sv_ringReliefShade` the consumers' helpers that need the streamline map).
 * `sv_common`: camera ray `cameraRayDir(uv)`, `viewDepth`, `logDepth01`, `logDepthClipZ`, PCG hashes, value noise/fbm, `erfApprox`; Sun uniforms.
 * `sv_saturn`: `saturnIntersect(ro, rd)`, `saturnNormal(pc)`, `saturnSunVisibility(p)` (penumbra).
 * `sv_ringProfile`: `RingSample ringSample(r, footprint)` / `ringSampleIdx(idx0, footprint)` (1-D mip
@@ -176,9 +179,12 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   particles, which carry a'); `RingSample ringSampleStream(dr, dth, fp)` / `ringSampleLocal(l, fp)` = the lighting lookup
   (profile at a', τ and Σ × J × the LIGHT part of M, below; footprint × J); `ringSampleLagrangian(aL, fp)`; `ringSampleIdxPrecise(I, sub, fp)`
   (integer + fraction index: `uRingIdx0 + dr/uRingDr0` rounds to 7.8 m in the outer A ring, which stair-steps
-  displaced edges; the ring layer has the same as `rlSampleP`); `ringSunTransmissionStream(p, fp)`. Hooks (one stub
-  function per source, so work packages fill different functions): `ringStructureRelief(aL, dth)` → (height,
-  ∂/∂a', ∂/∂S) = `rsReliefWaves` + `rsReliefSites` (identity: relief work package) + `rsReliefPropellers`;
+  displaced edges; the ring layer has the same as `rlSampleP`); `ringSunTransmissionStream(p, fp)`. Hooks (one
+  function per source, so work packages fill different functions): `ringStructureRelief(aL, dth, fp)` → (height,
+  ∂/∂a', ∂/∂S) = `rsReliefWaves` (bending waves, the C-ring corrugation) + `rsReliefSites` (B-ring-edge region A,
+  S/2009 S1) (both chunk `sv_ringRelief`, included before `sv_ringStructure`) + `rsReliefPropellers` (the propellers'
+  equinox heights; they shade the sheet but are not yet in the relief bounds `uRrCamN` / `ringReliefBound` nor in the
+  relief shadows `rrSourcesSunVisSided`, so the march and the near field don't follow them);
   `vec3 ringStructureMod(aL, dth, fp)` → (mean M, variance of M below the footprint, wake factor) combines
   `rsTauModTexture` (chunk `sv_ringTexture`, `src/render/shaders/ringTexture.glsl`, CPU `src/rings/ringTexture.ts`:
   the sub-km 2-D sheared texture) and `rsPropellersMod` (chunk `sv_ringPropellers`, `ringPropellers.glsl`, CPU
@@ -192,19 +198,43 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   wakes toward 1 by the wake factor; the near field multiplies presence by M at the particle's guiding centre
   (`fp` = 0) and its wake displacement by the wake factor (`nearUpdate.glsl`). **Cost rules** (the propellers'
   hash-grid enumeration is ~1,500 operations per lookup): `rsInvert` takes a modulation mode — `ringStream` /
-  `ringStreamRelief` FULL (the sheet), `ringStreamMap` NONE (the march applies M per step itself, the propellers
-  cached over 4 m radially / 16 m along the orbit), and `ringSampleStream` / `ringSampleLocal` (lighting and
-  occlusion lookups, called per vertex by the particles, the astronaut and the moonlet bodies) LIGHT = none by default
-  (`#define RS_LIGHT_TEXTURE` adds the texture at ≥ 64 m): the particles' number follows M, their lighting column is
-  the undisturbed one. In `nearUpdate.glsl` the propellers are enumerated only for particles that may be drawn and in
-  the size classes a propeller can reach this frame (`uRpNearMask`, `PropellerSystem.nearClassMask`, exact); shadow
-  casters outside the view take the texture only (shadow fidelity). Sources now: the
+  `ringStreamRelief` FULL (the sheet's final hit), `ringStreamMap` NONE (the march applies M per step itself, the
+  propellers cached over 4 m radially / 16 m along the orbit), `ringStreamReliefGeom` NONE + relief (the sheet's
+  ray / surface hit iterations, object heights), and `ringSampleStream` / `ringSampleLocal` / `ringSampleLocalRelief`
+  (lighting and occlusion lookups, called per vertex by the particles, the astronaut and the moonlet bodies) LIGHT =
+  none by default (`#define RS_LIGHT_TEXTURE` adds the texture at ≥ 64 m): the particles' number follows M, their
+  lighting column is the undisturbed one. In `nearUpdate.glsl` the propellers are enumerated only for particles that
+  may be drawn and in the size classes a propeller can reach this frame (`uRpNearMask`,
+  `PropellerSystem.nearClassMask`, exact); shadow casters outside the view take the texture only (shadow fidelity).
+  Sources of ξ / ζ: the
   moonlets Pan and Daphnis (Hill-problem response table, `public/data/rings/moonlet_response.*`) and the normal modes
   of eccentric edges (`src/rings/ringModes.ts` `EDGE_FEATURES`: the B-ring outer edge's four modes; uniforms
   `uRsMode[8]` = (A, m(φ0 − ϖ(t)), m, 1/L), `uRsModeF[8]` feature index, `uRsFeat[2]` = (a_edge − r0, material side,
   1/gap, reach)). The camera's
   streamline state is `uRsCam` = (ξ, ζ, J, near-field zone flag). Far-field shaders (`src/render/far/**`) include
   only `sv_ringProfile` (km-scale edge waves are below their footprints).
+* **Vertical relief contract** (`sv_ringRelief`, `sv_ringReliefShade`; model and CPU mirror `src/rings/relief.ts`,
+  owned by `RingStructure`; physics ring-physics.md §13). ONE height field z0(r, θ, t) = the moonlets' ζ + the relief
+  sources, read through `ringStreamRelief(dr, dth, fp)` (`.zeta`, `.slope`) / `ringStreamXi(...).y` /
+  `ringStructureRelief(aL, dth, fp)`, CPU `structure.streamAt(dr, dth, fp, true)` / `midPlaneAtSEF(r, θ)`. **Every
+  consumer takes heights relative to the local mid-plane, z − z0**: the sheet intersects the displaced surface
+  (`ringReliefHit`: bounded march over the relief slab + Illinois regula falsi, skipped where the relief moves the hit
+  by < 0.3 footprints) and shades the layer in its tilted frame (`ringReliefNormal`, solar incidence on both faces from
+  the extended disk `ringReliefSunMu`, transmission exp(−τ/|V·n|)); relief shadows `ringReliefSunVis(aL, dth, z0, τ,
+  fp)` (bending-wave crests via their inverse phase tables, single peaks as opaque Gaussians, region A by a cell walk,
+  the moonlet edges at three streamlines; footprint- and penumbra-averaged; the geometry is mirrored to the lit face,
+  where the sites' structures rise); the near-slab march follows z0 per step (LOD functions, two-stream and sun paths
+  with the local tilt; its slab is widened by `uRrCamN.z`, the |z0| bound near the camera); near-field particles are
+  displaced by z0 at their guiding centre and lit relative to the local mid-plane (`vLitN`); the astronaut's column and
+  the HUD use the camera's mid-plane height `uRsCam.y` = `f.ring.zMid`. The ring frame stays in the SEF plane;
+  ring-frame cameras keep their height above the local mid-plane (`FreeController.midPlane`, set by the app: station
+  keeping includes the material's vertical motion). Uniforms `uRr*` (set per frame by `RingStructure.updateRelief`):
+  `uRrWave[3]` (r_V − r0, forcing phase at the frame origin, m, scale), the wave tables `uRrTab` (4096 × 2 rows per
+  wave: (A, φ, dA/dx, dφ/dx) and the inverse crest table), `uRrCorr*` / `uRrRip*` (corrugation), `uRrPeak*`,
+  `uRrSite*` (region A), `uRrMlEdge` (moonlet gap edges), `uRrCamN` (camera slope, |z0| bound, relief-near flag).
+  Debug views 23 (r − r0, θ − φ0, z of the ray at the sheet hit), 24 (z0, relief sun visibility, μ0), 25 (false colour
+  z0 ±1 km × shadows), 26 (footprint, slopes); `?relief=` scales all relief sources (0 = flat, for A/B).
+  `npm run test:relief` checks GPU vs CPU, the shadow geometry and the near field.
 * `sv_lighting`: `phaseLambertSphere`, `phaseHG`, `ringPhase(cosα, dust)`, `ringParticleSurge(α)`,
   `ringRegolithIF(μ0, μ, cos g, w)` (resolved particles; CPU mirror `near/NearRegolith.ts`),
   `extendedSourceCosine(cosθ, sin σ)` (incidence cosine of an extended spherical source), `saturnshine(p, out dir)`,
@@ -215,7 +245,8 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
 * `sv_ringLod` (mirror of `src/rings/RingLod.ts`): 14 octave size classes from 1 mm, `lodCarryParticle(a,k,s,dz)`
   (one particle's draw probability: count contract, display pixels via `uLodPixelAngle`), `lodCarry(a,k,s,dz)`
   (the share of class k the medium leaves out: exact class mean of the former; `a` unused), `ringExtinction(s, z, tau, H, W, out sigTot, out
-  sigUnres)`, `ringLayerTauBeyond(z, tau, H, dirSign)`, `ringSlabHalfThickness(H)`, `ringLayerProfile`,
+  sigUnres)` (z and the camera's height `uRingCamLocal.z − uRsCam.y` above the local mid-plane),
+  `ringLayerTauBeyond(z, tau, H, dirSign)`, `ringSlabHalfThickness(H)`, `ringLayerProfile`,
   `ringLayerColumn`, `ringLayerSegmentTau`, `ringColumnCentroid(qa, qb)` (column-centroid table `uLodColC` of the
   total profile, `RingLod.columnCentroidTable`) and `ringSunNodeRise(j, qs, hp)`: the `LOD_SUN_NODES` (6)
   stratified nodes along the sun path at which every pass averages the wake density (march, particles, astronaut;
@@ -319,8 +350,11 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   is centred on the camera's Lagrangian position (`uRsCam.x`, `NearFieldPass` uCamOff); the local LOD is configured at
   the camera's Lagrangian radius (`Pipeline.updateLocalRing`), with the boxes' τ_max taken over the drift the map can
   cause under a co-orbiting camera (`RingStructure.maxDisplacementNear`), re-fitted on 1 km of camera travel, when the
-  material under the camera changes (ring ↔ gap) or after 20 km of Lagrangian drift. ζ is computed and exposed (`ringStreamRelief`,
-  `ringStreamXi`), not yet rendered geometrically (relief work package). Details and numbers: ring-physics.md §8.
+  material under the camera changes (ring ↔ gap) or after 20 km of Lagrangian drift. ζ is part of the vertical relief
+  (rendered as geometry, see the relief contract above). Details and numbers: ring-physics.md §8.
+* **Vertical relief** (`src/rings/relief.ts`): bending waves (Mimas 5:3 and 4:2, Titan −1:0; SCL83 linear theory,
+  phases from the live ephemeris), the 1983 C-ring corrugation (Hedman et al. 2011, 2015), B-ring-edge region A and
+  S/2009 S1 (Spitale & Porco 2010), plus the moonlets' ζ and the propellers' heights. ring-physics.md §13.
 * **Sub-km texture** (`RingTexture`, `sv_ringTexture`; ring-physics.md §11): τ × M with M = 1 + A F, F a 2-D
   random field with the former radial noise's power spectrum (6 octaves, 500 → 15.6 m) and amplitude law, built
   from value noise on lattices that are isotropic at birth and advected by the Keplerian (+J2–J6) flow — trailing
@@ -355,8 +389,9 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   `renderScale` × that (default 0.5) and PostPass's final pass upsamples hdrRT bilinearly to the canvas.
   The frame loop skips display refreshes to honour `AppSettings.maxFps` (default 30; 0 = uncapped).
 * URL parameters: `preset` (place id), `t` (ISO or `now`), `warp`, `paused`, `fov`, `quality` (high|medium|low), `scale`, `fps`, `ev`,
-  `exposure`, `bloom`, `wakes`/`dustRings`/`stars`/`labels`/`nearField`/`astronaut`/`hud`, `debug`, and the sandbox-style
-  `cam=orbit|ring|look` parameters.
+  `exposure`, `bloom`, `wakes`/`dustRings`/`stars`/`labels`/`nearField`/`astronaut`/`hud`, `debug`, `relief` (vertical
+  relief multiplier, not persisted: 0 flat, 1 physical, > 1 exaggerated), and the sandbox-style `cam=orbit|ring|look`
+  parameters (`cam=ring`'s `z` is the height above the local mid-plane).
 * Test hooks: `window.__sv = { app, frame, pipeline, clock, world, renderer, camera, anchor, presets,
   goto(name, {instant}), setTime(iso), setWarp(n), info(), toggleCoorbit(), toggleBallistic(), flyTo(name) }`;
   `window.__svReady` becomes true 8 frames after the loading screen hides. `sandbox/app.html` = the app on stub

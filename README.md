@@ -43,7 +43,7 @@ which adds ~3 ms per frame inside the A ring at render scale 1). Settings persis
 
 | | |
 |---|---|
-| **Places** | `M` menu · `1`–`9`, `0` jump to a place (A ring inside the layer, 30 m above, 1 km above, B ring, C ring, Cassini Division, Saturn's shadow, under the rings, Encke/Keeler gaps, F ring, moons, cloud tops…) |
+| **Places** | `M` menu · `1`–`9`, `0` jump to a place (A ring inside the layer, 30 m above, 1 km above, B ring, C ring, Cassini Division, Saturn's shadow, under the rings, the Mimas 5:3 bending wave, Encke/Keeler gaps, F ring, moons, cloud tops…) |
 | **Orbit mode** | drag to rotate · wheel / pinch / `W` `S` to zoom · click a moon label to fly there |
 | **Co-orbit mode** (in the rings) | drag or arrows to look · `Q` `E` roll · `W` `A` `S` `D` fly · `R`/`Space` up · `F`/`Ctrl` down · wheel or `[` `]` speed (1 mm/s – 100 km/s; `Shift` ×10, `Alt` ×0.1) |
 | | `B` ballistic: let go and orbit freely like a ring particle (exact Hill-frame solution) · `C` switch orbit ⇄ co-orbit |
@@ -52,7 +52,8 @@ which adds ~3 ms per frame inside the A ring at render scale 1). Settings persis
 
 URL parameters: `preset=<place>`, `t=<ISO time|now>`, `warp=<n>`, `paused=1`, `fov=<deg>`, `quality=high|medium|low`,
 `scale=<0.25–2>`, `fps=<30|60|0 (uncapped)>`, `ev=<EV offset>`, `exposure=auto|manual`, `bloom=`, `wakes=0`, `dustRings=0`, `stars=0`,
-`labels=0`, `nearField=0`, `astronaut=0`, `hud=0`. Example: `/?preset=a-ring-30m&warp=1000`.
+`labels=0`, `nearField=0`, `astronaut=0`, `hud=0`, `relief=<0 flat · 1 physical · >1 exaggerated>`. Example:
+`/?preset=a-ring-30m&warp=1000`.
 
 The HUD shows live physics for where you are: optical depth, surface density, layer thickness, particle size
 range and counts per m², spacing, shear, epicyclic and vertical periods, Toomre wavelength, mean free path,
@@ -79,7 +80,16 @@ with the material. **Propellers**: the moonlets embedded in the A ring — the 1
 (Blériot, Earhart, Santos-Dumont, … on their measured orbits, including Blériot's wandering) and the ~10⁸ belt
 moonlets of 20–250 m radius in the mid A ring, each on its own orbit — clear two partial gaps that trail in opposite
 directions, pile the material into dense lobes beside them and raise moonlet wakes; you can fly to one
-(`propeller-bleriot`, `propeller-belt`) and see the moonlet itself, a Roche-lobe-shaped rubble body. Per-zone
+(`propeller-bleriot`, `propeller-belt`) and see the moonlet itself, a Roche-lobe-shaped rubble body. **The rings
+are not flat:** one height field lifts the ~10 m layer where
+real structure does — bending waves raised by Mimas (the 5:3 wave: 450 m crests, slopes up to 8.5°; the 4:2 wave in
+the B ring) and Titan (the −1:0 wave in the C ring: crests over 1 km high, slopes up to 45°), with their spiral phase
+from the moons' live positions; the corrugation that a 1983 impact left across the C and D rings (8–10 m tilts
+wound into a 25–70 km spiral, plus metre-scale ripples); the "splashing" structures up to 3.3 km tall along the B
+ring's edge (region A) and the moonlet S/2009 S1; and Daphnis's vertical edge waves. The layer is drawn, lit and
+shadowed in its own tilted frame by the medium, the particles and the astronaut alike, and heights are measured above
+this local mid-plane (`relief=0` flattens it for comparison). Near the 2009 equinox the relief casts the long
+shadows Cassini photographed. Per-zone
 particle size distributions (power laws, e.g. A ring 2 cm–5 m, B ring 5 cm–2 m, C ring 4 mm–10 m), layer
 thickness (C 5 m, A 10 m, B 10–15 m), surface density calibrated to density waves, albedo and colour. The
 implied ring mass, 1.34×10¹⁹ kg, matches Cassini's measured 1.54 ± 0.49×10¹⁹ kg. Details and references:
@@ -177,17 +187,22 @@ every DOI and arXiv id against the registries.
 
 ## Known limitations
 
-* Density and bending waves render as concentric ripples (no spiral phase); the eccentric ringlets (Titan, Maxwell,
+* Density waves render as concentric ripples in optical depth (no spiral phase; the three modelled bending waves
+  have their spiral height field, their optical depth stays the profile's); the eccentric ringlets (Titan, Maxwell,
   Huygens) and the A ring's outer edge are still a 2005 snapshot; the B-ring edge modes are a fit centred on 2007 whose
   free modes may have evolved since, and the modes' structure inside the ring is schematic.
-* Moonlet gap edges: the vertical waves Daphnis raises (~0.5 km in the model, ~1 km seen by Cassini) are computed but
-  not yet drawn as relief or shadows; the edge's azimuthal bunching, other perturbers (e.g. Prometheus on the Keeler
-  outer edge) and the Encke-gap ringlets are not modelled. Near-field particles on displaced edge material are lit
-  with the unperturbed profile at their position (too bright there) until the particle shader samples the 2-D
-  structure; in the most compressed wave crests particles far from the camera may be missing.
+* Vertical relief: the bending-wave amplitudes are linear theory scaled to the measured peak height (Mimas 5:3) or
+  slope (Titan), the Mimas 4:2 wave is unscaled linear theory, and the weaker Mimas 7:4 / 8:5 waves are missing; the
+  B-ring-edge structures are a phenomenological field matched to Cassini's equinox images, carried on their sunlit
+  side only; Daphnis's vertical edge waves reach 0.1–0.5 km in the model (depending on its vertical phase) where
+  Cassini's shadows suggest 0.5–1.5 km; the Encke-gap ringlet clumps have no height yet, and the propellers' heights
+  tilt the shading of the distant ring but cast no shadows and don't yet lift the particles near the camera.
+* Moonlet gap edges: the edge's azimuthal bunching, other perturbers (e.g. Prometheus on the Keeler outer edge) and
+  the Encke-gap ringlets are not modelled; in the most compressed wave crests particles far from the camera may be
+  missing.
 * Propellers: the giant propellers are much fainter than in Cassini's 2 km/px images (the bright lit-face /
-  dark unlit-face wings come mostly from the stirred, puffed-up material, whose vertical relief is computed but not
-  yet drawn; only the loss of self-gravity wakes there is rendered); the belt propellers are statistical (positions
+  dark unlit-face wings come mostly from the stirred, puffed-up material, whose height shades the ring but casts no
+  shadows yet; the loss of self-gravity wakes there is rendered); the belt propellers are statistical (positions
   from a hash grid with the measured number density, not the catalogued individuals); Blériot's libration phase is
   estimated from the paper's figure; moonlet bodies don't yet shadow the near-field particles.
 * The sub-km texture's statistics (spectrum, amplitude, shear, lifetime) are a model consistent with occultations,

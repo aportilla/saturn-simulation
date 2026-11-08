@@ -22,7 +22,11 @@ const PROFILE_MAX_M = 139_500e3;
 
 export interface LiveInfo {
   rCyl: number;
+  /** height above the ring material's local mid-plane near the rings (vertical relief), else above the SEF plane (m) */
   z: number;
+  /** height of the local mid-plane above the SEF plane (m): vertical relief under the camera (bending waves, corrugation,
+   *  moonlet edge waves, B-ring-edge structures); 0 away from the rings */
+  zMid: number;
   dist: number;
   alt: number;
   feature: string;
@@ -79,8 +83,9 @@ const _c = new Vector3();
  * The ring material at the camera through the 2-D ring structure (moonlet-perturbed gap edges): the profile values
  * of the streamline (Lagrangian) radius there, with tau and Sigma scaled by the density factor J.
  */
-function localAtCamera(ctx: PipelineContext, f: FrameState, rCyl: number): RingLocal {
-  const st = ctx.structure?.streamAtSEF(rCyl, Math.atan2(f.camPos.y, f.camPos.x));
+function localAtCamera(ctx: PipelineContext, f: FrameState, rCyl: number, mid: { z: number }): RingLocal {
+  const st = ctx.structure?.streamAtSEF(rCyl, Math.atan2(f.camPos.y, f.camPos.x), 0, true);
+  mid.z = st ? st.zeta : 0;
   if (!st || (st.da === 0 && st.J === 1 && st.tauMod === 1)) return ctx.profile.local(rCyl);
   const loc = ctx.profile.local(rCyl + st.da);
   const k = st.J * st.tauMod;
@@ -90,15 +95,18 @@ function localAtCamera(ctx: PipelineContext, f: FrameState, rCyl: number): RingL
 export function computeLiveInfo(f: FrameState, ctx: PipelineContext | null, rig: CameraRig, timeDir: number): LiveInfo {
   const p = f.camPos;
   const rCyl = Math.hypot(p.x, p.y);
-  const z = p.z;
   const dist = p.length();
   const alt = saturnAltitude(p);
   const feature = rCyl < SATURN.R_EQ && alt > 0 ? 'above Saturn' : describeRadiusKm(rCyl / 1000);
   // apparent size of Saturn: the 1-bar ellipsoid radius toward the camera's latitude
-  const rLocal = saturnRadiusAt(dist > 0 ? z / dist : 0, dist > 0 ? rCyl / dist : 1);
+  const rLocal = saturnRadiusAt(dist > 0 ? p.z / dist : 0, dist > 0 ? rCyl / dist : 1);
   const inProfile = rCyl >= PROFILE_MIN_M && rCyl <= PROFILE_MAX_M;
-  const nearRings = inProfile && Math.abs(z) < 50_000e3;
-  const local = ctx && inProfile ? localAtCamera(ctx, f, rCyl) : null;
+  const nearRings = inProfile && Math.abs(p.z) < 50_000e3;
+  // the ring material's local mid-plane under the camera (vertical relief): heights are taken relative to it
+  const mid = { z: 0 };
+  const local = ctx && inProfile ? localAtCamera(ctx, f, rCyl, mid) : null;
+  const zMid = nearRings ? mid.z : 0;
+  const z = p.z - zMid;
   const sd = local && local.macroscopic ? sizeDistribution(local) : null;
   const rf = Math.max(rCyl, SATURN.R_EQ);
   const fr = orbitalFrequencies(rf);
@@ -170,7 +178,7 @@ export function computeLiveInfo(f: FrameState, ctx: PipelineContext | null, rig:
   }
 
   return {
-    rCyl, z, dist, alt, feature, nearRings, local, sd,
+    rCyl, z, zMid, dist, alt, feature, nearRings, local, sd,
     omega: fr.omega, kappa: fr.kappa, nu: fr.nu, q,
     vOrb: fr.omega * rf,
     period: (2 * Math.PI) / fr.omega,

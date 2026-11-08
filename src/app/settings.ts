@@ -92,6 +92,8 @@ export interface UrlParams {
   paused: boolean;
   /** raw query string for sandbox-style camera parameters (cam=orbit|ring|look ...) */
   cam: URLSearchParams | null;
+  /** vertical relief multiplier (relief=0 flat, 1 physical (default), > 1 exaggerated for inspection); not persisted */
+  relief: number | null;
   overrides: Partial<RenderSettings> & { fovDeg?: number; hud?: boolean; maxFps?: number };
 }
 
@@ -127,6 +129,7 @@ export function parseUrl(search = location.search): UrlParams {
     warp: num('warp') ?? null,
     paused: flag('paused') ?? false,
     cam: p.has('cam') ? p : null,
+    relief: num('relief') ?? null,
     overrides: ov,
   };
 }

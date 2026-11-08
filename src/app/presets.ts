@@ -243,6 +243,11 @@ export const PRESETS: Preset[] = [
     explain: (x) => `${b("In Saturn's shadow.")} Every ring particle crosses Saturn's shadow once per orbit — here ${x.shadow ? duration(x.shadow.duration) : '~2 h'} of each ${duration(x.period)} orbit. ${x.shadow && x.shadow.nextEvent ? `You ${x.shadow.inShadow ? 'leave' : 'enter'} the shadow in ${duration(x.shadow.nextIn)} (sim time).` : ''} Only light reflected from Saturn's night side and the sunlit rings beyond reaches you; the particles cool by ~10–20 K during each eclipse.`,
   },
   {
+    id: 'bending-wave', title: 'Mimas 5:3 bending wave', group: 'Inside the rings', subtitle: 'The A ring corrugated, 20 km above',
+    build: (e) => ringPreset(e, { rKm: 131_900, fromNoonDeg: 30, zLit: 20_000, yaw: -90, pitch: -30, up: 'side', speed: 500 }),
+    explain: (x) => `${b('The Mimas 5:3 bending wave.')} Mimas's orbit is tilted by 1.6°; at the 5:3 vertical resonance (131,900 km) its pull bends the A ring into a spiral corrugation that runs ~200 km toward Saturn, its wavelength shrinking from ~50 to ~10 km: crests up to 450 m above the mid-plane, slopes up to 8.5°. Heights here are measured above the local mid-plane, which lies ${len(Math.abs(x.zMid), 2)} ${x.zMid >= 0 ? 'north' : 'south'} of Saturn's equatorial plane under you. The tilted faces catch the ${deg(Math.abs(x.sunEl))} Sun at different angles; near an equinox every crest casts a shadow hundreds of km long.`,
+  },
+  {
     id: 'under-rings', title: 'Under the rings', group: 'Inside the rings', subtitle: 'The unlit face, 1.5 km below',
     build: (e) => ringPreset(e, { rKm: 127_500, fromNoonDeg: 40, zLit: -1500, yaw: -75, pitch: 8, up: 'lit', speed: 40 }),
     explain: (x) => `${b('Under the rings')}, on the unlit ${x.litSign < 0 ? 'north' : 'south'} side. Sunlight reaches this face only by filtering through the layer, so opaque regions (the B ring) look dark while sparse ones (the C ring and Cassini Division) glow. Saturn's ${x.litSign < 0 ? 'northern' : 'southern'} hemisphere carries the rings' shadow.`,

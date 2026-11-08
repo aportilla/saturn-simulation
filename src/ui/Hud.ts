@@ -43,7 +43,7 @@ export class Hud {
     this.progBar = h('i');
     this.prog = h('div', { class: 'hud-progress sv-hidden' }, this.progBar);
 
-    const pos = this.section('pos', 'Position', '', [['dist', 'from Saturn'], ['alt', 'altitude'], ['plane', 'ring plane'], ['rad', 'ring radius'], ['size', 'Saturn spans']]);
+    const pos = this.section('pos', 'Position', '', [['dist', 'from Saturn'], ['alt', 'altitude'], ['plane', 'ring plane'], ['relief', 'local plane'], ['rad', 'ring radius'], ['size', 'Saturn spans']]);
     this.secMotion = this.section('motion', 'Motion', '', [['orbit', 'orbit'], ['rel', 'vs. particles'], ['fly', 'fly speed']]);
     const sizes = ['> 1 cm', '> 10 cm', '> 1 m'];
     this.sizeWrap = h('div', { class: 'size-bars' }, ...sizes.map((t) => {
@@ -154,6 +154,11 @@ export class Hud {
     else if (az < 1e9) plane = `${len(az, 3)} ${sideName} <small>· ${litSide}</small>`;
     else plane = `${km(az)} ${sideName}`;
     this.set('plane', plane, inLayer ? 'ice' : '');
+    // heights are above the material's local mid-plane: where the vertical relief lifts it off the equatorial plane,
+    // its height there (bending waves, corrugation, edge waves, B-ring-edge structures)
+    const showRelief = x.nearRings && Math.abs(x.zMid) >= 0.5;
+    if (showRelief) this.set('relief', `${x.zMid > 0 ? '+' : '−'}${len(Math.abs(x.zMid), 3)} <small>vs. equator plane</small>`);
+    this.show('relief', showRelief);
     this.set('rad', `${grouped(x.rCyl / 1e3, x.rCyl < 2e8 ? 3 : 0)} km <small>cylindrical</small>`);
     this.show('rad', x.rCyl < 5e9 && x.rCyl > SATURN.R_EQ && az > 1e-3 * x.rCyl);
     this.set('size', `${deg(x.saturnAngDiam, x.saturnAngDiam > 0.1 ? 1 : 3)} <small>of sky</small>`);

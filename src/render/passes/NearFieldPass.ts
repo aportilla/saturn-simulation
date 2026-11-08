@@ -504,16 +504,18 @@ export class NearFieldPass implements RenderPass {
     const cam = ring.camLocal;
     const qO = ring.qShear * ring.omega;
     const slab = 1.6 * lod.H + 0.5;
+    // the camera's height above the local mid-plane (vertical relief: f.ring.zMid)
+    const camZ = cam.z - ring.zMid;
     this.frame++;
     // render fidelity only: the particle field (count, positions, sizes) is independent of it
     const qs = f.settings.particleQuality;
     this.qualityU.value = qs === 'low' ? 0 : qs === 'medium' ? 1 : 2;
-    this.lastCamZ = cam.z;
+    this.lastCamZ = camZ;
 
     // --- class activity, init and re-base
     for (const c of this.classes) {
       // active while the camera is within the class's 3-D reach of the layer (its box may be clipped horizontally)
-      c.active = c.slots > 0 && Math.abs(cam.z) - slab < Math.min(lod.options.rMax, c.cBox * c.aHi);
+      c.active = c.slots > 0 && Math.abs(camZ) - slab < Math.min(lod.options.rMax, c.cBox * c.aHi);
       this.clsRow0.value[c.k] = c.row0;
       this.clsRows.value[c.k] = c.active ? c.rows : 0;
       this.clsSeed.value[c.k] = c.seed;
@@ -538,6 +540,8 @@ export class NearFieldPass implements RenderPass {
     // --- shadow-map geometry first: the update pass keeps every possible caster in its tube
     // (low particle quality: statistical shadows only)
     this.shadow.enabled = this.shadowsEnabled && !this.skip.shadow && this.qualityU.value > 0;
+    this.shadow.reliefSlope[0] = ctx.structure.cam.slopeR;
+    this.shadow.reliefSlope[1] = ctx.structure.cam.slopeT;
     this.shadowOn = this.shadow.configure(f, lod);
 
     // --- update pass per class -> R0
@@ -691,8 +695,9 @@ export class NearFieldPass implements RenderPass {
     const Ess = f.solarIrradiance * SATURN.GEOMETRIC_ALBEDO * ((Rm * Rm) / (dc * dc)) * phi;
     (this.envU.value as Vector4).set(vis, Ess, Math.asin(Math.min(1, Req / dc)), perParticle);
     (this.satDirU.value as Vector3).set(-cam.x / dc, -cam.y / dc, -cam.z / dc);
-    // fraction of the layer's optical depth above the camera height (same vertical model as sv_ringLod)
-    const zc = f.ring.camLocal.z;
+    // fraction of the layer's optical depth above the camera height (same vertical model as sv_ringLod; height above
+    // the local mid-plane)
+    const zc = f.ring.camLocal.z - f.ring.zMid;
     let fu = 0, ws = 0;
     for (let k = 0; k < LOD_CLASSES; k++) {
       const w = lod.tauFrac[k];

@@ -107,6 +107,10 @@ export class App {
       L.set('Loading the ring profile and ephemerides…', 0.3);
       const { w, h: hh } = this.targetSize();
       const [, moons, sunOk] = await Promise.all([this.pipeline.init(w, hh), loadMoons(), loadSunTable()]);
+      // vertical relief: ?relief= multiplier; ring-frame cameras keep their height above the local mid-plane
+      const structure = this.pipeline.ctx.structure;
+      if (this.url.relief !== null) structure.reliefScale = Math.max(0, this.url.relief);
+      FreeController.midPlane = (x, y) => structure.midPlaneAtSEF(Math.hypot(x, y), Math.atan2(y, x));
       this.sunTable = sunOk || hasSunTable();
       this.moonSource = moons.source;
       this.world = new World(new SafeMoons(moons.provider, (e) => {

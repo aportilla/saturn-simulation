@@ -10,6 +10,26 @@
     { "name": "daphnis-close", "url": "?cam=orbit&target=daphnis&dist=25000&az=31&el=-50&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&fov=40&scale=1", "wait": 3000 },
     { "name": "pan-close", "url": "?cam=orbit&target=pan&dist=70000&az=31&el=-25&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&fov=40&scale=1", "wait": 3000 },
     { "name": "keeler-equinox", "url": "?cam=orbit&target=daphnis&dist=200000&az=-176&el=-35&t=2009-08-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&fov=50", "wait": 3000 },
-    { "name": "b-edge-equinox", "url": "?cam=ring&r=110000e3&phi=-100.9&z=-4000e3&yaw=90&pitch=28&t=2009-07-26T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&fov=25", "wait": 3000 }
+    { "name": "b-edge-equinox", "url": "?cam=ring&r=110000e3&phi=-100.9&z=-4000e3&yaw=90&pitch=28&t=2009-07-26T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&fov=25", "wait": 3000 },
+    { "name": "pia11668-region-a", "url": "?cam=look&pos=4.297558e7,2.771894e8,-1.834639e8&at=-1.140471e8,2.612026e7,0&t=2009-07-26T09:57:40.704Z&hud=0&labels=0&paused=1&astronaut=0&nearField=0&scale=1", "wait": 3000,
+      "eval": "(() => { window.__sv.app.settings.fovDeg = 0.35; return 'NAC fov 0.35 deg'; })()" },
+    { "name": "pia11668-region-a-flat", "url": "?cam=look&pos=4.297558e7,2.771894e8,-1.834639e8&at=-1.140471e8,2.612026e7,0&t=2009-07-26T09:57:40.704Z&hud=0&labels=0&paused=1&astronaut=0&nearField=0&scale=1&relief=0", "wait": 3000,
+      "eval": "(() => { window.__sv.app.settings.fovDeg = 0.35; return 'NAC fov 0.35 deg, relief 0'; })()" },
+    { "name": "pia11676-a-ring-shadows", "url": "?cam=look&pos=2.109746e9,-7.167783e8,4.162284e8&at=-4.483367e7,-1.252156e8,0&t=2009-08-19T04:41:25.302Z&hud=0&labels=0&paused=1&astronaut=0&nearField=0&scale=1", "wait": 3000,
+      "eval": "(() => { window.__sv.app.settings.fovDeg = 0.35; return 'NAC fov 0.35 deg'; })()" },
+    { "name": "pia11676-a-ring-shadows-flat", "url": "?cam=look&pos=2.109746e9,-7.167783e8,4.162284e8&at=-4.483367e7,-1.252156e8,0&t=2009-08-19T04:41:25.302Z&hud=0&labels=0&paused=1&astronaut=0&nearField=0&scale=1&relief=0", "wait": 3000,
+      "eval": "(() => { window.__sv.app.settings.fovDeg = 0.35; return 'NAC fov 0.35 deg, relief 0'; })()" },
+    { "name": "pia11656-daphnis", "url": "?cam=look&pos=-3.101105e8,-8.657552e8,9.056571e8&at=-1.571703e7,-1.355992e8,5.62757e3&t=2009-04-13T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&nearField=0&scale=1", "wait": 3000,
+      "eval": "(() => { window.__sv.app.settings.fovDeg = 0.35; return 'NAC fov 0.35 deg'; })()" },
+    { "name": "pia11655-daphnis", "url": "?cam=look&pos=-7.371972e8,7.030286e7,-2.818828e8&at=-1.364766e8,2.74601e6,3.58278e3&t=2009-05-09T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&nearField=0&scale=1", "wait": 3000,
+      "eval": "(() => { window.__sv.app.settings.fovDeg = 0.35; return 'NAC fov 0.35 deg'; })()" },
+    { "name": "mimas53-oblique", "url": "?cam=ring&r=131900e3&phi=31&z=-20e3&yaw=-90&pitch=30&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&nearField=0&scale=1&fov=40", "wait": 3000 },
+    { "name": "mimas53-oblique-flat", "url": "?cam=ring&r=131900e3&phi=31&z=-20e3&yaw=-90&pitch=30&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&nearField=0&scale=1&fov=40&relief=0", "wait": 3000 },
+    { "name": "titan-wave-oblique", "url": "?cam=ring&r=77525.5e3&phi=31&z=-8e3&yaw=90&pitch=30&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&nearField=0&scale=1&fov=40", "wait": 3000 },
+    { "name": "titan-wave-equinox", "url": "?cam=look&pos=3.804595e7,2.557008e8,-9.987736e7&at=-6.977674e7,3.418327e7,0&t=2009-08-11T06:58:45.083Z&hud=0&labels=0&paused=1&astronaut=0&nearField=0&scale=1", "wait": 3000,
+      "eval": "(() => { window.__sv.app.settings.fovDeg = 0.35; return 'NAC fov 0.35 deg'; })()" },
+    { "name": "c-ring-corrugation-equinox", "url": "?cam=look&pos=2.507551e7,2.485464e8,-9.909775e7&at=-7.262816e7,3.448638e7,0&t=2009-08-11T07:14:25.076Z&hud=0&labels=0&paused=1&astronaut=0&nearField=0&scale=1", "wait": 3000,
+      "eval": "(() => { window.__sv.app.settings.fovDeg = 0.35; return 'NAC fov 0.35 deg'; })()" },
+    { "name": "mimas53-inside", "url": "?cam=ring&r=131850e3&phi=31&z=30&yaw=0&pitch=-3&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1&fov=60", "wait": 4000 }
   ]
 }

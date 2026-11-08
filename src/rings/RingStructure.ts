@@ -8,6 +8,10 @@
 //     (ringModes.ts EDGE_FEATURES: phases at the ring-frame origin) and the ring frame (Pipeline.render), and
 //   * is the CPU mirror: the camera's Lagrangian position for the near field, tau at the camera for the HUD,
 //     tests (window.__sv.pipeline.ctx.structure).
+//   * owns the vertical relief (src/rings/relief.ts: bending waves, the 1983 corrugation, B-ring-edge structures; GLSL
+//     sv_ringRelief / sv_ringReliefShade): ONE height field z0 = the moonlets' streamline zeta + the relief (+ the
+//     propellers' relief), exposed as StreamPoint.zeta / slopes, and the camera's local mid-plane height f.ring.zMid
+//     (every consumer takes heights relative to it; the ring frame stays in the SEF plane).
 // The 2-D optical-depth modulation M (tauMod hooks) comes from the sub-km texture (`texture`, src/rings/ringTexture.ts)
 // and the propeller moonlets (`propellers`, src/rings/propellers.ts); both are owned here (uniforms merged into this
 // object's, updated in update(), CPU mirrors through tauModAt / streamAt).
@@ -24,6 +28,7 @@ import {
 import { EDGE_FEATURES, featureDisplacement } from './ringModes';
 import { RingTexture, texAmplitude } from './ringTexture';
 import { PropellerSystem } from './propellers';
+import { CORRUGATION, REGION_A, REGION_A_CELLS, RELIEF_MAX_PEAKS, RELIEF_WAVES, RingRelief, WAVE_TABLE_N } from './relief';
 
 /** moonlet slots in the shader (uRsMl has 3 vec4 per slot) */
 export const RS_MOONLETS = 2;
@@ -34,9 +39,15 @@ export const RS_FEATURES = 2;
 const NEAR_REACH = 70e3;
 
 const DEFAULT_MOONLETS = [
-  { id: 618, name: 'Pan' },
-  { id: 635, name: 'Daphnis' },
+  // gap edges (km): the rendered profile's half-level crossings (docs/ring-physics.md section 5), for the edge waves'
+  // relief shadows (sv_ringReliefShade)
+  { id: 618, name: 'Pan', edgesKm: [133_424, 133_745] },
+  { id: 635, name: 'Daphnis', edgesKm: [136_483, 136_523] },
 ];
+/** bound of the moonlets' |zeta| relative to their vertical amplitude Z (the Hill response peaks at ~0.1 Z at the edges) */
+const ZETA_BOUND_PER_Z = 0.15;
+/** radial reach (m) around the camera in which relief sources make the march / near field evaluate z0 per step */
+const RELIEF_NEAR_MARGIN = 70e3;
 
 function emptyPoint(): StreamPoint {
   return { da: 0, J: 1, drda: 1, tauMod: 1, tauVar: 0, wakeMod: 1, zeta: 0, slopeR: 0, slopeT: 0 };
@@ -65,7 +76,7 @@ async function loadTable(base = dataUrl('data/rings/moonlet_response')): Promise
 export class RingStructure {
   readonly table: MoonletTable | null;
   /** moonlets with their GM (m^3/s^2) from the table header (= moons.json) */
-  readonly moonlets: { id: number; name: string; gm: number }[];
+  readonly moonlets: { id: number; name: string; gm: number; edgesKm: number[] }[];
   /** per-frame moonlet state (same order as `moonlets`) */
   readonly params: MoonletParams[];
   /** multiplier on the moonlet streamline amplitudes (1 = physical, 0 = straight edges, > 1 for inspection) */
@@ -87,6 +98,14 @@ export class RingStructure {
   readonly propellers: PropellerSystem;
   /** the radial profile (the texture's amplitude law reads its 1 km level); attached by the pipeline */
   private profile: RingProfile | null = null;
+  /** vertical relief sources (bending waves, corrugation, sites): src/rings/relief.ts */
+  readonly relief: RingRelief;
+  /** true when a relief source lies within the near field's reach of the camera (march / particles evaluate z0) */
+  reliefNear = false;
+  /** bound of |z0| (m) within RELIEF_NEAR_MARGIN of the camera (the march's slab is widened by it) */
+  reliefBoundCam = 0;
+  /** the relief has been updated at least once (its phases are known) */
+  private reliefReady = false;
 
   readonly uniforms: {
     uRsTab: { value: DataTexture | null };
@@ -100,6 +119,28 @@ export class RingStructure {
     uRsMode: { value: Vector4[] };
     uRsModeF: { value: Int32Array };
     uRsFeat: { value: Vector4[] };
+    // sv_ringRelief / sv_ringReliefShade
+    uRrOn: { value: number };
+    uRrTab: { value: DataTexture };
+    uRrWave: { value: Vector4[] };
+    uRrWaveT: { value: Vector4[] };
+    uRrWaveI: { value: Vector4[] };
+    uRrWaveX: { value: Vector4[] };
+    uRrCorr: { value: Vector4 };
+    uRrCorrT: { value: Vector4 };
+    uRrCorrZ: { value: Vector4 };
+    uRrRipZ: { value: Vector4 };
+    uRrRip0: { value: Vector4 };
+    uRrRip2: { value: Vector4 };
+    uRrPeak: { value: Vector4[] };
+    uRrPeakS: { value: Float32Array };
+    uRrPeakN: { value: number };
+    uRrSiteA: { value: Vector4 };
+    uRrSiteB: { value: Vector4 };
+    uRrSiteC: { value: Vector4 };
+    uRrSiteD: { value: Vector4 };
+    uRrMlEdge: { value: Vector4[] };
+    uRrCamN: { value: Vector4 };
   } & RingTexture['uniforms'] & PropellerSystem['uniforms'];
 
   private constructor(table: MoonletTable | null) {
@@ -111,6 +152,21 @@ export class RingStructure {
       const j = meta?.moonlets.find((x) => x.id === m.id);
       return { ...m, gm: j ? j.gmKm3s2 * 1e9 : 0 };
     });
+    this.relief = new RingRelief(orbitalFrequencies);
+    // bending-wave tables: row 2i the profile (A, phi, dA/dx, dphi/dx), row 2i+1 the crest table (x, A, |k|, 0)
+    const W = WAVE_TABLE_N;
+    const tabData = new Float32Array(W * 2 * RELIEF_WAVES * 4);
+    this.relief.waves.forEach((w, i) => {
+      tabData.set(w.T.data, 2 * i * W * 4);
+      tabData.set(w.T.inv, (2 * i + 1) * W * 4);
+    });
+    const rrTab = new DataTexture(tabData, W, 2 * RELIEF_WAVES, RGBAFormat, FloatType);
+    rrTab.minFilter = NearestFilter;
+    rrTab.magFilter = NearestFilter;
+    rrTab.wrapS = ClampToEdgeWrapping;
+    rrTab.wrapT = ClampToEdgeWrapping;
+    rrTab.generateMipmaps = false;
+    rrTab.needsUpdate = true;
     this.params = this.moonlets.map(() => ({ agMinusR0: 1e12, s0: 0, rH: 0, amp: 0, xEpi: 0, xEpiDot: 0, zCos: 0, zSin: 0, ag: 1.3e8 }));
     const ml: Vector4[] = [];
     for (let i = 0; i < 3 * RS_MOONLETS; i++) ml.push(new Vector4(i % 3 === 0 ? 1e12 : 0, 0, 0, 0));
@@ -137,6 +193,27 @@ export class RingStructure {
       uRsMode: { value: Array.from({ length: RS_MODES }, () => new Vector4()) },
       uRsModeF: { value: new Int32Array(RS_MODES) },
       uRsFeat: { value: Array.from({ length: RS_FEATURES }, () => new Vector4(1e12, -1, 1e-12, 0)) },
+      uRrOn: { value: 0 },
+      uRrTab: { value: rrTab },
+      uRrWave: { value: Array.from({ length: RELIEF_WAVES }, () => new Vector4()) },
+      uRrWaveT: { value: this.relief.waves.map((w) => new Vector4(w.T.x0, 1 / w.T.dx, w.T.N, w.T.peak)) },
+      uRrWaveI: { value: this.relief.waves.map((w) => new Vector4(w.T.phiLo, 1 / w.T.dPhi, w.T.NI, w.T.side)) },
+      uRrWaveX: { value: this.relief.waves.map((w) => new Vector4(w.T.xLo, w.T.xHi, 0, 0)) },
+      uRrCorr: { value: new Vector4() },
+      uRrCorrT: { value: new Vector4(CORRUGATION.tiltC, CORRUGATION.tiltD, 0, 0) },
+      uRrCorrZ: { value: new Vector4(CORRUGATION.rD0, CORRUGATION.rCD, CORRUGATION.rC1, CORRUGATION.rC2) },
+      uRrRipZ: { value: new Vector4(CORRUGATION.ripR0, CORRUGATION.ripR1, CORRUGATION.ripR2, CORRUGATION.ripR3) },
+      uRrRip0: { value: new Vector4() },
+      uRrRip2: { value: new Vector4() },
+      uRrPeak: { value: Array.from({ length: RELIEF_MAX_PEAKS }, () => new Vector4()) },
+      uRrPeakS: { value: new Float32Array(RELIEF_MAX_PEAKS) },
+      uRrPeakN: { value: 0 },
+      uRrSiteA: { value: new Vector4(1e12, 0, REGION_A.cellArc / REGION_A.a, REGION_A_CELLS) },
+      uRrSiteB: { value: new Vector4(0, REGION_A.a, REGION_A.taper, REGION_A.occupancy) },
+      uRrSiteC: { value: new Vector4(REGION_A.bandLo, REGION_A.bandHi, REGION_A.hMax, REGION_A.srMax) },
+      uRrSiteD: { value: new Vector4(REGION_A.seed, 2 * REGION_A.halfSpan, 0, 0) },
+      uRrMlEdge: { value: Array.from({ length: RS_MOONLETS }, () => new Vector4(1e12, 1e12, 0, 0)) },
+      uRrCamN: { value: new Vector4() },
       ...this.texture.uniforms,
       ...this.propellers.uniforms,
     };
@@ -145,6 +222,64 @@ export class RingStructure {
   /** The radial profile: the texture's amplitude law (CPU mirror) reads its 1 km-prefiltered level. */
   attachProfile(p: RingProfile): void {
     this.profile = p;
+  }
+
+  /** Multiplier on all relief sources (1 = physical, 0 = flat; > 1 for inspection). */
+  get reliefScale(): number {
+    return this.relief.scale;
+  }
+  set reliefScale(v: number) {
+    this.relief.scale = v;
+  }
+
+  /**
+   * Relief + moonlet zeta: the local mid-plane height (m) at an SEF radius / azimuth (state of the last update; NaN
+   * before the first one -- the phases need the moons).
+   */
+  midPlaneAtSEF(r: number, theta: number): number {
+    return this.reliefReady ? this.streamAtSEF(r, theta, 0, true).zeta : NaN;
+  }
+
+  /** Per frame: the relief's state and uniforms (phases at the ring-frame origin, site positions). */
+  private updateRelief(f: FrameState): void {
+    const u = this.uniforms;
+    const R = this.relief;
+    R.update(f.t, this.r0, this.phi0, f.moons, f.sunDir.z);
+    this.reliefReady = true;
+    let any = false;
+    R.waves.forEach((w, i) => {
+      u.uRrWave.value[i].set(w.T.rV - this.r0, w.theta0, w.T.def.m, w.scale);
+      any = any || w.scale !== 0;
+    });
+    const c = u.uRrCorr.value;
+    if (R.corrOn) {
+      c.set(1, R.corrPsi1, R.corrDt, R.rip.amp);
+      u.uRrCorrT.value.set(CORRUGATION.tiltC * R.scale, CORRUGATION.tiltD * R.scale, R.nodalRate(this.r0), R.rip.psi2dth);
+      const e0 = R.rip.e0, e2 = R.rip.e2;
+      u.uRrRip0.value.set(e0.p0, e0.c1, e0.c2, e0.c3);
+      u.uRrRip2.value.set(e2.p0, e2.c1, e2.c2, e2.c3);
+      any = true;
+    } else {
+      c.set(0, 0, 0, 0);
+    }
+    const P = u.uRrPeak.value, S = u.uRrPeakS.value;
+    for (let i = 0; i < RELIEF_MAX_PEAKS; i++) {
+      const p = R.peaks[i];
+      if (p) { P[i].set(p.aL, p.dth, p.h, p.sr); S[i] = p.ss; } else { P[i].set(1e12, 0, 0, 1); S[i] = 1; }
+    }
+    u.uRrPeakN.value = R.scale !== 0 ? Math.min(R.peaks.length, RELIEF_MAX_PEAKS) : 0;
+    any = any || u.uRrPeakN.value > 0;
+    u.uRrSiteA.value.x = R.regionA.aL;
+    u.uRrSiteA.value.y = R.regionA.dthStart;
+    u.uRrSiteB.value.x = R.regionA.hScale;
+    any = any || R.regionA.hScale !== 0;
+    u.uRrOn.value = any ? 1 : 0;
+    // moonlet gap edges and their zeta bound (relief shadows of the edge waves)
+    this.moonlets.forEach((m, k) => {
+      const p = this.params[k];
+      const Z = Math.hypot(p.zCos, p.zSin);
+      u.uRrMlEdge.value[k].set(m.edgesKm[0] * 1e3 - this.r0, m.edgesKm[1] * 1e3 - this.r0, ZETA_BOUND_PER_Z * Z, 0);
+    });
   }
 
   static async load(): Promise<RingStructure> {
@@ -226,11 +361,24 @@ export class RingStructure {
     }
     for (; km < RS_MODES; km++) md[km].set(0, 0, 0, 1);
     u.uRsOn.value = on ? 1 : 0;
-    // the camera's streamline state (double precision)
+    this.updateRelief(f);
+    // the camera's streamline state (double precision), incl. the local mid-plane height z0 (moonlet zeta + relief)
     const c = f.ring.camLocal;
     const dr = ringDr(this.r0, c.x, c.y);
     const dth = Math.atan2(c.y, this.r0 + c.x);
     this.streamAt(dr, dth, 0, true, this.cam);
+    f.ring.zMid = this.cam.zeta;
+    // relief near the camera: the march's slab and the near field's per-particle z0
+    this.reliefBoundCam = this.relief.bound(dr, RELIEF_NEAR_MARGIN);
+    for (let k = 0; k < this.params.length; k++) {
+      const p = this.params[k];
+      if (p.amp !== 0 && this.table && Math.abs(dr + this.cam.da - p.agMinusR0) < this.table.meta.bHi * p.rH + RELIEF_NEAR_MARGIN) {
+        this.reliefBoundCam += ZETA_BOUND_PER_Z * Math.hypot(p.zCos, p.zSin) * Math.abs(p.amp);
+      }
+    }
+    this.reliefNear = this.relief.bound(dr, RELIEF_NEAR_MARGIN) > 0;
+    // camera's mid-plane slope in the frame axes (the frame's radial / prograde axes at the camera, |dth| < 2e-4 rad)
+    u.uRrCamN.value.set(this.cam.slopeR, this.cam.slopeT, this.reliefBoundCam, this.reliefNear ? 1 : 0);
     this.nearActive = false;
     if (on) {
       const aL = dr + this.cam.da;
@@ -261,8 +409,12 @@ export class RingStructure {
         o[2] += this.edgeModeScale * this._m[2];
       }
     }
-    // relief hooks (sv_ringStructure ringStructureRelief): the propellers' (the relief package adds its sources)
+    // vertical relief (ringStructureRelief: bending waves, corrugation, sites; the propellers')
     if (wantZ) {
+      this.relief.eval(aL, dth, fp, this._h);
+      o[3] += this._h[0];
+      o[4] += this._h[1];
+      o[5] += this._h[2];
       this.propellers.reliefAt(aL, dth, this._z);
       o[3] += this._z[0]; o[4] += this._z[1]; o[5] += this._z[2];
     }
@@ -284,6 +436,7 @@ export class RingStructure {
   };
   private readonly _m = [0, 0, 0, 0, 0, 0];
   private readonly _z = [0, 0, 0];
+  private readonly _h = [0, 0, 0];
 
   /** amplitude A of the sub-km texture at Lagrangian offset aL: the 1 km-prefiltered profile (as the GLSL) */
   textureAmplitudeAt(aL: number): number {
@@ -341,10 +494,14 @@ export class RingStructure {
   /** Streamline state at the Eulerian point (dr = r - r0, dth = azimuth - phi0) of the current ring frame. */
   streamAt(dr: number, dth: number, fp = 0, wantZ = false, out: StreamPoint = emptyPoint()): StreamPoint {
     if (this.uniforms.uRsOn.value < 0.5) {
+      // identity map (as rsIdentityAt in the GLSL): only the relief's height
       Object.assign(out, emptyPoint());
       if (wantZ) {
+        this.relief.eval(dr, dth, fp, this._h);
         this.propellers.reliefAt(dr, dth, this._z);
-        out.zeta = this._z[0]; out.slopeR = this._z[1]; out.slopeT = this._z[2];
+        out.zeta = this._h[0] + this._z[0];
+        out.slopeR = this._h[1] + this._z[1];
+        out.slopeT = this._h[2] + this._z[2];
       }
     } else {
       invertStreamlines(this.evalAt, dr, dth, fp, this.uniforms.uRsJFloor.value, wantZ, out);
@@ -403,6 +560,7 @@ export class RingStructure {
   dispose(): void {
     this.uniforms.uRsTab.value?.dispose();
     this.texture.dispose();
+    this.uniforms.uRrTab.value.dispose();
   }
 }
 

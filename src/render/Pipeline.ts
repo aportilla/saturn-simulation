@@ -214,7 +214,8 @@ export class Pipeline {
     const rKm = rKmE + c.structure.cam.da / 1000;
     const local = c.profile.local(rKm * 1000);
     const drifted = local.macroscopic !== this.lastLocalMacro || Math.abs(rKm - this.lastLocalRKmL) > 20;
-    const camZ = f.ring.camLocal.z;
+    // the camera's height above the local mid-plane (vertical relief; the frame stays in the SEF plane)
+    const camZ = f.ring.camLocal.z - f.ring.zMid;
     // The particles are thinned by tau0 M / tauMax with M the 2-D modulation (sub-km texture, propellers): each class's
     // tauMax covers the largest M in its box. Propellers drift through the co-orbiting boxes: their bounds are
     // re-checked every 60 frames and the allocation re-fitted when one changes.
@@ -241,7 +242,7 @@ export class Pipeline {
     const P = c.structure.propellers;
     P.uniforms.uRpNearMask.value = P.nearClassMask(rKm * 1000, thCam, c.lod.box, 500);
     // the near field is active while the camera is within the distance its largest particles can be drawn at
-    const nearAllowed = f.settings.nearField && Math.abs(f.camPos.z) < c.lod.maxReach && c.lod.totalParticles > 0;
+    const nearAllowed = f.settings.nearField && Math.abs(camZ) < c.lod.maxReach && c.lod.totalParticles > 0;
     c.lod.setActive(nearAllowed && (this.passes.near?.enabled ?? false));
     c.wakes.enabled = f.settings.wakes;
     if (this.lastWakesOn !== f.settings.wakes) this.lastWakesOn = f.settings.wakes;

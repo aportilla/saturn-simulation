@@ -72,6 +72,11 @@ export interface FreeInit {
   qLocal: Quaternion;
   upLocal: Vector3;
   speed?: number;
+  /**
+   * ring frame: local.z is the height above the ring material's local mid-plane (vertical relief; default true) -- false
+   * keeps the SEF pose exactly (e.g. switching to co-orbit at the current pose)
+   */
+  zRelative?: boolean;
 }
 
 /** Local-frame orientation from yaw/pitch/roll (degrees) relative to an up side (+1 north, -1 south).
@@ -108,6 +113,15 @@ export class FreeController {
   readonly vel = new Vector3();
   reanchors = 0;
   private pinchMove = 0;
+  /**
+   * Height (m, SEF z) of the ring material's local mid-plane at an SEF position (x, y), or NaN while unknown -- the
+   * vertical relief (bending waves, the C-ring corrugation, moonlet edge waves, ...; RingStructure's CPU mirror, set by
+   * the app). Ring-frame cameras keep their height relative to it: station keeping is rest in the local flow, which
+   * includes the material's vertical motion. The frame itself stays in the SEF plane.
+   */
+  static midPlane: ((x: number, y: number) => number) | null = null;
+  /** the mid-plane height under the camera at the last update (NaN: not yet applied) */
+  private zMidPrev = NaN;
 
   constructor(o: FreeInit) {
     this.frameKind = o.frame;
@@ -117,6 +131,28 @@ export class FreeController {
     this.qLocal.copy(o.qLocal).normalize();
     this.upLocal.copy(o.upLocal).normalize();
     this.speed = clamp(o.speed ?? 1, SPEED_MIN, SPEED_MAX);
+    if (this.frameKind === 'ring' && FreeController.midPlane) {
+      this.anchor.localToSef(this.local, this.anchor.tRef, _p);
+      const z0 = FreeController.midPlane(_p.x, _p.y);
+      if (Number.isFinite(z0)) {
+        if (o.zRelative !== false) this.local.z += z0;
+        this.zMidPrev = z0;
+      }
+    }
+    // (a relative height whose mid-plane is not known yet is applied on the first update)
+    if (o.zRelative === false && !Number.isFinite(this.zMidPrev)) this.zMidPrev = Number.NEGATIVE_INFINITY;
+  }
+
+  /** Station keeping: keep the height above the local mid-plane (follow the material's vertical motion). */
+  private followMidPlane(f: FrameState): void {
+    const mp = FreeController.midPlane;
+    if (!mp) return;
+    this.anchor.localToSef(this.local, f.t, _p);
+    const z0 = mp(_p.x, _p.y);
+    if (!Number.isFinite(z0)) return;
+    if (this.zMidPrev === Number.NEGATIVE_INFINITY) this.zMidPrev = z0;   // SEF pose kept at creation
+    this.local.z += Number.isFinite(this.zMidPrev) ? z0 - this.zMidPrev : z0;
+    this.zMidPrev = z0;
   }
 
   frameRef(): FrameRef {
@@ -207,6 +243,7 @@ export class FreeController {
       this.local.x += this.thrust.x * dtReal;
       this.local.z += this.thrust.z * dtReal;
       this.local.y += this.thrust.y * dtReal - A.qShear * A.omega * 0.5 * (x0 + this.local.x) * dt;
+      this.followMidPlane(f);
     }
     if (this.pinchMove) {
       _f.set(0, 0, -1).applyQuaternion(this.qLocal);
@@ -341,6 +378,8 @@ export class FreeController {
       this.thrust.set(0, 0, 0);
     } else if (!on && this.ballistic) {
       this.vel.set(0, 0, 0);
+      // station keeping resumes at the current height above the local mid-plane
+      this.zMidPrev = Number.NEGATIVE_INFINITY;
     }
     this.ballistic = on;
     return true;
@@ -354,7 +393,7 @@ export class FreeController {
     const anchor = new RingAnchor(r, phi, f.t);
     const local = anchor.sefToLocal(pos, f.t, new Vector3());
     const q = rotZQuat(-anchor.phiAt(f.t), new Quaternion()).multiply(quat);
-    return new FreeController({ frame: 'ring', anchor, local, qLocal: q, upLocal: new Vector3(0, 0, upSign >= 0 ? 1 : -1), speed });
+    return new FreeController({ frame: 'ring', anchor, local, qLocal: q, upLocal: new Vector3(0, 0, upSign >= 0 ? 1 : -1), speed, zRelative: false });
   }
 
   /** Hover in a body-fixed frame at the camera's current SEF pose ('sef' = non-rotating, Saturn-centered). */

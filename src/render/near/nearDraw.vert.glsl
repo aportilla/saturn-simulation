@@ -32,11 +32,13 @@ flat out vec4 vTiny;      // flat-disc radiance (rgb) for sub-pixel particles, w
 flat out vec2 vT;         // layer transmission of sunlight: (whole column, part not resolved by the shadow map)
 flat out vec3 vFl;        // multiply-scattered ring light arriving from the lit-face side (W/m^2, rgb)
 flat out vec3 vFd;        // ... and from the dark-face side
+flat out vec3 vLitN;      // unit normal of the local layer toward its lit face (vertical relief; +-z when flat)
 
 void reject() {
   gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
   gl_PointSize = 1.0;
   vC = vec4(0.0);
+  vLitN = vec3(0.0, 0.0, 1.0);
 }
 
 void main() {
@@ -77,25 +79,34 @@ void main() {
   vec3 lp = ringLocalFromRel(c);
   // the 2-D structure at the particle's (displaced) position: on edge material displaced by a moonlet the
   // unperturbed profile there is the gap (or the wrong zone), so lighting and albedo must come from the streamline
-  // map like everything else (sv_ringStructure rule)
-  RingSample rs = ringSampleLocal(lp, 0.0);
+  // map like everything else (sv_ringStructure rule); with relief near the camera also the local mid-plane there
+  // (rel = (z0, slope, a' - r0))
+  bool relP = uRrCamN.w > 0.5 || uRsCam.w > 0.5;
+  vec4 rel = vec4(0.0);
+  RingSample rs;
+  if (relP) rs = ringSampleLocalRelief(lp, 0.0, rel);
+  else rs = ringSampleLocal(lp, 0.0);
   float tau = rs.tau, H = max(rs.H, 0.5);
   vec3 alb = clamp(rs.albedo * nearAlbedoFactor(idx, seed), 0.0, 0.95);
 
-  // --- lighting environment at the center
-  float zl = lp.z;
+  // --- lighting environment at the center, relative to the local layer (vertical relief: its mid-plane z0 and
+  // normal; the sun's side and incidence on the tilted layer, extended solar disk, the relief's shadows)
+  float zl = lp.z - rel.x;
+  vec3 nP = relP ? ringReliefNormal(rel.yz, uRingER, uRingEPhi) : vec3(0.0, 0.0, 1.0);
+  float sunNp = dot(uSunDir, nP);
   // Saturn's penumbra (~100 km) and Saturnshine vary negligibly across the near field: per-frame values from
   // the CPU; moon shadows are evaluated per particle only when one can reach the near field
   float vis = uNearEnv.x * (uNearEnv.w > 0.5 ? moonsSunVisibility(c, -1) : 1.0);
-  float mu0 = max(abs(uSunDir.z), 1e-3);
-  float sg = uSunDir.z >= 0.0 ? 1.0 : -1.0;
+  if (relP) vis *= ringReliefSunVis(rel.w, atan(lp.y, uRingR0 + lp.x), rel.x, tau, 0.0);
+  float mu0 = max(ringReliefSunMuExt(abs(sunNp), uSunAngRadius), 1e-5);
+  float sg = sunNp >= 0.0 ? 1.0 : -1.0;
   // layer columns in one pass over the size classes: above z (tUp), sunward beyond the class boxes (part),
   // and the vertical density at z (for the view path)
   vec2 pl2 = vec2(dot(c, uRingER), dot(c, uRingEPhi));
   vec2 sh = vec2(dot(uSunDir, uRingER), dot(uSunDir, uRingEPhi));
   float shl = max(length(sh), 1e-6);
   vec2 sdir = sh / shl;
-  float dzdl = uSunDir.z / shl;
+  float dzdl = sunNp / shl;
   float fUp = 0.0, fPart = 0.0, gz = 0.0, wsum = 0.0;
   for (int kk = 0; kk < LOD_CLASSES; kk++) {
     float wk = uLodTauFrac[kk];
@@ -133,7 +144,7 @@ void main() {
   // variance and, through the convexity of exp(-tau W / mu0), would make the particles systematically brighter)
   float Ws = 1.0;
   if (uWakeOn > 0.5) {
-    vec2 sh2 = sh / max(abs(uSunDir.z), 0.02);
+    vec2 sh2 = sh / max(abs(sunNp), 0.02);
     float qsun = (sg > 0.0 ? fUp : wsum - fUp) / wsum, acc = 0.0;
     for (int j = 0; j < LOD_SUN_NODES; j++) acc += wakeDensity(lp.xy + sh2 * (ringSunNodeRise(j, qsun, sg * zl / H) * H));
     Ws = acc / float(LOD_SUN_NODES);
@@ -146,7 +157,7 @@ void main() {
   // share their occluders, joint transmission exp(-tau_i - tau_e + b min(tau_i, tau_e)), b = 1/(1+tan(a/2)/h),
   // h = 3D/8, D = Sigma/(450 H) the volume filling factor. Applied to the statistical part only (the shadow map
   // resolves this correlation geometrically for the mapped particles).
-  float dzv = uRingCamLocal.z - zl;
+  float dzv = uRingCamLocal.z - rel.x - zl;
   float Lv = sqrt(dot(c.xy, c.xy) + dzv * dzv);
   float tauView = abs(dzv) > 0.04 * H + 1e-3 ? abs(tUp - tau * uNearEnv2.x) * Lv / abs(dzv) : tau * gz * Lv;
   float hFill = 0.375 * clamp(rs.sigma / (450.0 * H), 1e-4, 0.6);
@@ -172,6 +183,7 @@ void main() {
   float Ediff = uSunE * vis;
   vFl = Fl * Ediff;
   vFd = Fd * Ediff;
+  vLitN = nP * sg;
   // photometry: regolith-covered particles follow the power-law phase function (ringParticlePhase, incl. the
   // opposition surge); resolved particles are shaded per pixel with the regolith surface law (ringRegolithIF,
   // grain albedo w from the particle albedo) and rescaled by the factor that makes a sphere's disk-integrated
@@ -199,7 +211,7 @@ void main() {
     // as a sharp point sample at the center (the particle itself excluded)
     float T = needSh > 0.5 ? mix(vT.x, vT.y * nearShadowVisibilityPoint(c, c), mapW) : vT.x;
     // diffuse light seen on the visible hemisphere, weighted like the medium (back-scatter fraction beta)
-    float cb = (2.0 * uNearBeta.x - 1.0) * sg * vdir.z;
+    float cb = (2.0 * uNearBeta.x - 1.0) * sg * dot(vdir, nP);
     vec3 Ed = vFl * (0.5 + 0.5 * cb) + vFd * (0.5 - 0.5 * cb);
     vec3 L = alb * INV_PI * (0.25 * Esun * T * ringParticlePhase(cosA) + 0.25 * Ess * ringParticlePhase(cosSS) + Ed);
     vTiny.rgb = L;

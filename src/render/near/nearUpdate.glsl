@@ -25,6 +25,8 @@
 // is tau0 J like the medium's. The box copy switches at the Lagrangian box edge, so where streamlines are
 // compressed (J > the allocation's zoom headroom, ~1.25) particles near the Eulerian edge of their reach are not
 // instantiated (documented limitation: wave crests just downstream of Daphnis).
+// Vertical relief: each particle oscillates about the local mid-plane z0 of its guiding centre (the streamline height
+// zeta + the relief sources, ringStreamXi(..).y / ringStructureRelief), the same height field the medium follows.
 
 uniform sampler2D tState;   // R: Y_e (guiding-center y relative to the box reference, m)
 uniform int uTexW;
@@ -68,20 +70,24 @@ void main() {
   float qy = yr - D2 * floor((yr + D) / D2);
 
   // --- streamline map: qx is the offset from the camera's LAGRANGIAN position (uCamOff); lgc = the guiding centre
-  // in Lagrangian local coordinates; qe = the drawn (Eulerian) radial offset from the camera. (The streamline height
-  // zeta, ringStreamXi(..).y, is not applied yet: vertical-relief work package.)
+  // in Lagrangian local coordinates; qe = the drawn (Eulerian) radial offset from the camera; z0p = the local
+  // mid-plane height at the guiding centre (streamline zeta + relief)
   vec3 lgc = vec3(uRingCamLocal.x - uRsCam.x + qx - A * ct, uRingCamLocal.y + qy, 0.0);
   float aL, dthP;
   ringLocalPolar(lgc, aL, dthP);
   float qe = qx;
   float Jp = 1.0;
+  float z0p = 0.0;
   if (uRsCam.w > 0.5) {
     vec3 sx = ringStreamXi(aL, dthP, 0.0);
     qe += sx.x - uRsCam.x;
     Jp = sx.z;
+    z0p = sx.y;
+  } else if (uRrCamN.w > 0.5) {
+    z0p = ringStructureRelief(aL, dthP, 0.0).x;
   }
 
-  // --- vertical oscillation
+  // --- vertical oscillation about the local mid-plane
   float B = uSig.y * sqrt(-2.0 * log(nearU(idx, seed, NS_VA)));
   float z = B * cos(uKin.y + TWO_PI * nearU(idx, seed, NS_VP));
   // conservative bounding radius: ellipsoid major semi-axis (<= 1.36 a) times the outer relief bound at high quality
@@ -92,7 +98,7 @@ void main() {
   // a possible shadow caster is not needed this frame. Margin: the largest self-gravity wake displacement
   // (two generations of at most half a wavelength each, wavelength <= tile / 6).
   float mw = uWakeOn > 0.5 ? uWakeTile / 6.0 : 0.0;
-  vec3 p0 = qe * uRingER + qy * uRingEPhi + vec3(0.0, 0.0, z - uRingCamLocal.z);
+  vec3 p0 = qe * uRingER + qy * uRingEPhi + vec3(0.0, 0.0, z + z0p - uRingCamLocal.z);
   bool cand;   // possibly in view and large enough to be drawn
   {
     float r = rb + mw;
@@ -122,7 +128,7 @@ void main() {
   float fw = (1.0 - smoothstep(0.85 * D, D, max(abs(qx), abs(qy)))) * smod.z;
   vec2 dw = fw > 0.0 ? wakeDisplacement(ql) * fw : vec2(0.0);
 
-  vec3 pl = vec3(qe + dw.x, qy + dw.y, z - uRingCamLocal.z);          // camera-relative, local axes
+  vec3 pl = vec3(qe + dw.x, qy + dw.y, z + z0p - uRingCamLocal.z);    // camera-relative, local axes
   vec3 p = pl.x * uRingER + pl.y * uRingEPhi + vec3(0.0, 0.0, pl.z);  // camera-relative, SEF axes
   float s = length(pl);
 
@@ -140,7 +146,8 @@ void main() {
     // statistical occlusion: optical depth of the slab between the camera and the near side of the particle,
     // using the lowest tau along the path and the emptiest wake-gap density (conservative)
     float d = max(length(pl.xy) - rb, 0.0);
-    float zc = uRingCamLocal.z;
+    // heights relative to the particle's local mid-plane
+    float zc = uRingCamLocal.z - z0p;
     float zt = z + clamp(zc - z, -rb, rb);
     RingSample rm = ringSampleLocal(vec3(uRingCamLocal.x + 0.5 * pl.x, uRingCamLocal.y + 0.5 * pl.y, 0.0), 0.0);
     float tauPath = min(min(uTauCam, tauM * Jp), rm.tau * (1.0 - rm.dust)) * wakeMinDensity() * 0.8;

@@ -360,7 +360,8 @@ export class RingLayerPass implements RenderPass {
     const lambda = Number.isFinite(lam0) && lam0 > 0 ? Math.max(lam0, 20) : 60;
     u.uRlLambda.value = lambda;
     const wakesOn = (ctx.wakes.uniforms.uWakeOn.value as number) > 0.5 && f.settings.wakes;
-    const nearZ = Math.abs(f.ring.camLocal.z);
+    // the camera's height above the local mid-plane (vertical relief)
+    const nearZ = Math.abs(f.ring.camLocal.z - f.ring.zMid);
 
     // ---- statistics of the live wake field (GPU probe, every STAT_EVERY frames and on re-anchoring), measured
     // before the clipmap is configured: the mass correction of the shared wakeDensity (used by the clipmap, the

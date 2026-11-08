@@ -331,9 +331,13 @@ wavelengths is 0.55 km at the catalogued outer edge (ζ/Z = 0.092), 0.38 km at t
 rendered (profile) edges. Cassini's equinox images show ~1 km high structure (Weiss, Porco & Tiscareno 2009; "≲ 1.5
 km"): the model is ~2× lower. Candidate causes: the inclination (i = 0.0036°, Z = 8.6 km, would give 0.79 km), and
 that the linear vertical response ignores the moonlet's height in the encounter distance (Z/Δa ≈ 0.35 — that would
-weaken it further) and the coupling to the strongly nonlinear radial motion. ζ is computed and exposed through the
-height hook (`ringStreamRelief`, `ringStreamXi`, `uRsCam.y`); it is not yet rendered geometrically (heights,
-shadows): that is the relief work package. (The previous fake shadow multiplier `rlKeelerHeight` is gone.)
+weaken it further) and the coupling to the strongly nonlinear radial motion. ζ is part of the one height field z0 and
+rendered as geometry with its shadows (§13). The maximum |ζ| depends on the moonlet's vertical phase: over a vertical
+period 0.07–0.20 km at the rendered inner edge, 0.19–0.42 km at the outer (0.12–0.40 / 0.22–0.51 km at the catalogue
+edges), 0.16 km at the outer edge on 2009-04-13 12:00 (PIA11656), 0.46 km in test:relief's 2026-11-08 view. The
+observed 0.5–1.5 km come from shadow lengths, which measure the crest above the surface the shadow falls on — up to
+crest-to-trough, 2|ζ| — so the deficit is ~1.5–3×; not corrected (no measured quantity to calibrate to without a
+fudge factor: the published inclinations differ by 1.4×, and the shadow-height conversion by up to 2×).
 
 **Damping and streamline crossing** (baked into the table, `envelope()` in the script):
 * Phase mixing: neighbouring streamlines have different wavelengths, so ∂r/∂a' = 1 + ∂ξ/∂b acquires a secular term
@@ -1054,11 +1058,116 @@ lookups of the particles, the astronaut and the bodies use the unmodulated colum
 are lit as in the undisturbed ring; their number follows the gap) and shadow casters outside the view ignore the
 propellers.
 
+## 13. Vertical relief (`src/rings/relief.ts`, `sv_ringRelief`, `sv_ringReliefShade`)
+
+The rings are not flat at the 0.01–3 km level: bending waves, an impact-generated corrugation, the B-ring edge's
+"splashing" structures and the moonlets' vertical edge waves lift the ~10 m thick layer by up to 100–300× its
+thickness. They are invisible from high elevations (slopes ≤ 10⁻³–1) but dominate equinox images (shadows h / tan B,
+hundreds of km long) and the view from inside (the layer tilts by up to 45° in the Titan wave). Model: ONE height
+field z0(a', θ, t) of the material's mid-plane = the moonlets' ζ (§8) + the sources below, evaluated at the
+Lagrangian radius (the relief rides on the streamline map), with slopes; every renderer takes heights relative to it
+(contract: ARCHITECTURE.md → "Vertical relief contract"). Numbers below: `node scripts/data/rings/relief_check.mjs`;
+checks: `npm run test:relief`.
+
+**Bending waves** (linear theory, Shu, Cuzzi & Lissauer 1983, SCL83). At an inner vertical resonance (IVR) of
+order m the forcing term of the moon's inclination, Φ ∝ sin i' cos(mθ − (m+1)λ' + Ω'), drives a vertical wave with
+pattern speed Ω_p = ((m+1)n' − Ω̇')/m at the radius r_V where D(r) = ν² − m²(Ω − Ω_p)² = 0 (J2–J6 frequencies); it
+propagates inward (toward Saturn) as a trailing spiral with the dispersion relation |k| = |D'| |x| / (2πGΣ), x = r − r_V.
+The height is z = A_V Re[ℋ(η) e^{iΘ}] with η = x/W, W = √(2πGΣ/|D'|), Θ = mθ − (m+1)λ' + Ω' (phase from the live
+ephemeris: λ', Ω' are the moon's mean longitude and node from its state vector, J2-aware epicyclic elements), the
+normalized Fresnel profile ℋ(η) = e^{−iη²/2} ∫_η^∞ e^{iu²/2} du / √(2π) (|ℋ| → 1 propagating, → 1/(η√2π)
+evanescent), A_V = F / √(G Σ |D'|) with F = GM' sin i' b_{3/2}^{(m)}(α) / (2a'²), and viscous damping
+exp(−(x/x_D)³), x_D³ = 6πGΣW⁴ / (ν_visc μ) (the damping form of SCL83). Tables of (|z|, phase, derivatives) with
+4096 nodes (`uRrTab`) plus an inverse crest table (crest positions for the shadow horizon) are built at start-up.
+
+| wave | r_V (km) | Σ (kg/m²) | ν_visc (cm²/s) | W / x_D (km) | A_V linear / used (m) | peak |z| (m) at x (km) | max slope | λ (km) at 20 / 60 km |
+|---|---|---|---|---|---|---|---|---|
+| Mimas 5:3 (m = 4) | 131,900.2 | 367 | 576 | 11.6 / 104 | 779 / 390 | 450 at −24.7 | 8.5° at −69 | 50 / 14 |
+| Mimas 4:2 (m = 3) | 116,724.4 | 540 | 576 | 13.5 / 136 | 386 / 386 | 448 at −28.9 | 8.1° at −92 | 66 / 20 |
+| Titan −1:0 (nodal, m = 1) | 77,525.5 | 6 | 1.6 | 4.5 / 40 | — / 1006 | 1161 at +9.5 | 45° at +27 | 6.5 / 2.2 |
+
+* Mimas 5:3: Σ and ν from Sega et al. 2024 (UVIS); linear theory gives a 0.9 km peak and 17.5° slopes, VIMS
+  occultations show ~400–450 m peaks (~250 m at low effective elevations, likely an artefact) and ~10° slopes
+  (Hedman, Sega et al., DPS 2022 / 2024): the profile is scaled to a 450 m peak (one factor, the shape stays linear
+  theory; the resulting maximum slope is 8.5°).
+* Mimas 4:2: Σ from Lissauer 1985 (the profile's B5 value); no amplitude measurement — pure linear theory (uncertain
+  by ~2×, as the 5:3 comparison shows).
+* Titan −1:0: the nodal resonance θ + λ' − ϖ' − Ω' (pattern speed −n' + ϖ̇' + Ω̇' < 0) makes it propagate OUTWARD as a
+  leading spiral (Nicholson & Hedman 2016, whose r_V = 77,525.5 km is used: J2–J6 alone put it 33 km inward; Σ from
+  their λ = 5 km at 25 km; first analysed in Voyager data by Rosen & Lissauer 1988). The wave is strongly nonlinear —
+  slopes up to ~45° and 0.5–1.5 km amplitudes at 15–45 km (Sega & Stewart, DPS 2022) — so the linear profile
+  (A_V = 431 m) is scaled to a 45° maximum slope (|z| 1.16 / 0.92 / 0.68 / 0.24 km at 10 / 20 / 30 / 45 km);
+  ν = 1.6 cm²/s (French et al. 2025).
+* The waves keep the profile's τ (the occultation profile already contains their τ signature; its de-projection
+  from the 2005 RSS geometry leaves ±30 % artefacts there).
+
+**The 1983 corrugation** (Hedman et al. 2011, 2015; French et al. 2025). An impact of cometary debris on 1983 Sep
+19.25 ± 5.5 d (UTC) tilted every streamline of the C and D rings by the same small angle; differential nodal
+regression has since wound the tilt into a spiral corrugation, z1 = A1 sin(θ − θ1 − (Ω − ν)(r)(t − t_i)), radial
+wavelength 2π / ((t − t_i)|d(Ω − ν)/dr|) (exact J2–J6 derivative): 30 / 41 / 58 / 72 km at 75 / 80 / 86 / 90
+thousand km in Aug 2009 (Hedman et al. 2011: 30–80 km from the D ring to the outer C ring, amplitudes 2–20 m),
+22 km at 70,000 km (D ring), 25 km at 80,000 km in Nov 2026. A1 =
+r × tilt with tilt = 10⁻⁷ in the C ring (photometry: 2–20 m, i.e. 2×10⁻⁸–3×10⁻⁷) and 300 m at 70,000 km in the
+D ring (Hedman et al. 2007a), blended over 74,490 ± 500 km and faded out over 91–92 thousand km. The inner C ring
+(74,490–77,765 km) also carries m = 0 and slow m = 2 ripples (French et al. 2025: 2.6–6.6 m in 2010–2017): z0 =
+A sin(ν(t − t_i)), z2 = A sin(2(θ − θ2) − (2Ω − ν)(t − t_i)), A = 4 m in 2017 decaying with a 19.5 yr e-folding
+(5.8 m in 2009, 2.4 m in 2026), λ ≈ 1 km. θ1, θ2 are unpublished ("without loss of generality" 0 in Hedman et al.):
+0 here. The slopes are tiny (10⁻³ for m = 1) but at the 2009 equinox (B ~ 0.004°) they modulate the direct
+sunlight by ×4 in μ0 and the relief shadows (vis 0.2–0.6): visible in direct light; in the near-equinox render
+Saturnshine dominates the radiance near local noon, so the pattern is subtle there.
+
+**B-ring edge: region A and S/2009 S1** (Spitale & Porco 2010). Region A is a site ~20 km inside the B-ring edge
+(a = 117,547.6 km) orbiting at 758.986°/d, spanning ~10° (20,000 km) of azimuth, where vertical structures up to
+3.5 km (PIA11668: 2.5 km) cast shadows near equinox, coincident with bright streaks along the edge (interpreted as
+"splashing" around embedded bodies). The J2000 longitude 95° is read as the longitude at epoch J2000.0 in the
+ascending-node system; it then puts the site at 168.2° at the PIA11668 frame time (2009-07-26 09:57 UTC), inside
+the frame's ring footprint (165.8–168.4°, NAC N1627295980 via OPUS; their central epoch would give 355°). The
+structures are phenomenological — a procedural cell field identical on CPU and GPU (PCG hash): 40 km cells, 65 %
+occupied by one Gaussian structure of height h = 3.5 km (0.08 + 0.92 u⁵) (322 structures: median 0.32 km, 10 %
+above 2.1 km, tallest 3.3 km), radial σ 2–5 km, 1.5–3.5× longer along the orbit, at a' from 5 km inside to 18 km
+outside the site (they move with the edge modes), tapered over the outer 1.5° of the span. S/2009 S1 (a = 116,914 ±
+17 km, ~300 m across, its shadow 36 km long at B = 0.24°: ~150 m above the plane) is a single 150 m Gaussian bump
+(σ 150 / 300 m) at 144.4° on 2009-07-26 11:30:49.7 UTC (frame N1627301569) moving at the local Keplerian rate (its
+longitude is uncertain by ±0.17°/d away from 2009). Both are vertically symmetric thickenings of the layer in
+reality; a single mid-plane height can carry only one side: their sunlit half, i.e. the peaks rise toward the lit
+face (and switch sides at equinox). Rendered shadow length of S/2009 S1 in test:relief: 35.3 km vs h / tan B =
+35.9 km.
+
+**Rendering** (ARCHITECTURE.md → relief contract): the sheet intersects the displaced surface (bounded march +
+Illinois regula falsi; test:relief: hit error ≤ 0.22 footprints) and shades the layer in its local frame (normal from
+the slopes; the Sun as a disk, so the terminator of a tilted face is soft; transmission exp(−τ/|V·n|)); shadows test
+the horizon toward the Sun against the bending-wave crests (exact crest positions from the inverse phase table; inside
+a wave whose wavelength is below the footprint only crests more than one local wavelength away), the single peaks
+(opaque Gaussians, footprint- and penumbra-averaged), region A (walk over ≤ 16 cells toward the Sun) and the moonlet
+edges (ζ sampled 0 / 0.6 / 1.5 Hill radii into the ring, footprint-averaged); heights are prefiltered (faded where
+the footprint exceeds a fraction of the local wavelength / structure size), occluders are kept at their true heights
+(their shadows are much longer than the footprint). The near-slab march, the near-field particles (displaced by z0 at
+their guiding centre, lit relative to the local mid-plane) and the astronaut follow z0; the camera keeps its height
+above the local mid-plane (station keeping includes the material's vertical motion, ~5 cm/s in the Mimas 5:3 wave).
+
+**Not modelled.** The Mimas 7:4 and 8:5 bending waves (third-order e'i' / i'³ terms; their shadow bands appear in
+PIA11676), the Encke-gap ringlet clumps (~600 m, PIA11676) and other ringlet structure, the propellers' shadows and
+their heights near the camera (their equinox heights, §12, enter z0 through `rsReliefPropellers` and tilt the sheet's
+shading, but not yet the relief bounds and shadows that the march and the near field follow), the vertical rift of the B-ring edge's other sites, non-linear bending-wave profiles
+(the calibrations only scale linear theory), the waves' τ modulation by the tilted path (the occultation τ already
+contains it), multiple crossings of one ray through a strongly corrugated surface (the hit search returns the first),
+the sub-pixel bright walls of region A (prefiltered away from a distance).
+
 ## References
 
 The app's bibliography (in-app Sources panel, key G) is `src/app/references.ts`, with full titles, DOIs and what each
 reference is used for; `npm run check:refs` fails when a citation here has no entry there (or an entry is cited
 nowhere). Add new references to both.
+
+**§13 (vertical relief):** Shu, F. H., Cuzzi, J. N., Lissauer, J. J. 1983, Icarus 53, 185 (SCL83, bending waves) ·
+Sega, D. D., et al. 2024, Icarus 413, 115987 (Mimas 5:3 Σ, ν) · Hedman, M. M., Sega, D. D., et al., DPS 2022 / 2024
+abstracts (VIMS bending-wave amplitudes) · Lissauer, J. J. 1985 (Mimas 4:2 Σ, via Hedman & Nicholson 2016) ·
+Nicholson, P. D., Hedman, M. M. 2016, Icarus 279, 78 (Titan −1:0) · Rosen, P. A., Lissauer, J. J. 1988, Science 241,
+690 · Sega, D. D., Stewart, G. R., DPS 2022 abstract (Titan wave slopes) · Hedman, M. M., et al. 2011, Science 332,
+708 (corrugated C ring) · Hedman, M. M., et al. 2015, Icarus 248, 137 · French, R. G., et al. 2025, Icarus (C-ring
+ripples, impact epoch) · Spitale, J. N., Porco, C. C. 2010, AJ 140, 1747 (region A, S/2009 S1) · Weiss, J. W.,
+Porco, C. C., Tiscareno, M. S. 2009, AJ 138, 272 (Daphnis' edge waves) · NASA/JPL PIA11655, PIA11656, PIA11668,
+PIA11676 (Cassini ISS equinox images).
 
 Afigbo, V. M., et al. 2025, JGR Planets (Kronoseismology VII; arXiv:2502.19265) · Albers, N., et al. 2012,
 Icarus 217, 367 · Altobelli, N., et al. 2014 (via Miller et al. 2024) · Baillié, K., et al. 2011, Icarus 216, 292 ·
