@@ -506,7 +506,10 @@ export class NearFieldPass implements RenderPass {
     this.lap('update');
     const u = this.updMat.uniforms;
     u.uCull.value = this.cullEnabled ? Math.min(this.cullTau, lod.cullTau) : 0;
-    u.uTauCam.value = ctx.profile.tauAtKm((ring.r0 + cam.x) / 1000);
+    // 2-D ring structure: the boxes are Lagrangian (nearUpdate.glsl); the camera's Lagrangian radial offset is
+    // cam.x + st.da (st.da = a' - r = -xi_cam), and the optical depth at the camera is tau0(a') J
+    const st = ctx.structure.cam;
+    u.uTauCam.value = ctx.profile.tauAtKm((ring.r0 + cam.x + st.da) / 1000) * st.J;
     this.fsMesh.material = this.updMat;
     for (const c of this.classes) {
       if (!c.active || this.skip.update) continue;
@@ -521,9 +524,10 @@ export class NearFieldPass implements RenderPass {
       u.uRadP.value = c.pieceP;
       u.uRadB.value = c.pieceB;
       (u.uSig.value as Vector2).set(lod.sigX(k), lod.sigZ(k));
-      // camera offset from the box reference and the shear terms; reduced per particle modulo its own box in
-      // the shader. F (the shear phase of the copies) is exact in double precision for any elapsed time.
-      (u.uCamOff.value as Vector2).set(cam.x - c.c0x, cam.y - c.c0y);
+      // camera offset from the box reference (radially: the camera's Lagrangian position) and the shear terms;
+      // reduced per particle modulo its own box in the shader. F (the shear phase of the copies) is exact in double
+      // precision for any elapsed time.
+      (u.uCamOff.value as Vector2).set(cam.x + st.da - c.c0x, cam.y - c.c0y);
       (u.uKin.value as Vector4).set(modTwoPi(ring.kappa * dtRef), modTwoPi(ring.nu * dtRef), ring.omega / ring.kappa, 0);
       (u.uShear.value as Vector4).set(qO * dtE, qO * c.c0x * dtE, frac(qO * dtRef), 0);
       this.updMat.uniformsNeedUpdate = true;

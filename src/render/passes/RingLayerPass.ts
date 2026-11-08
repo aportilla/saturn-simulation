@@ -3,7 +3,9 @@
 //   far field   physically based thin sheet (single scattering + interparticle shadow hiding +
 //               two-stream multiple scattering), lit and unlit faces, Saturnshine on both faces,
 //               Saturn/moon shadows, granola-bar self-gravity wakes (azimuthal asymmetry, viewing-angle
-//               dependent transmission), spokes, moonlet edge waves, exact footprint prefiltering.
+//               dependent transmission), spokes, exact footprint prefiltering.
+//   (both)      every profile lookup goes through the shared 2-D ring structure (sv_ringStructure, ctx.structure):
+//               streamline map of the moonlet-perturbed Encke / Keeler gap edges (Pan, Daphnis).
 //   near field  ray march through the particle slab with the same radiative transfer, explicit wake
 //               density W(x,y) (clipmap), wake self-shadowing, carrying only the optical depth NOT drawn
 //               as discrete near-field particles (sv_ringLod `ringExtinction` sigUnres).
@@ -30,6 +32,7 @@ import { OUTER_RINGS } from '../../rings/ringRegions';
 import { phaseTables, PHASE_POWER_N } from '../rings/phase';
 import { TauPyramid } from '../rings/TauPyramid';
 import { WakeClipmap, WAKE_CLIP_N } from '../rings/WakeClipmap';
+import type { RingStructure } from '../../rings/RingStructure';
 import rlOptics from '../rings/rlOptics.glsl?raw';
 import rlSheet from '../rings/rlSheet.glsl?raw';
 import rlOuter from '../rings/rlOuter.glsl?raw';
@@ -115,8 +118,18 @@ export class RingLayerPass implements RenderPass {
   halfRes = true;
   /** peak spoke dust optical depth (Cassini: ~0.01-0.1 in the visible) */
   spokeTau = 0.06;
-  /** multiplier on the moonlet edge-wave amplitudes (1 = physical; >1 for inspection) */
-  edgeWaveScale = 1;
+  private structure: RingStructure | null = null;
+  /**
+   * Multiplier on the moonlet streamline amplitudes (1 = physical, 0 = straight edges, > 1 for inspection; above
+   * ~1.5 the map may fold, J is then clamped). Forwards to the shared RingStructure: every renderer (sheet, march,
+   * near-field particles, astronaut) sees the same map.
+   */
+  get edgeWaveScale(): number {
+    return this.structure?.edgeWaveScale ?? 1;
+  }
+  set edgeWaveScale(v: number) {
+    if (this.structure) this.structure.edgeWaveScale = v;
+  }
   private lowActive = false;
   private pyr!: TauPyramid;
   private wake!: WakeClipmap;
@@ -136,6 +149,7 @@ export class RingLayerPass implements RenderPass {
 
   init(ctx: PipelineContext): void {
     const pt = phaseTables(this.phaseModel);
+    this.structure = ctx.structure;
     this.pyr = new TauPyramid(ctx.profile);
     this.wake = new WakeClipmap(ctx);
     this.lutRT = new WebGLRenderTarget(LUT_NU, LUT_NS, {
@@ -174,8 +188,6 @@ export class RingLayerPass implements RenderPass {
       uRlWakeScale: { value: 1 },
       uRlPhaseN: { value: PHASE_POWER_N },
       uRlPhaseC: { value: pt.powerC },
-      uRlPan: { value: new Vector4(133_584e3, 0, 1.5e3, 0) },
-      uRlDaphnis: { value: new Vector4(136_505e3, 0, 0, 0) },
       uRlSpoke: { value: this.spokes },
       uRlSpokeAct: { value: [0, 0.06] },
       uRlWakeStat: { value: new Vector4(0.33, 2.0, 0.5, 0) },
@@ -251,24 +263,11 @@ export class RingLayerPass implements RenderPass {
     }
     u.uRlHSlab.value = Math.min(hMax, 60);
 
-    // ---- moonlets & Prometheus
-    const pan = u.uRlPan.value as Vector4;
-    const dap = u.uRlDaphnis.value as Vector4;
-    pan.w = 0;
-    dap.z = 0;
-    dap.w = 0;
+    // ---- Prometheus (F-ring channels). The moonlet gap edges (Pan, Daphnis) are the shared streamline map
+    // (ctx.structure, sv_ringStructure), updated by the pipeline before the passes.
     let promLon = 0;
     for (const m of f.moons) {
-      if (m.id === 618) {
-        pan.set(Math.hypot(m.pos.x, m.pos.y), Math.atan2(m.pos.y, m.pos.x), 1.5e3 * this.edgeWaveScale, 1);
-      } else if (m.id === 635) {
-        // Daphnis: radial waves ~1.5 km; vertical waves scale with its height above the plane (i ~ 0.0036 deg)
-        const a = Math.hypot(m.pos.x, m.pos.y);
-        const zmax = a * Math.sin(0.0036 * DEG);
-        dap.set(a, Math.atan2(m.pos.y, m.pos.x), 1.5e3 * this.edgeWaveScale, this.edgeWaveScale * 1.2e3 * (0.35 + 0.65 * Math.min(1, Math.abs(m.pos.z) / zmax)) * (m.pos.z >= 0 ? 1 : -1));
-      } else if (m.id === 616) {
-        promLon = Math.atan2(m.pos.y, m.pos.x);
-      }
+      if (m.id === 616) promLon = Math.atan2(m.pos.y, m.pos.x);
     }
 
     // ---- F ring

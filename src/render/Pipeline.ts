@@ -12,7 +12,8 @@
 //     5. post   -> exposure, bloom, tone mapping             (PostPass)
 //
 // The pipeline also owns the shared local-ring state (RingLod + WakeField), reconfigured whenever the
-// ring frame is re-anchored or the camera's pixel footprint changes significantly.
+// ring frame is re-anchored or the camera's pixel footprint changes significantly, and the 2-D ring structure
+// (RingStructure: streamline map of the moonlet-perturbed gap edges), updated first every frame.
 import {
   DepthTexture, FloatType, LinearFilter, NearestFilter, RGBAFormat, UnsignedIntType, WebGLRenderTarget,
   type IUniform, type Texture, type WebGLRenderer,
@@ -21,6 +22,7 @@ import type { FrameState } from '../core/FrameState';
 import { RingProfile } from '../rings/RingProfile';
 import { RingLod } from '../rings/RingLod';
 import { WakeField } from '../rings/WakeField';
+import { RingStructure } from '../rings/RingStructure';
 import { SharedUniforms } from './SharedUniforms';
 import { FullscreenPass } from './fullscreen';
 import { registerShaderChunks } from './shaders/chunks';
@@ -32,6 +34,11 @@ export interface PipelineContext {
   profile: RingProfile;
   lod: RingLod;
   wakes: WakeField;
+  /**
+   * 2-D structure of the main rings (sv_ringStructure): every main-ring tau lookup maps through it; CPU mirror
+   * (camera's Lagrangian position, tau at a point). Updated at the start of each frame, before any pass.
+   */
+  structure: RingStructure;
   /** far + near opaque scene: rgb radiance + distance (a), with depth texture */
   sceneRT: WebGLRenderTarget;
   /** radiance after the ring layer */
@@ -114,13 +121,13 @@ export class Pipeline {
 
   async init(width: number, height: number): Promise<void> {
     registerShaderChunks();
-    const profile = await RingProfile.load();
+    const [profile, structure] = await Promise.all([RingProfile.load(), RingStructure.load()]);
     const lod = new RingLod();
     const wakes = new WakeField();
-    const shared = new SharedUniforms(profile, lod, wakes);
+    const shared = new SharedUniforms(profile, lod, wakes, structure);
     const sceneRT = Pipeline.makeTarget(width, height, true);
     const hdrRT = Pipeline.makeTarget(width, height, false);
-    this.ctx = { renderer: this.renderer, shared, profile, lod, wakes, sceneRT, hdrRT, width, height };
+    this.ctx = { renderer: this.renderer, shared, profile, lod, wakes, structure, sceneRT, hdrRT, width, height };
     // color clear via shader (float targets: clearColor values may be clamped); depth via renderer.clear
     this.clearPass = new FullscreenPass({
       fragmentShader: /* glsl */ `
@@ -190,7 +197,9 @@ export class Pipeline {
     const pa = f.canvasPixelAngle;
     c.lod.setPixelAngle(pa);
     const anchorChanged = f.ring.anchorId !== this.lastAnchorId;
-    const rKm = (f.ring.r0 + f.ring.camLocal.x) / 1000;
+    // the material around the camera is that of its Lagrangian (streamline) radius: near a moonlet-perturbed gap
+    // edge it differs from the Eulerian one by xi (km); the near-field boxes are Lagrangian (nearUpdate.glsl)
+    const rKm = (f.ring.r0 + f.ring.camLocal.x + c.structure.cam.da) / 1000;
     const movedFar = Math.abs(rKm - this.lastLocalRKm) > 1.0; // reconfigure each km of radial travel
     const camZ = f.ring.camLocal.z;
     if (anchorChanged || movedFar || c.lod.needsRealloc(pa, camZ)) {
@@ -213,6 +222,7 @@ export class Pipeline {
     if (!this.ready) return;
     const c = this.ctx;
     const r = this.renderer;
+    c.structure.update(f);
     this.updateLocalRing(f);
     c.shared.update(f, c.profile);
     for (const p of this.ordered()) {

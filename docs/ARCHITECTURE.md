@@ -58,7 +58,8 @@ Implications:
 
 ## Frame flow
 `SimClock.tick` → `World.update(frame)` (Sun, Saturn W, moons) → camera rig sets `camPos/camQuat/fovY` and
-`RingAnchor.fill(frame.ring, …)` → `updateCameraDerived(frame)` → `Pipeline.render(frame)` → HUD.
+`RingAnchor.fill(frame.ring, …)` → `updateCameraDerived(frame)` → `Pipeline.render(frame)` (first
+`RingStructure.update`: moonlet states, the camera's streamline state; then the local LOD, shared uniforms, passes) → HUD.
 
 ## Render pipeline (`src/render/Pipeline.ts`)
 | step | pass (file, class) | reads | writes |
@@ -111,18 +112,39 @@ Implications:
 * `renderer.autoClear = false`. Passes render with `RawShaderMaterial` + `glslVersion: GLSL3`.
 * Pass interface: `RenderPass { name, enabled, init(ctx), resize?(ctx), update?(frame, ctx), render(frame, ctx), stats?(), dispose? }`.
   Keep each pass's **file path and class name** stable — the app imports them.
-* `PipelineContext`: `{ renderer, shared, profile, lod, wakes, sceneRT, hdrRT, width, height }`, plus optional
+* `PipelineContext`: `{ renderer, shared, profile, lod, wakes, structure, sceneRT, hdrRT, width, height }`, plus optional
   shares set by passes for later ones: `nearShadow` (NearFieldPass's sun shadow map: uniforms, the frame it was
   last rendered, `prepare()`), `ringshineTable` (FarFieldPass's ringshine-on-Saturn texture) and `meterMask`
   (AstronautPass's visible pixels for PostPass: texture, frame, screen columns).
 
 ### Shared uniforms & GLSL (`src/render/SharedUniforms.ts`, `src/render/shaders/*.glsl`)
 Spread `ctx.shared.u` into your material's uniforms; start shaders with `SV_HEADER_ALL` (from `chunks.ts`) or
-include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile`, `sv_lighting`, `sv_ringLod`, `sv_wakes`.
+include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile`, `sv_ringStructure`, `sv_lighting`,
+`sv_ringLod`, `sv_wakes`.
 * `sv_common`: camera ray `cameraRayDir(uv)`, `viewDepth`, `logDepth01`, `logDepthClipZ`, PCG hashes, value noise/fbm, `erfApprox`; Sun uniforms.
 * `sv_saturn`: `saturnIntersect(ro, rd)`, `saturnNormal(pc)`, `saturnSunVisibility(p)` (penumbra).
 * `sv_ringProfile`: `RingSample ringSample(r, footprint)` / `ringSampleIdx(idx0, footprint)` (1-D mip
   pyramid: tau, H, Σ, wake, albedo rgb, dust), local Hill-frame helpers, `ringSunTransmission(p, footprint)`.
+  This is the **Lagrangian** (unperturbed-streamline) profile τ0(a'); near the camera don't call it directly for
+  main-ring optical depth — go through `sv_ringStructure`.
+* `sv_ringStructure` (uniforms owned by `src/rings/RingStructure.ts`, CPU mirror `src/rings/streamlines.ts`): the 2-D
+  (r, θ, t) structure of the main rings. **Rule: every main-ring τ lookup goes through it** (ring-layer sheet and march,
+  near-field presence and culling, the astronaut's ring column). Streamline map r = a' + ξ(a', θ, t), height ζ;
+  Eulerian τ = τ0(a') J M with J = 1/(∂r/∂a') (density factor) and M the 2-D modulation hook; a'(r, θ) by Newton
+  iteration. All arguments are offsets for float32 precision: `dr` = r − uRingR0 (`ringDrFromLocal`), `dth` = azimuth
+  − frame-origin azimuth (`atan(l.y, uRingR0 + l.x)`), `fp` = radial footprint (m).
+  `RingStream ringStream(dr, dth, fp)` → `.da` (a' − r), `.J`, `.tauMod`, `.daGrad` (for caching);
+  `ringStreamRelief(dr, dth, fp)` adds `.zeta` (mid-plane height of the material, m) and `.slope` (∂ζ/∂r, ∂ζ/(r∂θ));
+  `vec3 ringStreamXi(aL, dth, fp)` = (ξ, ζ, J) at a Lagrangian offset aL = a' − r0 (the near field displaces its
+  particles, which carry a'); `RingSample ringSampleStream(dr, dth, fp)` / `ringSampleLocal(l, fp)` = THE lookup
+  (profile at a', τ and Σ × J × M, footprint × J); `ringSampleLagrangian(aL, fp)`; `ringSampleIdxPrecise(I, sub, fp)`
+  (integer + fraction index: `uRingIdx0 + dr/uRingDr0` rounds to 7.8 m in the outer A ring, which stair-steps
+  displaced edges; the ring layer has the same as `rlSampleP`); `ringSunTransmissionStream(p, fp)`. Hooks for later
+  work packages, identity now: `ringStructureRelief(aL, dth)` → (height, ∂/∂a', ∂/∂S) (bending waves, B-ring-edge
+  structures, relief sources) and `ringStructureTauMod(aL, dth)` (azimuthal texture, propellers). Sources now: the
+  moonlets Pan and Daphnis (Hill-problem response table, `public/data/rings/moonlet_response.*`). The camera's
+  streamline state is `uRsCam` = (ξ, ζ, J, near-field zone flag). Far-field shaders (`src/render/far/**`) include
+  only `sv_ringProfile` (km-scale edge waves are below their footprints).
 * `sv_lighting`: `phaseLambertSphere`, `phaseHG`, `ringPhase(cosα, dust)`, `saturnshine(p, out dir)`,
   `diskOverlapFraction`, `moonsSunVisibility(p, skip)`, `sunVisibility(p)`; moon spheres `uMoonPosR[32]`.
 * `sv_ringLod` (mirror of `src/rings/RingLod.ts`): 14 octave size classes from 1 mm, `lodCarryParticle(a,k,s,dz)`
@@ -182,12 +204,27 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   at τ ~ 1. The near field is active while the camera is within the largest particles' reach. Seeds depend on
   the anchor id and class only; classes whose allocation is unchanged keep their particles across re-fits.
 * **Wakes** (`WakeField`): Toomre λ = 4π²GΣ/κ², pitch ≈ 20° trailing, transient sheared generations.
+* **2-D structure** (`RingStructure`, `sv_ringStructure`): the profile is the Lagrangian τ0(a'); a streamline map
+  r = a' + ξ(a', θ, t), ζ(a', θ, t) gives the Eulerian τ = τ0(a') J (J = 1/(∂r/∂a'), surface-density conservation)
+  for every renderer. Moonlet edge waves: the universal Hill-problem response (Hénon & Petit 1986 units) of a
+  particle passing the moonlet at b = |a' − a_moon| / r_H, tabulated by `scripts/data/rings/moonlet_response.mjs`
+  (b 2.5–30, Hill time −30…72 from conjunction), with the moonlet's live radius at conjunction (its epicycle) and its
+  vertical phase (linear vertical response). Collisional damping over 4 wavelengths and a streamline-crossing limiter
+  are baked into the table; J is clamped at ≤ 5. **Near field:** the particle boxes are Lagrangian — the guiding
+  centre is a', presence is tested at τ0(a'), the particle is drawn displaced by ξ(a') − ξ_cam, and the box
+  is centred on the camera's Lagrangian position (`uRsCam.x`, `NearFieldPass` uCamOff); the local LOD is configured at
+  the camera's Lagrangian radius (`Pipeline.updateLocalRing`). ζ is computed and exposed (`ringStreamRelief`,
+  `ringStreamXi`), not yet rendered geometrically (relief work package). Details and numbers: ring-physics.md §8.
 * **Outer rings**: F ring (eccentric, a = 140,221 km), G, E (vertical torus around Enceladus), D — analytic
   in the ring-layer pass (`OUTER_RINGS` in `ringRegions.ts`).
 
 ## Data formats (`public/data/…`)
 * `rings/tau_main.json` + `rings/tau_main.f32`: `{ source, r0_km, dr_km, n, notes }` + n little-endian
   float32 normal optical depths at r = r0_km + i·dr_km. NaN allowed = no data (procedural used there).
+* `rings/moonlet_response.json` + `.f32` (`scripts/data/rings/moonlet_response.mjs`): `{ bLo, bHi, nb, t0, t1, dt, nt,
+  envelope, moonlets: [{ id, name, gmKm3s2, aKm, rHillKm }], asymptotic, checks }` + float32 [3 groups][nb][nt][4]
+  (texture width nt, height 3 nb): K = b²ξ/r_H, Wc = b³z_c, Ws = b³z_s, each (F, ∂F/∂t, ∂F/∂b, ∂²F/∂b∂t) for bicubic
+  Hermite interpolation; b log-spaced, t = Hill time since conjunction (> 0 downstream).
 * `ephemeris/sun_from_saturn.json`: `{ frame:"ICRF", center:"699", target:"10", start_jd_tdb, step_days, pos_km:[x0,y0,z0,…] }`.
 * `moons/…`, `stars/…`, `textures/…`: defined by the moons/sky data agent (documented in `docs/data-sources.md`).
 

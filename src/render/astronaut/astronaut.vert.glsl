@@ -50,12 +50,13 @@ vec3 astroDeckRingshine(vec3 n) {
 
 // Transmission along unit direction u from camera-relative point p at height zA above the ring plane through
 // the main rings: the column between p and the face the ray leaves through, taken at the radius where the ray
-// crosses the mid-plane (1 if it reaches Saturn first, at distance dMax).
+// crosses the mid-plane (1 if it reaches Saturn first, at distance dMax). All main-ring lookups here go through
+// sv_ringStructure (streamline map of the gap edges).
 float astroRingTrans(vec3 p, float zA, vec3 u, float dMax) {
   float t = abs(u.z) > 1e-6 ? -zA / u.z : -1.0;
   if (t >= dMax) return 1.0;
   vec3 q = t > 0.0 ? p + u * t : p;
-  RingSample s = ringSample(length((q + uCamPos).xy), 0.0);
+  RingSample s = ringSampleLocal(ringLocalFromRel(q), 0.0);
   float col = ringLayerTauBeyond(zA, s.tau, max(s.H, 0.5), u.z >= 0.0 ? 1.0 : -1.0);
   return exp(-col / max(abs(u.z), 0.02));
 }
@@ -85,12 +86,12 @@ void main() {
   vec2 tSun = vec2(1.0);
   vec3 Fl = vec3(0.0), Fd = vec3(0.0);
   if (nearRings) {
-    RingSample rs = ringSampleIdx(ringIdxFromLocal(lp), 0.0);
+    RingSample rs = ringSampleLocal(lp, 0.0);
     float H = max(rs.H, 0.5);
     vec2 sh = vec2(dot(uSunDir, uRingER), dot(uSunDir, uRingEPhi));
     vec2 sh2 = sh / max(abs(uSunDir.z), 0.02);
     // where the sun ray crosses the mid-plane (when the layer lies sunward of the body)
-    RingSample rc = ringSampleIdx(ringIdxFromLocal(vec3(lp.xy + sh2 * max(-sg * zl, 0.0), 0.0)), 0.0);
+    RingSample rc = ringSampleLocal(vec3(lp.xy + sh2 * max(-sg * zl, 0.0), 0.0), 0.0);
     // column fractions above the body (fUp) and, for the shadow map's complement, the part the map does not
     // hold (as the particles: unmapped classes whole, mapped ones beyond the sun ray's exit from their boxes)
     vec2 pl2 = vec2(dot(p, uRingER), dot(p, uRingEPhi));
@@ -137,7 +138,7 @@ void main() {
     Fl *= Esun * uAstroPlaneW;
     Fd *= Esun * uAstroPlaneW;
   } else {
-    tSun = vec2(ringSunTransmission(p, 0.0));
+    tSun = vec2(ringSunTransmissionStream(p, 0.0));
   }
   vSun = Esun * tSun;
   vFl = Fl;

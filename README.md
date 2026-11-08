@@ -62,7 +62,11 @@ Horizons table (1990–2060, Standish elements outside it). Time in TDB seconds 
 
 **Ring structure.** Normal optical depth on a 0.25 km grid from Cassini radio occultation (RSS Rev 7, X band)
 rescaled to visible wavelengths with six UVIS stellar occultations of β Centauri, which also supply the opaque
-B-ring core. Gaps, ringlets, plateaus, density waves and sharp edges are where the data put them. Per-zone
+B-ring core. Gaps, ringlets, plateaus, density waves and sharp edges are where the data put them. On top of this
+radial profile a 2-D streamline map moves the material: Pan and Daphnis raise waves on the Encke- and Keeler-gap
+edges (forced epicycles from integrations of Hill's problem, wavelength 3π × the distance to the moonlet, ~1.5 km
+at the Encke edges, 2–3.5 km at the Keeler edges, crowding the streamlines into denser crests, damped over a few
+wavelengths), seen identically by the medium, the particles and the astronaut's lighting. Per-zone
 particle size distributions (power laws, e.g. A ring 2 cm–5 m, B ring 5 cm–2 m, C ring 4 mm–10 m), layer
 thickness (C 5 m, A 10 m, B 10–15 m), surface density calibrated to density waves, albedo and colour. The
 implied ring mass, 1.34×10¹⁹ kg, matches Cassini's measured 1.54 ± 0.49×10¹⁹ kg. Details and references:
@@ -88,7 +92,7 @@ radial structure. Light: power-law particle phase function (Dones et al. 1993), 
 (opposition surge), two-stream multiple scattering, Saturn's shadow with penumbra, moon shadows, Saturnshine on
 both faces. Calibrated low-phase I/F: B ring ≈ 0.45, A ≈ 0.29, Cassini Division ≈ 0.06. Dusty rings (D, F, G, E,
 Janus/Epimetheus, Roche Division) scatter forward; the F ring is eccentric and precessing with strands, clumps
-and Prometheus channels; spokes, Encke- and Keeler-gap edge waves.
+and Prometheus channels; spokes.
 
 **What it is like in there** (mid A ring): ~37 particles larger than 1 cm per m² of ring, one larger than 1 m per
 ~50 m²; typical spacing of 10 cm bodies 1.6 m; you can see ~46 m along the layer; 72 % of the sky is visible from
@@ -113,7 +117,7 @@ is in view.
 
 ```
 src/core      constants, time, ephemeris, frames, co-orbiting ring anchor, frame state
-src/rings     ring zone table, radial profile, level-of-detail contract, wake field
+src/rings     ring zone table, radial profile, 2-D structure (streamline map), level-of-detail contract, wake field
 src/moons     moon ephemerides and rotation          src/sky   star catalogue
 src/render    pipeline (far → near → astronaut → ring layer → post), shared GLSL, passes:
               far/ (Saturn, moons, stars) · near/ (particles) · astronaut/ · rings/ (ring medium) · PostPass (camera)
@@ -136,7 +140,13 @@ Full provenance, formats and accuracy: [`docs/data-sources.md`](docs/data-source
 
 ## Known limitations
 
-* Density and bending waves render as concentric ripples (no spiral phase); eccentric ringlets are a 2005 snapshot.
+* Density and bending waves render as concentric ripples (no spiral phase); eccentric ringlets and edges other than
+  the moonlet-gap edges are a 2005 snapshot.
+* Moonlet gap edges: the vertical waves Daphnis raises (~0.5 km in the model, ~1 km seen by Cassini) are computed but
+  not yet drawn as relief or shadows; the edge's azimuthal bunching, other perturbers (e.g. Prometheus on the Keeler
+  outer edge) and the Encke-gap ringlets are not modelled. Near-field particles on displaced edge material are lit
+  with the unperturbed profile at their position (too bright there) until the particle shader samples the 2-D
+  structure; in the most compressed wave crests particles far from the camera may be missing.
 * Particle shapes and surface detail are procedural; light reflected from one part of the rings onto another is
   not modelled.
 * Daphnis's orbit is extrapolated (Horizons coverage ends in 2018); Hyperion's actual present-day orientation is

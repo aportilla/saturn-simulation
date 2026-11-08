@@ -151,6 +151,9 @@ void rlMarch(vec3 rd, float sA, float sB, float jitter, out vec3 Lout, out float
 
   float s = sA;
   float drCache = 1e30, fpCache = -1.0, tauTS = -1.0;
+  // streamline-map cache (sv_ringStructure): last evaluation point, its da = a' - r, gradient and J x tauMod
+  float stDr = 1e30, stDth = 0.0, stDa = 0.0, stJ = 1.0;
+  vec2 stG = vec2(0.0);
   RlS S = rlEmpty();
   float tau = 0.0, tau0 = 0.0, P = 0.0, beta = 0.5, bsh = 0.0;
   RlTS tsSun, tsSs;
@@ -216,8 +219,26 @@ void rlMarch(vec3 rd, float sA, float sB, float jitter, out vec3 Lout, out float
     // ---- profile (cached while the radius changes little); sub-km structure evaluated every step
     float dr = ringDrFromLocal(l);
     float fpR = max(fpPix, ds * abs(d.x) * 0.5);
-    if (abs(dr - drCache) > 50.0 + 0.25 * fpR || fpR > 2.0 * fpCache || fpR < 0.5 * fpCache) {
-      S = rlSample(uRingIdx0 + dr / uRingDr0, fpR);
+    // 2-D ring structure (sv_ringStructure): the profile is that of the Lagrangian radius dr + da, tau x J x M.
+    // The map is smooth on km scales: re-evaluated when the step moved > 25-100 m radially (less where J varies)
+    // or 500 m along the orbit, linearly extrapolated in between.
+    float drL = dr;
+    float Jst = 1.0;
+    if (!rsIdentityAt(dr)) {
+      float dth = atan(l.y, uRingR0 + l.x);
+      if (abs(dr - stDr) > 25.0 + 75.0 / (1.0 + 4.0 * abs(stJ - 1.0)) || abs(dth - stDth) * uRingR0 > 500.0) {
+        RingStream st = ringStream(dr, dth, fpR);
+        stDr = dr;
+        stDth = dth;
+        stDa = st.da;
+        stG = st.daGrad;
+        stJ = st.J * st.tauMod;
+      }
+      drL = dr + stDa + dot(stG, vec2(dr - stDr, (dth - stDth) * uRingR0));
+      Jst = stJ;
+    }
+    if (abs(drL - drCache) > 50.0 + 0.25 * fpR || fpR > 2.0 * fpCache || fpR < 0.5 * fpCache) {
+      S = rlSampleP(uRlIdx0I, uRlIdx0F + drL / uRingDr0, fpR * Jst);
       tau0 = rlTauM(S, 0.918);
       P = mix(Pm, Pd, S.dust);
       PbL = mix(PbLm, PbLd, S.dust);
@@ -240,16 +261,16 @@ void rlMarch(vec3 rd, float sA, float sB, float jitter, out vec3 Lout, out float
         Wvb = mix(Wb, 1.0, cv); Wvg = mix(Wg, 1.0, cv);
         Wsb = mix(Wb, 1.0, cs); Wsg = mix(Wg, 1.0, cs);
       }
-      drCache = dr;
+      drCache = drL;
       fpCache = fpR;
       // the layer thickness may have changed: re-evaluate the vertical structure at the step's ends
       Qa = -1.0;
       exB = rlExt(l0.z + d.z * ds, S.H, s + ds);
     }
     {
-      float xF = uRlIdx0F + dr / uRingDr0;
+      float xF = uRlIdx0F + drL / uRingDr0;
       float kF = floor(xF);
-      tau = tau0 * rlFineFactor(uRlIdx0I + kF, xF - kF, fpR, tau0, S.wake);
+      tau = tau0 * Jst * rlFineFactor(uRlIdx0I + kF, xF - kF, fpR * Jst, tau0, S.wake);
     }
     // two-stream solutions: the multiply-scattered field is smooth -> refresh only on a 15 % tau change
     if (abs(tau - tauTS) > 0.15 * max(tauTS, 0.02)) {

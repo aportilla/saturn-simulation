@@ -75,6 +75,18 @@ const _v = new Vector3();
 const _f = new Vector3();
 const _c = new Vector3();
 
+/**
+ * The ring material at the camera through the 2-D ring structure (moonlet-perturbed gap edges): the profile values
+ * of the streamline (Lagrangian) radius there, with tau and Sigma scaled by the density factor J.
+ */
+function localAtCamera(ctx: PipelineContext, f: FrameState, rCyl: number): RingLocal {
+  const st = ctx.structure?.streamAtSEF(rCyl, Math.atan2(f.camPos.y, f.camPos.x));
+  if (!st || (st.da === 0 && st.J === 1 && st.tauMod === 1)) return ctx.profile.local(rCyl);
+  const loc = ctx.profile.local(rCyl + st.da);
+  const k = st.J * st.tauMod;
+  return { ...loc, tau: loc.tau * k, sigma: loc.sigma * k, macroscopic: loc.macroscopic && loc.tau * k > 0.002 };
+}
+
 export function computeLiveInfo(f: FrameState, ctx: PipelineContext | null, rig: CameraRig, timeDir: number): LiveInfo {
   const p = f.camPos;
   const rCyl = Math.hypot(p.x, p.y);
@@ -86,7 +98,7 @@ export function computeLiveInfo(f: FrameState, ctx: PipelineContext | null, rig:
   const rLocal = saturnRadiusAt(dist > 0 ? z / dist : 0, dist > 0 ? rCyl / dist : 1);
   const inProfile = rCyl >= PROFILE_MIN_M && rCyl <= PROFILE_MAX_M;
   const nearRings = inProfile && Math.abs(z) < 50_000e3;
-  const local = ctx && inProfile ? ctx.profile.local(rCyl) : null;
+  const local = ctx && inProfile ? localAtCamera(ctx, f, rCyl) : null;
   const sd = local && local.macroscopic ? sizeDistribution(local) : null;
   const rf = Math.max(rCyl, SATURN.R_EQ);
   const fr = orbitalFrequencies(rf);

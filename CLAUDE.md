@@ -17,7 +17,8 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
   `test:physics` (ephemeris, J2–J6 frequencies, particle kinematics vs the exact Hill solution) +
   `test:counts` (drawn particles vs the analytic expectation, HUD "complete") + `test:seam` (near field +
   medium vs medium alone, incl. the old arc repro) + `test:exposure` (the astronaut doesn't change the auto
-  exposure). `npm run test:fps` = informational fps table per preset × quality. Details, tolerances, measured
+  exposure) + `test:edges` (moonlet gap edges: gaps empty, rendered edges = streamline model, near field follows).
+  `npm run test:fps` = informational fps table per preset × quality. Details, tolerances, measured
   values and the shared helpers: `scripts/test/README.md`.
 - Screenshots on the real GPU (headless Chrome, ANGLE/Metal); console errors and page errors are printed:
   - one page: `node scripts/shot.mjs "<url>" <out.png> --until "window.__svReady===true" --wait 3000 [--w --h --dpr --eval "<js>"]`
@@ -68,6 +69,7 @@ mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,ove
 | time, frames, Sun, Saturn rotation, constants, co-orbiting (Hill) frame | `src/core/*` (`ephemeris.ts`, `RingAnchor.ts`, `constants.ts`, `FrameState.ts`) |
 | ring optical depth, zones (sizes q/aMin/aMax, thickness H, Σ, albedo, wakes, dust), features | `src/rings/ringRegions.ts`, `src/rings/RingProfile.ts`; data `public/data/rings/` |
 | LOD contract (which particles are drawn vs. carried by the medium), self-gravity wakes | `src/rings/RingLod.ts` + `shaders/ringLod.glsl`, `src/rings/WakeField.ts` + `shaders/wakes.glsl` (CPU/GLSL mirrors) |
+| 2-D ring structure (streamline map: moonlet gap edges; hooks for relief and 2-D τ modulation) — every main-ring τ lookup goes through it | `src/rings/RingStructure.ts` + `src/rings/streamlines.ts` (CPU) + `shaders/ringStructure.glsl`; table `public/data/rings/moonlet_response.*` from `scripts/data/rings/moonlet_response.mjs` |
 | individual ring particles (near field) | `src/render/passes/NearFieldPass.ts`, `src/render/near/*` |
 | astronaut companion (camera-pinned, 1.9 m, for scale; lit like the particles) | `src/render/passes/AstronautPass.ts`, `src/render/astronaut/*` |
 | ring medium at all scales, outer rings, spokes | `src/render/passes/RingLayerPass.ts`, `src/render/rings/*` |

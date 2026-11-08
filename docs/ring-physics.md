@@ -243,6 +243,106 @@ In words:
 * The tau profile ends at the A-ring edge. The procedural fallback gives τ = 0 in the Roche Division, but the real
   value is ~10⁻⁴ of dust (PDS), with R/2004 S1 at 137,630 km.
 
+## 8. Moonlet-perturbed gap edges: the streamline model (`sv_ringStructure`)
+
+Pan (Encke gap) and Daphnis (Keeler gap) raise waves on the gap edges. The renderer models them as a **streamline
+map** shared by every renderer (`src/render/shaders/ringStructure.glsl`, CPU mirror `src/rings/streamlines.ts`):
+
+* Material is labelled by its Lagrangian (unperturbed-streamline) radius a'; the radial profile of §2 is τ0(a'). At
+  azimuth θ and time t the streamline sits at r = a' + ξ(a', θ, t) and at height ζ(a', θ, t) above the mid-plane.
+* Surface-density conservation gives the Eulerian optical depth **τ(r, θ) = τ0(a') J**, J = 1/(∂r/∂a'): converging
+  streamlines (moonlet "wakes", sharp crests) are denser. a'(r, θ) comes from 4 Newton steps from a' = r (residual
+  ≤ 2 mm). A gap is empty by construction — no material streamline maps into it.
+* The map is radial only: the azimuthal epicyclic displacement η = 2e sin φ is neglected. Its density effect (the
+  oscillating drift speed relative to the moonlet, a ±(4/3)(e/b) term, ~±15 % in the first Keeler-edge wavelength)
+  is not included; the secular crowding term that dominates after the first wavelength is.
+* Near-field particles carry a' as their guiding centre: presence is tested at τ0(a') and they are drawn displaced
+  by ξ(a') − ξ_camera (Lagrangian boxes centred on the camera's Lagrangian position), so drawn particles and the
+  medium have the same density τ0 J.
+
+**Moonlet response.** A particle on a circular orbit at b = |a' − a_moon| / r_H (Hill radius r_H = a (m/3M)^(1/3))
+drifts past the moonlet at the Keplerian shear rate 1.5 Ω (a' − a_moon) and leaves on a forced epicycle, which
+downstream (behind the moonlet for the outer edge, ahead of it for the inner one) is a radial wave of azimuthal
+wavelength **λ = 3π |Δa|** (Cuzzi & Scargle 1985). In Hill units (lengths r_H, time 1/Ω; Hénon & Petit 1986) the
+problem has no free parameter, so one table serves both moonlets. `scripts/data/rings/moonlet_response.mjs`
+integrates Hill's equations
+x'' = 2y' + 3x − 3x/r³, y'' = −2x' − 3y/r³ (RK4 from t = −200 with the analytic upstream guiding-centre tail
+−(8/3)/(b²|t|); accuracy: Jacobi-constant drift ≤ 3×10⁻⁶, step halving changes ξ by ≤ 1×10⁻⁵ r_H) for 36 b in
+2.5–30 and stores K = b²ξ/r_H (nearly b-independent: the linear kick ∝ 1/b²) with its t, b and mixed derivatives
+for bicubic Hermite interpolation (smooth J; exact float32 weights via texelFetch). Checks:
+
+* Linear limit: the asymptotic epicycle is e b²/6.72 = 1.0165 (b = 8), 1.0047 (12), 1.0009 (20), 1.0002 (30), i.e.
+  A → 6.72 r_H/b² = **2.24 μ a (a/Δa)²** (Julian & Toomre 1966; Goldreich & Tremaine 1980; Showalter et al. 1986).
+* The guiding-centre shift obeys the Jacobi constant, δb = (2/3)e²/b, to 0.1–1.2 % (the moonlet pushes the edges
+  outward by ~0.3 km at the Keeler gap, the gap-opening torque).
+* At the Keeler edges (b ≈ 3.3–4.5) the response is **nonlinear: e b²/6.72 = 1.27 at b = 3.5** (+21 to +36 % at
+  the catalogued edges). Closest approach at b = 2.5 is 0.89 r_H (Daphnis' radius 0.77 r_H).
+
+| moonlet (moons.json) | edge | Δa (km) | b | A linear (km) | A Hill (km) | peak in 1st λ (km) | λ (km) |
+|---|---|---|---|---|---|---|---|
+| Pan: GM 2.8×10⁻⁴ km³/s² (4.20×10¹⁵ kg), a = 133,584.5 km, r_H = 18.03 km | inner 133,424 / outer 133,745 (profile = catalogue ±1 km) | −160.5 / +160.5 | 8.9 | 1.53 | 1.55 | 1.72 | 1,513 |
+| Daphnis: GM 5.6×10⁻⁶ (8.39×10¹³ kg), a = 136,505.5 km, r_H = 5.00 km | inner, catalogue 136,487 | −18.5 | 3.71 | 2.45 | 2.97 | 2.86 | 175 |
+| | outer, catalogue 136,522 | +16.5 | 3.29 | 3.11 | 4.23 | 3.54 | 155 |
+| | **inner, profile 136,483 (rendered)** | −22.5 | 4.51 | 1.65 | 1.83 | 1.92 | 213 |
+| | **outer, profile 136,523 (rendered)** | +17.5 | 3.49 | 2.76 | 3.53 | 3.21 | 164 |
+
+"A" is the asymptotic forced epicycle before damping; "peak in 1st λ" the largest |ξ| of the enveloped table in the
+first wavelength. Pan's 1.5 km follows from the moons.json GM; ≈ 1.8 km would need GM ≈ 3.3×10⁻⁴ km³/s² (the
+Porco et al. 2007 mass, 4.95×10¹⁵ kg). The rendered Keeler gap is the RSS 2005 profile's (136,483–136,523), 4 km
+wider on the inner side than the catalogue; the occultation may itself have caught the edges displaced (by up to
+~2–3 km) at its longitude relative to Daphnis.
+
+**The moonlet's own orbit.** Its guiding centre and radial epicycle come from the live state vector each frame
+(r − a_g = (Ω(r) − θ')r/((2 − q)Ω), J2–J6 frequencies; Daphnis' radial excursion is ~1.0 km in Nov 2026, Pan's
+~0.65 km), and each streamline point uses the moonlet's radius **at that particle's conjunction**, t_H/κ ago
+(b = |a' − a_moon(t_conj)|/r_H; near the moonlet this is its instantaneous radius). The response table itself is
+for a circular moonlet; its eccentric motion during the encounter is not modelled.
+
+**Vertical response.** The moonlet's inclined orbit makes it oscillate vertically, z_m = Z cos(νt + ψ); the particle's
+vertical equation z'' = −z + 3(z_m − z)/r³ is integrated (linear in Z) for z_m = cos t and sin t, stored as b³z, and
+combined with the moonlet's vertical phase at each particle's conjunction (ψ_c = ψ_now − t_H). Downstream this gives
+a corrugation of **half the radial wavelength** (the particles' vertical oscillation and the moonlet's have the same
+frequency, so a train kicked by a moonlet of changing height beats at 2ν) plus a uniform tilt that follows ψ. With
+the live ephemeris Z = 6.0 km (i ≈ 0.0025°, the same in Aug 2009 and Nov 2026) the maximum |ζ| in the first two
+wavelengths is 0.55 km at the catalogued outer edge (ζ/Z = 0.092), 0.38 km at the inner one, 0.46 / 0.20 km at the
+rendered (profile) edges. Cassini's equinox images show ~1 km high structure (Weiss, Porco & Tiscareno 2009; "≲ 1.5
+km"): the model is ~2× lower. Candidate causes: the inclination (i = 0.0036°, Z = 8.6 km, would give 0.79 km), and
+that the linear vertical response ignores the moonlet's height in the encounter distance (Z/Δa ≈ 0.35 — that would
+weaken it further) and the coupling to the strongly nonlinear radial motion. ζ is computed and exposed through the
+height hook (`ringStreamRelief`, `ringStreamXi`, `uRsCam.y`); it is not yet rendered geometrically (heights,
+shadows): that is the relief work package. (The previous fake shadow multiplier `rlKeelerHeight` is gone.)
+
+**Damping and streamline crossing** (baked into the table, `envelope()` in the script):
+* Phase mixing: neighbouring streamlines have different wavelengths, so ∂r/∂a' = 1 + ∂ξ/∂b acquires a secular term
+  of amplitude Q = e t/b (t = Hill time since conjunction). Q reaches 1 — streamline crossing — about one wavelength
+  downstream at the Keeler edges (t ≈ b/e ≈ 6.4), after ~17 wavelengths at the Encke edges. Real rings cannot cross
+  streamlines: collisions dissipate the forced motion where they would. The amplitude is limited smoothly by
+  (1 + (Q/Q_c)²)^(−1/2), Q_c = 1, which caps the secular term: min ∂r/∂a' = 0.42–0.46 at the Keeler edges (J ≤ 2.4),
+  0.91 at the Encke edges; with Daphnis' eccentricity ≥ 0.28 (J ≤ 3.7). The shader additionally floors
+  ∂r/∂a' at 0.2 (J ≤ 5), which binds only for an inspection scale `edgeWaveScale` ≳ 1.5 (then the map can fold).
+* Collisional damping exp(−x/4λ) (x downstream distance, λ = 3π|Δa|; the previous implementation's choice). This is
+  an assumption: plain viscous damping of the phase-mixed wake (rate ν k_r², ν ≈ 100 cm²/s) would take ~30
+  wavelengths at the Keeler gap; the observed decay over a few wavelengths is attributed to the crossing
+  collisions. The guiding-centre shift δb decays with the same envelope (physically viscous spreading refills the
+  edge over the synodic period, ~8 yr for the Keeler edges).
+* Tapers: upstream tail below t = −22 (|ξ| < 1 % of A there), end of the table t = 60–72, b = 24–30; the waves are
+  faded out for radial pixel footprints of 0.3–1.5 r_H (unresolved).
+* Inside the gap (b < 3) ξ is linear across it between the two sides (keeps r(a') monotonic; no material).
+
+**Validation** (`npm run test:edges`): looking down on the gaps, the rendered sheet τ per pixel matches the CPU mirror
+(median τ/(τ0(a')J) = 1.000), the gaps hold τ ≤ 0.015 (profile floor) where the old Eulerian lookup put τ ≈ 0.5
+slivers, and the rendered edges follow the model ξ(a'_edge, θ) to 50–80 m RMS (Keeler, 0.13 km footprint) and
+0.16–0.39 km (Encke, 0.39 km footprint); peak outer-Keeler-edge displacement in the first 80 km behind Daphnis
+2.71 km (model 2.76 km at the moonlet's radius on 2026-11-08). Near-field particles appear over displaced material and
+vanish with straight edges.
+
+**Not modelled / caveats.** Other perturbations of these edges: the Keeler outer edge's m = 32 pattern from the
+Prometheus 32:31 resonance (Tajeddine et al. 2017), the Encke gap's non-Pan structure, the ringlets inside the Encke
+gap, Pan's wakes far inside the A ring (b > 30 is tapered off). Particle-particle interactions (self-gravity of the
+perturbed edge) beyond the damping envelope. The near-field particles are lit with the profile at their drawn
+(Eulerian) position until `nearDraw.vert.glsl` samples through `ringSampleLocal` (particle work package), which makes
+displaced edge material too bright (×2.4 at a crest, test:edges near-crest; ×1.1 with the change).
+
 ## References
 
 Afigbo, V. M., et al. 2025, JGR Planets (Kronoseismology VII; arXiv:2502.19265) · Albers, N., et al. 2012,
@@ -250,27 +350,34 @@ Icarus 217, 367 · Altobelli, N., et al. 2014 (via Miller et al. 2024) · Bailli
 Becker, T. M., et al. 2016, Icarus 279, 20 · Bosh, A. S., et al. 2002, Icarus 157, 57 · Ciarniello, M., et al. 2019,
 Icarus 317, 242 · Colwell, J. E., Esposito, L. W., Sremčević, M. 2006, GRL 33, L07201 · Colwell, J. E., et al. 2007,
 Icarus 190, 127 · Colwell, J. E., et al. 2009, in *Saturn from Cassini-Huygens* (Springer), 375 · Colwell, J. E.,
-et al. 2010, AJ 140, 1569 · Cooke, M. L. 1991, PhD thesis, Cornell · Cuzzi, J. N., et al. 2009, in *Saturn from
+et al. 2010, AJ 140, 1569 · Cooke, M. L. 1991, PhD thesis, Cornell · Cuzzi, J. N., Scargle, J. D. 1985, ApJ 292, 276 ·
+Cuzzi, J. N., et al. 2009, in *Saturn from
 Cassini-Huygens*, 459 · Dones, L., Cuzzi, J. N., Showalter, M. R. 1993, Icarus 105, 184 · Doyle, L. R., Dones, L.,
 Cuzzi, J. N. 1989, Icarus 80, 104 · Esposito, L. W., et al. 2022, EGU22-6601 · Filacchione, G., et al. 2014, Icarus
 241, 45 · French, R. G., Nicholson, P. D. 2000, Icarus 145, 502 · French, R. G., Salo, H., McGhee, C. A., Dones, L. 2007,
 Icarus 189, 493 ·
-French, R. G., et al. 2016, Icarus 274, 131 · Harbison, R. A., Nicholson, P. D., Hedman, M. M. 2013, Icarus 226,
+French, R. G., et al. 2016, Icarus 274, 131 · Goldreich, P., Tremaine, S. 1980, ApJ 241, 425 · Harbison, R. A.,
+Nicholson, P. D., Hedman, M. M. 2013, Icarus 226,
 1225 · Hedman, M. M., et al. 2007a, Icarus 188, 89 (D ring) · Hedman, M. M., et al. 2007b, AJ 133, 2624 (A-ring
 wakes) · Hedman, M. M., et al. 2013, Icarus 223, 105 · Hedman, M. M., Nicholson, P. D. 2013, AJ 146, 12 ·
 Hedman, M. M., Nicholson, P. D. 2014, MNRAS 444, 1369 · Hedman, M. M., Nicholson, P. D. 2016, Icarus 279, 109 ·
-Iess, L., et al. 2019, Science 364, eaat2965 · Jerousek, R. G., et al. 2016, Icarus 279, 36 · Jerousek, R. G., et
-al. 2020, Icarus 344, 113565 · Lissauer, J. J. 1985 (via H&N 2016) · Marouf, E. A., Tyler, G. L., Rosen, P. A.
+Hénon, M., Petit, J.-M. 1986, Celest. Mech. 38, 67 · Iess, L., et al. 2019, Science 364, eaat2965 · Jerousek, R. G., et
+al. 2016, Icarus 279, 36 · Jerousek, R. G., et al. 2020, Icarus 344, 113565 · Julian, W. H., Toomre, A. 1966, ApJ 146,
+810 · Lissauer, J. J. 1985 (via H&N 2016) · Marouf, E. A., Tyler, G. L., Rosen, P. A.
 1986, Icarus 68, 120 · Marouf, E. A., et al. 2008 (Cassini RSS particle sizes; via Cuzzi et al. 2009) · Marouf, E.
 2018, Cassini RSS ring occultations 2.0, CO-SR-RSS-4/5-OCC-V2.0, NASA PDS · Miller, K. E., et al. 2024, *The
 composition of Saturn's rings*, Space Sci. Rev. (arXiv:2311.17344) · Morishima, R., et al. 2010 (via Miller et al.
 2024) · Nicholson, P. D., Hedman, M. M. 2010, Icarus 206, 410 · Nicholson, P. D., et al. 2014a, Icarus 227, 152
 (B-ring edge) · Nicholson, P. D., et al. 2014b, Icarus 241, 373 (C ring) · PDS Rings Node, *Vital statistics for
-Saturn's rings* (pds-rings.seti.org/saturn/saturn_rings_table.html) · Tiscareno, M. S., et al. 2007, Icarus 189,
+Saturn's rings* (pds-rings.seti.org/saturn/saturn_rings_table.html) · Porco, C. C., et al. 2007, Science 318, 1602 ·
+Showalter, M. R., Cuzzi, J. N., Marouf, E. A., Esposito, L. W. 1986, Icarus 66, 297 · Tajeddine, R., et al. 2017,
+ApJS 232, 28 · Tiscareno, M. S., et al. 2007, Icarus 189,
 14 · Tiscareno, M. S., et al. 2013, Icarus 224, 201 · Tiscareno, M. S., Harris, B. E. 2018, Icarus 312, 157 ·
-Wisdom, J., Tremaine, S. 1988, AJ 95, 925 · Zebker, H. A., Marouf, E. A., Tyler, G. L. 1985, Icarus 64, 531.
+Weiss, J. W., Porco, C. C., Tiscareno, M. S. 2009, AJ 138, 272 · Wisdom, J., Tremaine, S. 1988, AJ 95, 925 ·
+Zebker, H. A., Marouf, E. A., Tyler, G. L. 1985, Icarus 64, 531.
 
 Data: PDS Ring-Moon Systems Node, volumes CORSS_8001 and COUVIS_8001. Scripts in `scripts/data/rings/`:
 `fetch.mjs` (downloads into `data-raw/rings/`), `build_tau.mjs`, `measure_features.mjs`, `mass_check.mjs`,
-`inside_numbers.mjs`, plus `pds.mjs` for parsing. Diagnostic plots: `sandbox/ringplot.html` (`?view=overview|zoom|sigma`,
+`inside_numbers.mjs`, `moonlet_response.mjs` (§8; reads moons.json, writes `public/data/rings/moonlet_response.*` and
+prints the checks; `--check-only`), plus `pds.mjs` for parsing. Diagnostic plots: `sandbox/ringplot.html` (`?view=overview|zoom|sigma`,
 or `?x0=&x1=`).

@@ -195,6 +195,48 @@ RlS rlSample(float fi0, float fp) {
   return s;
 }
 
+// rlSample at the level-0 index I + sub (I integer-valued, e.g. uRlIdx0I; sub small, e.g. uRlIdx0F + dr / uRingDr0):
+// exact cell and weight at the finest level. I + sub as one float rounds to 0.03 cells (7.8 m) in the outer A ring,
+// which made displaced (sv_ringStructure) edges stair-stepped.
+void rlFetchLevel0P(float I, float sub, float sharpW, out vec4 a, out vec4 b, out vec4 c) {
+  int n = uRingLevelN[0];
+  float fl = floor(sub);
+  float ii = I + fl, f = sub - fl;
+  if (ii < 0.0) { ii = 0.0; f = 0.0; }
+  if (ii >= float(n - 1)) { ii = float(n - 1); f = 0.0; }
+  int i0 = int(ii);
+  int i1 = min(i0 + 1, n - 1);
+  int off = uRingLevelOff[0];
+  ivec2 q0 = ringTexel(off + i0), q1 = ringTexel(off + i1);
+  vec4 a0 = texelFetch(uRlP0, q0, 0), a1 = texelFetch(uRlP0, q1, 0);
+  if (sharpW < 0.5) {
+    float lo = min(a0.y, a1.y), hi = max(a0.y, a1.y);
+    if (hi > 2.5 * lo + 0.02) f = smoothstep(0.5 - sharpW, 0.5 + sharpW, f);
+  }
+  a = mix(a0, a1, f);
+  b = mix(texelFetch(uRlP1, q0, 0), texelFetch(uRlP1, q1, 0), f);
+  c = mix(texelFetch(uRlP2, q0, 0), texelFetch(uRlP2, q1, 0), f);
+}
+RlS rlSampleP(float I, float sub, float fp) {
+  float fi0 = I + sub;
+  float nTot = float(uRingLevelN[0]);
+  if (fi0 < -0.5 || fi0 > nTot - 0.5) return rlEmpty();
+  float lev = clamp(log2(max(fp, uRingDr0) / uRingDr0), 0.0, float(uRingLevels - 1));
+  if (lev >= 1.0) return rlSample(fi0, fp);
+  float sharpW = lev < 0.001 ? clamp(0.5 * max(fp, 15.0) / uRingDr0, 0.02, 0.5) : 1.0;
+  vec4 a, b, c;
+  rlFetchLevel0P(I, sub, sharpW, a, b, c);
+  if (lev > 0.001 && uRingLevels > 1) {
+    vec4 a1, b1, c1;
+    rlFetchLevel(fi0, 1, 1.0, a1, b1, c1);
+    a = mix(a, a1, lev); b = mix(b, b1, lev); c = mix(c, c1, lev);
+  }
+  RlS s;
+  s.t0 = a; s.t4 = b.x; s.H = b.y; s.wake = b.z; s.D = b.w; s.alb = c.rgb; s.dust = c.a;
+  s.cover = clamp(uRlCoarse / max(fp, 1.0), 0.0, 1.0);
+  return s;
+}
+
 void rlScaleTau(inout RlS s, float f) { s.t0 *= f; s.t4 *= f; }
 
 // ---------------------------------------------------------------- sub-km radial structure

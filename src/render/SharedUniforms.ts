@@ -6,11 +6,12 @@ import type { FrameState } from '../core/FrameState';
 import type { RingProfile } from '../rings/RingProfile';
 import type { RingLod } from '../rings/RingLod';
 import type { WakeField } from '../rings/WakeField';
+import type { RingStructure } from '../rings/RingStructure';
 
 export class SharedUniforms {
   readonly u: Record<string, { value: any }>;
 
-  constructor(profile: RingProfile, lod: RingLod, wakes: WakeField) {
+  constructor(profile: RingProfile, lod: RingLod, wakes: WakeField, structure: RingStructure) {
     const pv = profile.uniformValues();
     const moonPos: Vector4[] = [];
     for (let i = 0; i < MAX_MOONS; i++) moonPos.push(new Vector4(1e12, 0, 0, 1));
@@ -52,6 +53,8 @@ export class SharedUniforms {
       uRingKappa: { value: 1e-4 },
       uRingNu: { value: 1e-4 },
       uRingQ: { value: 1.5 },
+      // sv_ringStructure (shared objects owned by RingStructure, updated in Pipeline.render)
+      ...structure.uniforms,
       // sv_lighting
       uMoonCount: { value: 0 },
       uMoonPosR: { value: moonPos },

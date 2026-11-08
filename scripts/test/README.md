@@ -7,13 +7,14 @@ follow [Adding a tool](#adding-a-tool) so the next session can run it too.
 
 | command | what it checks | runtime* |
 |---|---|---|
-| `npm test` | smoke + physics + counts + seam + exposure against one private dev server; summary table | ~5.5 min |
+| `npm test` | smoke + physics + counts + seam + exposure + edges against one private dev server; summary table | ~6 min |
 | `npm run test:smoke` | every place loads and renders cleanly (errors, fallbacks, NaN / negative pixels) | ~1.5 min |
 | `npm run test:physics` | Sun ephemeris, orbital frequencies, near-field particle kinematics | ~15 s |
 | `npm run test:counts` | drawn particle counts vs the analytic expectation, HUD count line, radius sampler | ~30 s |
 | `npm run test:seam` | near field + medium vs medium alone (seams/arcs), particle flux vs render scale | ~2.2 min |
 | `npm run test:fps` | uncapped fps table: places × particle quality (informational) | ~2.5 min |
 | `npm run test:exposure` | the camera-pinned astronaut doesn't change the auto exposure (meter mask) | ~45 s |
+| `npm run test:edges` | moonlet-perturbed gap edges (streamline map): gaps empty, rendered edges = model, near field follows | ~45 s |
 | `node scripts/shot.mjs …` / `node scripts/shots.mjs …` | screenshots (one / batch spec) | — |
 | `node scripts/img.mjs profile\|mean\|crop …` | PNG brightness profiles, region ratios, contrast-stretched zooms | — |
 
@@ -134,6 +135,29 @@ pages, paused, `t=` fixed, 1920×1080) and post.EV compared. Checks: |EV on − 
 half-stop histogram is interpolated, so residuals are ≲ 0.1), mask live only while shown, no errors. Measured
 2026-11-07: 0.00 EV at overview, a-ring-30m, enceladus, cloud-tops (default set) and at a-ring-inside,
 b-ring-inside, a-ring-1km, shadow, rings-above; 0.10 at under-rings. ~45 s.
+
+### edges — `scripts/test/edges.mjs` (`--views keeler-0,keeler-out,keeler-in,encke-out,encke-in,near-crest`, `--t ISO`)
+
+The Encke / Keeler gap edges perturbed by Pan / Daphnis through the shared streamline map (`sv_ringStructure`,
+docs/ring-physics.md §8), at `t` = 2026-11-08T12:00Z. Five views look straight down on the gaps (`cam=ring`, sheet
+regime, `scale=1`, near field and wakes off, sub-km fine noise off): centred on Daphnis (both edges, encounter
+region), one wavelength downstream on either side, and Pan's outer / inner edge 375 km downstream. The ring-layer
+debug views 7 and 9 give (r, τ, θ) per pixel, compared with the CPU mirror (`__sv.pipeline.ctx.structure`):
+
+| check | tolerance | measured (2026-11-08) |
+|---|---|---|
+| τ inside the gap, a' > 1.5 km from the unperturbed edges | ≤ 0.05, and ≤ 0.01 above the profile's own τ0(a') J there (gap floor ≤ 0.015, dusty Encke-gap ringlets ≤ 0.025; the old Eulerian lookup: ~0.5 slivers) | max 0.008–0.025, excess ≤ 0.0085 |
+| median τ_rendered / (τ0(a') J) in the ring (> 1.5 km from the edges) | 0.95 … 1.05 | 0.9999–1.004 |
+| edge RMS(rendered − model ξ(a'_edge, θ)) per azimuth bin | ≤ max(0.25 km, 1.5 footprints) | Keeler 0.05–0.08 km (fp 0.13), Encke 0.16 / 0.39 km (fp 0.39) |
+| edge max \|rendered − model\| | ≤ 0.75 km + 2 footprints | Keeler ≤ 0.17 km, Encke ≤ 0.45 km |
+| displacement range rendered / model (where the model range ≥ 1 km) | 0.85 … 1.15 | 0.93–1.01 |
+| peak outer Keeler edge displacement, first ~80 km behind Daphnis | 2.5 … 4.0 km (Hill response at b = 3.5: 3.2–3.5 km circular moonlet) | 2.71 km (model 2.76) |
+| NaN / negative pixels (normal render), console / GL errors, passes ok | none | none |
+| near-crest: particles ≥ 1 px over material displaced 2.8 km into the unperturbed gap, 30 m above | ≥ 1000 | 53.5k |
+| near-crest: the same with straight edges (`edgeWaveScale` 0, camera then over the gap) / with the map | ≤ 0.05 | 0 |
+| near-crest: lower-half radiance near field + medium / medium alone | 0.8 … 1.25 — checked once `nearDraw.vert.glsl` lights particles through `ringSampleLocal` (informational before) | 2.44 now; 1.11 with that one-line change |
+
+Screenshots `<view>.png`, `near-crest.png`, `near-crest-straight-edges.png`; per-view numbers in `results.json`. ~45 s.
 
 ## Tools
 
