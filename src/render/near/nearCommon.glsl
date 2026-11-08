@@ -168,7 +168,7 @@ vec4 nearReliefParams(uint idx, uint seed, float a) {
   return vec4(so, smoothstep(NR_WC0, NR_WC1, a) * (0.55 + 0.45 * nearU(idx, seed, NS_REL)));
 }
 // h and its (ambient) gradient dh/du at the unit direction u. layers: 2 = coarse (irregularity + clasts),
-// 4 = every geometric layer, 5 = + the shading-only detail layer.
+// 3 = + regolith lumps, 4 = every geometric layer (+ small clasts), 5 = + the shading-only detail layer.
 vec4 nearRelief(vec3 u, vec4 rp, int layers) {
   vec4 n1 = nearNoiseT(u * NR_FN1 + rp.xyz);
   vec4 h = NR_AN1 * vec4(n1.x, n1.yzw * NR_FN1);
@@ -190,7 +190,7 @@ vec4 nearRelief(vec3 u, vec4 rp, int layers) {
   }
   return h;
 }
-// h alone (value-only textures), geometric layers 2 or 4 as nearRelief: the ray march and the outline profiles
+// h alone (value-only textures), geometric layers 2..4 as nearRelief: the ray march and the outline profiles
 float nearReliefH(vec3 u, vec4 rp, int layers) {
   float h = NR_AN1 * nearNoiseV(u * NR_FN1 + rp.xyz);
   if (rp.w > 0.0) h += (rp.w * NR_AC1) * nearClastV(u * NR_FC1 + rp.yzx * 0.5);

@@ -12,13 +12,15 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
 ## Commands
 - `npm run dev` → http://127.0.0.1:5173 (often already running; check with `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5173/`)
 - `npm run typecheck` (tsc --noEmit) and `npm run build` (typecheck + vite build) — keep both clean
-- **Regression suite** (real GPU, starts its own private Vite server unless `--base` answers; ~5.5 min):
+- **Regression suite** (real GPU, starts its own private Vite server unless `--base` answers; ~6 min):
   `npm test` = `test:smoke` (every preset: console/page/GL errors, pass fallbacks, NaN/negative pixels) +
   `test:physics` (ephemeris, J2–J6 frequencies, particle kinematics vs the exact Hill solution) +
   `test:counts` (drawn particles vs the analytic expectation, HUD "complete") + `test:seam` (near field +
   medium vs medium alone, incl. the old arc repro) + `test:exposure` (the astronaut doesn't change the auto
-  exposure). `npm run test:fps` = informational fps table per preset × quality. Details, tolerances, measured
-  values and the shared helpers: `scripts/test/README.md`.
+  exposure) + `test:particles` (resolved-particle regolith law / factor LUT / relief: GLSL vs CPU mirrors,
+  projected-area and photometry contracts; prints new constants when the relief changes). `npm run test:fps` =
+  informational fps table per preset × quality. Details, tolerances, measured values and the shared helpers:
+  `scripts/test/README.md`.
 - Screenshots on the real GPU (headless Chrome, ANGLE/Metal); console errors and page errors are printed:
   - one page: `node scripts/shot.mjs "<url>" <out.png> --until "window.__svReady===true" --wait 3000 [--w --h --dpr --eval "<js>"]`
   - batch: `node scripts/shots.mjs <spec.json> <outDir> [--w --h] [--uncapped] [--base URL] [--keep-storage]`
@@ -69,6 +71,7 @@ mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,ove
 | ring optical depth, zones (sizes q/aMin/aMax, thickness H, Σ, albedo, wakes, dust), features | `src/rings/ringRegions.ts`, `src/rings/RingProfile.ts`; data `public/data/rings/` |
 | LOD contract (which particles are drawn vs. carried by the medium), self-gravity wakes | `src/rings/RingLod.ts` + `shaders/ringLod.glsl`, `src/rings/WakeField.ts` + `shaders/wakes.glsl` (CPU/GLSL mirrors) |
 | individual ring particles (near field) | `src/render/passes/NearFieldPass.ts`, `src/render/near/*` |
+| particle shape, spin, relief, regolith photometry (+ CPU mirrors) | `src/render/near/nearCommon.glsl` (`nearShape`, `nearOrientation`, `nearRelief`, `nearRegolithFactor`), `nearDraw.frag.glsl`, `NearRegolith.ts`, `NearRelief.ts`, `NearNoise.ts`; `ringRegolithIF` in `src/render/shaders/lighting.glsl` |
 | astronaut companion (camera-pinned, 1.9 m, for scale; lit like the particles) | `src/render/passes/AstronautPass.ts`, `src/render/astronaut/*` |
 | ring medium at all scales, outer rings, spokes | `src/render/passes/RingLayerPass.ts`, `src/render/rings/*` |
 | Saturn, moons, stars, Sun | `src/render/passes/FarFieldPass.ts`, `src/render/far/*` |
@@ -99,7 +102,10 @@ mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,ove
 - **One contract, two renderers**: the near field (particles) and the ring layer (medium) must share the LOD
   functions (`ringLod.glsl`) and the particle phase function (`ringParticlePhase` power law in
   `lighting.glsl`); the CPU mirrors (`RingLod.ts`, `WakeField.ts`, `render/rings/phase.ts`, `far/Ringshine.ts`)
-  must stay in sync with the GLSL.
+  must stay in sync with the GLSL. Resolved particles keep it through the regolith law × the per-particle factor
+  (`near/NearRegolith.ts` mirrors `ringRegolithIF` and builds the LUT); their shapes keep ⟨projected area⟩ = πa²
+  (κ, `NR_K0..3`) and the relief photometry table `RELIEF_PHOT` (`near/NearRelief.ts`) — after changing the relief
+  or the shading, run `npm run test:particles` and paste the constants it prints.
 - Changing a default in `src/app/settings.ts` / `FrameState.defaultSettings()` needs a bump of the localStorage
   key in `settings.ts`, or users keep their old saved values.
 

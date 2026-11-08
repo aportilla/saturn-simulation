@@ -16,19 +16,22 @@
 //      view-frustum and statistical occlusion culling)
 //   2. HistoPyramid compaction of R0 into lists (point sprites / large quads / shadow casters)
 //   3. sun shadow map of all present particles >= ~8 cm in a tube along the sun direction around the camera
-//      (NearShadow.ts): per texel the most sunward caster's exact projected outline, tested analytically by
-//      the lookups (resolution-independent edges, physical penumbra); the statistical layer transmission keeps
-//      only the part the map cannot resolve
+//      (NearShadow.ts): per texel the most sunward caster's exact projected outline (x its relief profile at high
+//      quality, second attachment), tested analytically by the lookups (resolution-independent edges, physical
+//      penumbra); the statistical layer transmission keeps only the part the map cannot resolve
 //   4. one point-sprite draw + one quad draw for all classes: each vertex fetches its particle through the
-//      pyramid and ray-traces a spinning lumpy triaxial ellipsoid, writing radiance, distance and exact
-//      depth into ctx.sceneRT. Photometry matches the ring-layer medium (power-law particle phase function,
-//      two-stream multiple scattering with the same back-scatter fractions, wake-aware sun paths, shadow
-//      hiding), so the particles fade into the medium without a brightness seam.
+//      pyramid and ray-traces a triaxial ellipsoid in principal-axis rotation (high quality: its relief-
+//      displaced surface, ray-marched above ~12 render px, nearCommon.glsl nearRelief), writing radiance,
+//      distance and exact depth into ctx.sceneRT. Photometry matches the ring-layer medium (regolith surface
+//      law x the per-particle factor that gives the power-law particle phase function, NearRegolith.ts; two-
+//      stream multiple scattering with the same back-scatter fractions, wake-aware sun paths, shadow hiding),
+//      so the particles fade into the medium without a brightness seam.
 // Orbital phases kappa(t-tRef), nu(t-tRef), spin phases, the shear copy offsets etc. are computed in JS
 // double precision and reduced before being passed to the GPU, so nothing degrades over long sim times.
 // Debug views (settings.debugView): 11 shadow terms, 12 sun factor, 13 Saturnshine, 14 diffuse ring light,
 // 15 wake density at the particles, 17 map-vs-statistics, 18 caster map, 19-22 shadow lookup tests,
-// 31 no surface noise. `skip` disables sub-passes for profiling.
+// 31 no relief normals, 32 the former Lambert law, 33 ray-marched relief (red = amplitude), 34 relief
+// self-shadowing. `skip` disables sub-passes for profiling.
 import {
   BufferGeometry, DoubleSide, FloatType, GLSL3, InstancedBufferGeometry, LessEqualDepth, Mesh, NearestFilter, NoBlending,
   Points, RawShaderMaterial, RedFormat, RGBAFormat, Vector2, Vector3, Vector4, WebGLRenderTarget, type IUniform,

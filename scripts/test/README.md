@@ -176,7 +176,9 @@ code.
   the 1 km wake view with and without the near field, Daphnis in the Keeler gap with and without edge waves
   (`edgeWaveScale` 0), Daphnis and Pan close-ups, the Keeler gap and the B-ring edge at the 2009 equinox. The
   orbit-camera `az` values put the Sun ~30–40° to the side on those dates (Sun azimuth 61° on 2026-11-08,
-  −136° in Aug 2009).
+  −136° in Aug 2009). `scripts/test/specs/particle-look.json`: before/after views of the resolved particles at render
+  scale 1 — A/B ring inside (fov 35 and 12), 30 m above the A ring, each with the astronaut for scale, the relief
+  debug view (33: red = ray-marched) and the former Lambert law (32) in the same frame, and medium / low quality.
 - `scripts/img.mjs profile <x0> <x1> <y0> <y1> <step> a.png b.png …` — vertical brightness + texture profile of
   a column strip in several screenshots side by side (find seams); `mean a.png b.png "x0,y0,x1,y1" …` — region
   means and ratio; `crop out.png x0 y0 w h scale gain a.png b.png …` — stacked, upscaled, contrast-stretched

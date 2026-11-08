@@ -1,0 +1,20 @@
+{
+  "until": "window.__svReady===true",
+  "shots": [
+    { "name": "a-inside-fov35", "url": "?preset=a-ring-inside&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1&fov=35", "wait": 4000 },
+    { "name": "b-inside-fov35", "url": "?preset=b-ring-inside&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1&fov=35", "wait": 4000 },
+    { "name": "a-ring-inside", "url": "?preset=a-ring-inside&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1", "wait": 4000 },
+    { "name": "a-ring-30m", "url": "?preset=a-ring-30m&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1", "wait": 4000 },
+    { "name": "b-ring-inside", "url": "?preset=b-ring-inside&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1", "wait": 4000 },
+    { "name": "a-ring-inside-astro", "url": "?preset=a-ring-inside&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=1&scale=1", "wait": 4000 },
+    { "name": "a-ring-30m-astro", "url": "?preset=a-ring-30m&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=1&scale=1", "wait": 4000 },
+    { "name": "b-ring-inside-astro", "url": "?preset=b-ring-inside&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=1&scale=1", "wait": 4000 },
+    { "name": "a-inside-fov12", "url": "?preset=a-ring-inside&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1&fov=12", "wait": 4000 },
+    { "name": "a-ring-inside-dbg33-relief", "url": "?preset=a-ring-inside&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1&debug=33", "wait": 3000 },
+    { "name": "a-ring-inside-dbg32-lambert", "url": "?preset=a-ring-inside&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1&debug=32", "wait": 4000 },
+    { "name": "a-ring-inside-medium", "url": "?preset=a-ring-inside&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1&quality=medium", "wait": 4000 },
+    { "name": "a-ring-inside-low", "url": "?preset=a-ring-inside&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1&quality=low", "wait": 4000 },
+    { "name": "a-ring-30m-medium", "url": "?preset=a-ring-30m&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1&quality=medium", "wait": 4000 },
+    { "name": "a-ring-30m-low", "url": "?preset=a-ring-30m&t=2026-11-08T12:00:00Z&hud=0&labels=0&paused=1&astronaut=0&scale=1&quality=low", "wait": 4000 }
+  ]
+}
