@@ -14,7 +14,7 @@
 //   1. per active class: (re-base / init the state rows when needed), update pass -> R0 rows: camera-relative
 //      position + radius + "drawn" flag (LOD draw probability with a stable per-particle threshold,
 //      view-frustum and statistical occlusion culling)
-//  1b. contact resolution (NearContact.ts): the particles resolved on screen (4 -> 6 render px radius, not
+//  1b. contact resolution (NearContact.ts): the particles resolved on screen (5 -> 6 render px radius, not
 //      statistically occluded, near the view) are pushed apart where their analytic positions overlap (hash grid per
 //      size class, mass-weighted Jacobi iterations, displacements bounded by the overlaps), written back into R0
 //      before anything reads it; presence unchanged, drawn flags only set for particles moved into view

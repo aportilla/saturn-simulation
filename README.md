@@ -215,11 +215,12 @@ every DOI and arXiv id against the registries.
   ring (measured on a shared GPU; docs/ring-physics.md §12), most of it in the particles' presence test.
 * Particle shapes and surface detail are procedural; light reflected from one part of the rings onto another is
   not modelled.
-* Particle contacts are resolved geometrically, per frame, among the particles that are resolved on screen (≥ 4–6
-  pixels in radius): there are no collisions in the dynamics (no bouncing, sticking or aggregate growth). Jammed
-  clusters keep some overlaps — about 5 % of the visible ones in the A ring, 10 % in the B-ring mid-layer, 20 % in
-  the densest outer A ring (τ ≈ 0.9 with metre-sized boulders) — and a small particle lying entirely inside a larger
-  one is left there (it is hidden).
+* Particle contacts are resolved geometrically, per frame, among the particles that are resolved on screen (≥ 5–6
+  pixels in radius): there are no collisions in the dynamics (no bouncing, sticking or aggregate growth). Each particle
+  follows its own orbit, so where the packing ceiling binds — the B-ring mid-plane is as densely filled as randomly
+  packed spheres can be — the positions are a jammed random sample that a local, smooth correction cannot fully
+  untangle: about 15–20 % of the visible overlaps stay there (1–8 % in the A ring), and in the B ring some particles
+  visibly shift as clusters re-pack. A small particle lying entirely inside a larger one is left there (it is hidden).
 * Daphnis's orbit is extrapolated (Horizons coverage ends in 2018); Hyperion's actual present-day orientation is
   unknowable (chaotic rotation).
 * Only the seven small inner moons have measured shapes, and only at the models' ~2° resolution (finer relief is

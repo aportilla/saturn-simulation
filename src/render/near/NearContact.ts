@@ -8,17 +8,18 @@
 // the shadow-map casters, the astronaut's received shadows through ctx.nearShadow) sees the same positions.
 //
 // WHO (the contact set): present particles (R0 w != 0, drawn or not) with weight
-//   w_i = smoothstep(rhoLo, rhoHi, a / (s * renderPixelAngle))        resolved: 4 -> 6 render px radius
+//   w_i = smoothstep(rhoLo, rhoHi, a / (s * renderPixelAngle))        resolved: 5 -> 6 render px radius
 //       x (1 - smoothstep(tauVisLo, tauVisHi, tau_los))                 not statistically occluded: tau 4 -> 5
-//       x (1 - smoothstep(e1 - F, e1, out))                             near the view frustum
+//       x (1 - smoothstep(e1 - F, e1, out))                             near the view frustum (R0's coverage)
 //       x smoothstep(1, 1.15, d / rho_cam)                              the camera outside the body
-// An overlap is at most the smaller particle's diameter deep and typically ~0.3 of its radius, i.e. about one pixel
-// of silhouette at 3-4 px radius: below that it is invisible, so pairs are corrected with min(w_i, w_j); the fades
-// make every correction continuous in time (3 -> 6 px listed 70 % more B-ring particles - the search's cost - for the
-// same residual). tau_los: slab-model optical depth from the camera to the particle's near side (heights above the
-// camera's local mid-plane) with a conservative path tau (min(tau at the camera x its streamline density, the lowest
-// profile tau within the contact range) x wakeMinDensity() x 0.8, as the update pass's cull; the density floor is read
-// from the WakeField's uWakeBounds.x, the uniform wakeMinDensity() returns) - direction-independent; at tau 4-5 only
+// An overlap is at most the smaller particle's diameter deep and typically ~0.3 of its radius, i.e. 1-1.5 px of
+// silhouette at 3-5 px radius: at most marginally visible, so pairs are corrected with min(w_i, w_j); the fades make
+// every correction continuous in time (a wider fade-in listed 50-70 % more B-ring particles - the search's cost - for
+// the same residual, and at the packing limit more jumps in jammed clusters). tau_los: slab-model optical depth from the
+// camera to the particle's near side (heights above the camera's local mid-plane) with a conservative path tau (min(tau
+// at the camera x its streamline density, the lowest tau_dyn - the particle population's optical depth, lodTauDyn -
+// within the contact range) x wakeMinDensity() x 0.8, as the update pass's cull; the density floor is read from the
+// WakeField's uWakeBounds.x, the uniform wakeMinDensity() returns) - direction-independent; at tau 4-5 only
 // e^-tau = 2-0.7 % of a particle is seen. out: the centre's distance outside the view frustum; e1 = rb + min(M a + F, mw): the frustum
 // dilated by M = 4 x the largest semi-axis / a (two of the particle's own contact distances: a smaller particle
 // yields to a larger one, so only particles about that close can push a visible one), fading out over F = half
@@ -60,11 +61,11 @@
 //         buckets never count twice) and keeps the CT_NB = 8 candidates with the smallest normalized surface gap
 //         g = (d - rho_i - rho_j) / (2 min(rho_i, rho_j)) below gapMargin = 0.5 (overlaps first; the margin admits
 //         pairs the iterations can close), with their gaps at the round's start;
-//      c. ITERATIONS / ROUNDS Jacobi iterations (24 in all) over the neighbour lists: per overlapping pair
+//      c. ITERATIONS / ROUNDS Jacobi iterations (48 in all) over the neighbour lists: per overlapping pair
 //         (penetration delta = rho_i + rho_j - d > 0) the correction c = e x share x delta along n, with
 //         e = min(w_i, w_j) x (1 - embedding fade) x listing weight; share = m_j / (m_i + m_j) (m ~ a^3) within a size
 //         class, 1 for the smaller particle of a pair from different classes (small particles yield to boulders; the
-//         larger one never lists the pair); x += omega sum c n / max(1, soft count), omega = 0.7 (pairs with
+//         larger one never lists the pair); x += omega sum c n / max(1, soft count), omega = 0.6 (pairs with
 //         delta < 0.1 rho_min count delta / (0.1 rho_min): continuous). Embedding fade: a smaller particle lying
 //         entirely inside a larger one (delta / rho_min 2 -> 2.5) is hidden and left alone - ejecting it would move
 //         it by up to the larger radius into a cascade of new contacts that changes chaotically with the analytic
@@ -154,26 +155,31 @@ uniform int uClsSeed[LOD_CLASSES];
 uniform vec4 uCtSel;   // (resolved: render-px radius fade-in lo, hi; occluded: line-of-sight tau fade-out lo, hi)
 uniform vec4 uCtVis;   // (conservative path tau (0: no occlusion test), layer thickness H (m), frustum dilation M and
                        //  its fade width F in units of the particle radius)
-uniform float uCtMw;   // the update pass's out-of-view margin mw (m): R0 holds a particle within rb + mw of the view
+uniform float uCtMw;   // the update pass's wake margin mw (m): R0 holds a participating particle within rb + mw of the view
 int nearClassOfRow(int row) {
   for (int k = 0; k < LOD_CLASSES; k++) {
     if (row >= uClsRow0[k] && row < uClsRow0[k] + uClsRows[k]) return k;
   }
   return -1;
 }
-// weight of a present particle of radius a at camera-relative p in the contact set (0: not in it)
-float nearContactWeight(vec3 p, float a) {
+// weight of a present particle (class k, slot idx) of radius a at camera-relative p in the contact set (0: not in it)
+float nearContactWeight(vec3 p, float a, int k, uint idx) {
   float s = max(length(p), 1e-4);
   float w = smoothstep(uCtSel.x, uCtSel.y, a / (s * uPixelAngle));
   if (w <= 0.0) return 0.0;
   // near the view frustum: dilated by M a (a particle can only push a visible one from within about two of its own
-  // contact distances: a smaller particle yields to a larger one), fading out over F a, within R0's coverage
+  // contact distances: a smaller particle yields to a larger one), fading out over F a, within R0's coverage. The
+  // update pass keeps an out-of-view particle within rb of the view, + the wake margin mw if it follows the wakes
+  // (participation p_k: the same hash) - so a particle that does not ends at the frustum edge itself, fading out
+  // across it (it enters R0 there: continuous when the camera turns)
   float rb = nearMaxExtent() * a;
   vec3 v = uWorldToCam * p;
   float tx = uTanHalfFov * uAspect, ty = uTanHalfFov;
   float outD = max(max((abs(v.x) + v.z * tx) * inversesqrt(1.0 + tx * tx), (abs(v.y) + v.z * ty) * inversesqrt(1.0 + ty * ty)), v.z);
-  float F = uCtVis.w * a;
-  float e1 = rb + min(uCtVis.z * a + F, uCtMw);
+  bool part = uWakeOn > 0.5 && nearU(idx, uint(uClsSeed[k]), NS_PART) < lodClassP(k);
+  float mw = part ? uCtMw : 0.0;
+  float F = mw > 0.0 ? uCtVis.w * a : rb;
+  float e1 = rb + min(uCtVis.z * a + F, mw);
   w *= 1.0 - smoothstep(e1 - min(F, e1), e1, outD);
   if (w <= 0.0 || uCtVis.x <= 0.0) return w;
   // statistical occlusion from the camera (slab model, conservative tau: as the update pass's cull)
@@ -187,8 +193,10 @@ float nearContactWeight(vec3 p, float a) {
 vec4 nearClassify(ivec2 tc) {
   if (tc.x >= uTexW || tc.y >= uTexRows) return vec4(0.0);
   vec4 r0 = texelFetch(tR0, tc, 0);
-  if (r0.w == 0.0 || nearClassOfRow(tc.y) < 0) return vec4(0.0);
-  return vec4(nearContactWeight(r0.xyz, abs(r0.w)) > 0.0 ? 1.0 : 0.0, 0.0, 0.0, 0.0);
+  int k = nearClassOfRow(tc.y);
+  if (r0.w == 0.0 || k < 0) return vec4(0.0);
+  uint idx = uint((tc.y - uClsRow0[k]) * uTexW + tc.x);
+  return vec4(nearContactWeight(r0.xyz, abs(r0.w), k, idx) > 0.0 ? 1.0 : 0.0, 0.0, 0.0, 0.0);
 }
 `;
 
@@ -230,7 +238,7 @@ void main() {
   vec3 nc = dc > 0.0 ? r0.xyz / dc : vec3(0.0, 0.0, 1.0);
   float wc = smoothstep(1.0, 1.15, dc * sqrt(dot(nc, M * nc)) / a);
   oP = vec4(r0.xyz, float(tc.y * uTexW + tc.x));
-  oM = vec4(r0.w, nearContactWeight(r0.xyz, a) * wc, M[0][0], M[1][1]);
+  oM = vec4(r0.w, nearContactWeight(r0.xyz, a, k, idx) * wc, M[0][0], M[1][1]);
   oS = vec4(M[2][2], M[0][1], M[0][2], M[1][2]);
 }`;
 
@@ -539,9 +547,11 @@ export class NearContact {
   /** neighbour-search rounds (each: hash grid + search) and Jacobi iterations in all (iterations are cheap next to a
    *  search: 24 damped ones instead of 12 undamped resolve a quarter more of the jammed clusters' overlaps, measured) */
   rounds = 3;
-  iterations = 24;
-  /** relaxation factor of the averaged pair corrections (damped: over-relaxation amplifies the sensitivity to the input) */
-  omega = 0.7;
+  iterations = 48;
+  /** relaxation factor of the averaged pair corrections (damped: over-relaxation amplifies the sensitivity to the input;
+   *  at the B ring's packing limit 48 x 0.6 resolves a third more of the visible overlaps than 24 x 0.7 with fewer jumps
+   *  per frame, measured: scripts/test/README.md, contact) */
+  omega = 0.6;
   /** displacement bound: |x - x_analytic| <= clampK x the largest pair correction the particle has needed */
   clampK = 4;
   /** neighbour candidates: surface gap below gapMargin x the smaller particle's diameter (fading in from half of it) */
@@ -552,9 +562,10 @@ export class NearContact {
   yieldBound = 0.5;
   /** target mean fill of a grid cell at the densest mid-plane (sparse classes get cells larger than their diameter) */
   cellFill = 0.5;
-  /** contact set: render-px radius fade-in (lo, hi) and line-of-sight tau fade-out (lo, hi). (3 -> 6 px listed 70 %
-   *  more particles in the B ring - most of the search cost - for overlaps of ~1 px: the same residual, measured) */
-  rhoLo = 4;
+  /** contact set: render-px radius fade-in (lo, hi) and line-of-sight tau fade-out (lo, hi). (Below 5 px an overlap,
+   *  ~0.3 of the smaller radius, is <= 1.5 px; 4 -> 6 px listed 50 % more B-ring particles at the packing limit - the
+   *  search's cost - for the same residual and more jumps in jammed clusters, 3 -> 6 px 70 % more before; measured) */
+  rhoLo = 5;
   rhoHi = 6;
   tauVisLo = 4;
   tauVisHi = 5;
@@ -606,7 +617,7 @@ export class NearContact {
   private frameNo = 0;
   private readonly zero4 = new Uint32Array(4);
   // shared uniform objects
-  private readonly selU = { value: [4, 6, 4, 5] };
+  private readonly selU = { value: [5, 6, 4, 5] };
   private readonly visU = { value: [0, 10, 10, 10] };
   private readonly mwU = { value: 0 };
   private readonly invCellU = { value: new Float32Array(LOD_CLASSES) };
@@ -637,7 +648,7 @@ export class NearContact {
     });
     this.itMat = fsMat(MIN_HEADER + GRID_GLSL + ITERATE_FRAG, {
       ...grid, ...list(), tCP0: { value: null }, tCN0: { value: null }, tCN1: { value: null }, tCG0: { value: null }, tCG1: { value: null },
-      uCtIt: { value: [0.7, 4, 0.5, 1] }, uCtEmb: { value: [2, 2.5, 0.5] },
+      uCtIt: { value: [0.6, 4, 0.5, 1] }, uCtEmb: { value: [2, 2.5, 0.5] },
     });
     // stencil routing: test == 15, every fragment increments (the written texel leaves 15, the next one reaches it)
     this.gridMat = new RawShaderMaterial({
@@ -773,7 +784,8 @@ export class NearContact {
       let tmin = fr.tauCam;
       for (let x = -hw; x <= hw + 1e-9; x += 0.25) {
         const l = fr.profile.local((rKm + x) * 1000);
-        tmin = Math.min(tmin, l.tau * (1 - l.dust));
+        // the particle population's optical depth tau_dyn (lodTauDyn), as the update pass's cull
+        tmin = Math.min(tmin, l.tau * lod.tauDynFactor(l.tau) * (1 - l.dust));
       }
       tauPath = Number.isFinite(tmin) ? tmin * wMin * 0.8 : 0;
     }
