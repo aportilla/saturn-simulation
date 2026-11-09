@@ -198,7 +198,11 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   ∂/∂a', ∂/∂S) = `rsReliefWaves` (bending waves, the C-ring corrugation) + `rsReliefSites` (B-ring-edge region A,
   S/2009 S1) (both chunk `sv_ringRelief`, included before `sv_ringStructure`) + `rsReliefPropellers(aL, dth, fp)` (the
   sunlit half of the propellers' stirred-region thickening, prefiltered to fp; `#define RS_PROPELLER_RELIEF`, CPU
-  `PROPELLER_RELIEF` in RingStructure.ts; `gRsPropRelief = false` leaves it out of one lookup). It is in the relief
+  `PROPELLER_RELIEF` in RingStructure.ts; `gRsPropRelief = false` leaves it out of one lookup). **Currently OFF**
+  (both switches): with the packed-layer photometry of the N-body size rules, the sheet and the march disagree by up
+  to 15 % in a view across a propeller belt (`test:seam` base / handover `a-1km-yaw120`), it costs +13–17 ms at
+  `a-ring-1km`, and it changes the Cassini propeller comparisons by only 0.1–0.5 %; `test:relief` skips its propeller
+  checks while it is off (`structure.propellerRelief`). Everything below holds when it is switched on. It is in the relief
   bounds (`ringReliefBound(dr, fp, proc)` / `rpReliefBound`; CPU: `uRpTF.w` = `PropellerSystem.nearReliefBound` near
   the camera, added to `reliefBoundCam` / `uRrCamN`), the relief shadows (`ringReliefSunVis` → `rpReliefSunVis`:
   opaque prefiltered ridges, the giants with a reach extended by their shadow length) and the near field's heights;

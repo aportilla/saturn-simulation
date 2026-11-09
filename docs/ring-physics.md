@@ -1266,7 +1266,10 @@ S shape):
   unlit-face dark wings (PIA12790 / PIA12791).
 * **Footprint prefilter**: the Gaussian lobes are convolved with the footprint (mean preserved), the wakes faded
   like the gap-edge waves; what is smoothed away is returned as sub-footprint variance (sheet: §11's prefilter).
-* **Vertical relief** (`rsReliefPropellers`, part of z0, §13): the moonlet's gravity pulls the stirred material out
+* **Vertical relief** (`rsReliefPropellers`, part of z0 when `RS_PROPELLER_RELIEF` / `PROPELLER_RELIEF` are on, §13 —
+  currently OFF: with the packed-layer photometry of §10.12 the sheet and the march disagree by up to 15 % across a
+  propeller belt (test:seam base / handover `a-1km-yaw120`), it costs +13–17 ms at `a-ring-1km`, and it changes the
+  Cassini comparisons below by only 0.1–0.5 %; the model is kept for when both are fixed): the moonlet's gravity pulls the stirred material out
   of the ring plane. Tiscareno et al. 2010 measured it from equinox shadows "cast by the propeller structures as a
   whole, and not directly by the central moonlets" (Table S3): Blériot 0.47 / 0.49 ± 0.17 km (2009-05-10), 0.424 ±
   0.057 and 0.353 ± 0.092 km (2009-07-13 and -15), adopted 0.43 ± 0.03 km; Santos-Dumont 0.136 / 0.113, Earhart

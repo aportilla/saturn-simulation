@@ -125,9 +125,11 @@ await withHarness('relief', { usage: 'node scripts/test/relief.mjs [--base URL] 
         const probe = await openApp(browser, base, { ...common, t: v.t, preset: 'overview' }, { settle: 300 });
         const g = await probe.page.evaluate((n) => {
           const sv = window.__sv, st = sv.pipeline.ctx.structure, m = st.propellers.giant(n);
-          return { r: m.a, phi: m.theta, Z: m.Z, zc: st.midPlaneAtSEF(m.a, m.theta), sun: Math.sign(sv.frame.sunDir.z) };
+          return { r: m.a, phi: m.theta, Z: m.Z, zc: st.midPlaneAtSEF(m.a, m.theta), sun: Math.sign(sv.frame.sunDir.z), on: st.propellerRelief !== false };
         }, v.giant);
         await probe.page.close();
+        // the propellers' relief can be switched off (PROPELLER_RELIEF in src/rings/RingStructure.ts): nothing to check
+        if (!g.on) { console.log(`  ${v.id}: SKIP -- the propellers' relief is off (PROPELLER_RELIEF / RS_PROPELLER_RELIEF)`); continue; }
         rC = g.r;
         phi = g.phi;
         v.g = g;
@@ -207,11 +209,13 @@ await withHarness('relief', { usage: 'node scripts/test/relief.mjs [--base URL] 
     // off radially by ~120 m per km)
     const tP = VIEWS.find((x) => x.id === 'propeller').t;
     const probe = await openApp(browser, base, { ...common, t: tP, preset: 'overview' }, { settle: 300 });
-    const g = await probe.page.evaluate(() => { const m = window.__sv.pipeline.ctx.structure.propellers.giant('Bleriot'); return { a: m.a, theta: m.theta, h: m.h, dB: m.dB, Z: m.Z }; });
+    const g = await probe.page.evaluate(() => { const st = window.__sv.pipeline.ctx.structure, m = st.propellers.giant('Bleriot'); return { a: m.a, theta: m.theta, h: m.h, dB: m.dB, Z: m.Z, on: st.propellerRelief !== false }; });
     await probe.page.close();
+    // the propellers' relief can be switched off (PROPELLER_RELIEF in src/rings/RingStructure.ts): nothing to check then
+    if (!g.on) console.log("  near-propeller: SKIP -- the propellers' relief is off (PROPELLER_RELIEF / RS_PROPELLER_RELIEF)");
     const pP = { t: tP, paused: 1, hud: 0, labels: 0, astronaut: 0, scale: 1, fps: 0, cam: 'ring', r: (g.a + 2 * g.h).toFixed(1), phi: ((g.theta - (0.3 * g.dB) / g.a) / DEG).toFixed(7), z: '30', yaw: 0, pitch: -10, fov: 60 };
-    const pg = await openApp(browser, base, pP, { settle: 3500 });
-    try {
+    const pg = g.on ? await openApp(browser, base, pP, { settle: 3500 }) : null;
+    if (pg) try {
       const res = await pg.page.evaluate(nearProfile, false);
       await pg.page.screenshot({ path: join(out, 'near-bleriot.png') });
       const pr = await problems(pg.page, pg.errs);
