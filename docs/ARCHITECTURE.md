@@ -365,8 +365,8 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
 * **Near-field frame and contact contract** (`NearFieldPass`, `near/NearContact.ts`). Steps: (1) the update pass
   writes every particle's analytic position (exact Hill-frame orbit + wake + streamline displacement) and flag into
   R0 (RGBA32F per slot: camera-relative xyz, w = +a drawn / −a present but not drawn / 0 absent; "not drawn" also covers
-  the **statistical occlusion cull**: line-of-sight optical depth `nearLosTau(...)` > 5 (`near/nearOcclusion.glsl`, meant
-  to be shared with the contact set's fade: the slab model between the camera and the particle's near side with the
+  the **statistical occlusion cull**: line-of-sight optical depth `nearLosTau(...)` > 5 (`near/nearOcclusion.glsl`,
+  shared with the contact set's fade, which mirrors its inputs: the slab model between the camera and the particle's near side with the
   lowest of three τ samples along the path × 0.8, first × the emptiest-gap density `wakeMinDensity()`, then — where that
   cannot decide and a mean density ≤ 1.1 could — × the line of sight's own wake density: the ring layer's wake clipmap
   (`ctx.wakeClip`) at 4–24 nodes stratified in the column between the two heights, ≤ λ/8 apart, read from the level
@@ -377,9 +377,11 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   into R0; (2) HistoPyramid compaction of R0 into the point / quad / caster lists; (3) the sun shadow map (shared
   as `ctx.nearShadow`); (4) the draw. Everything after 1b sees the same positions. The contract of 1b:
   - *who*: present particles (drawn or not) weighted by smooth fades — resolved (5 → 6 render px radius: an overlap
-    is typically ~0.3 of the smaller radius deep, 1–1.5 px at 3–5 px), not statistically occluded (slab
-    line-of-sight τ 4 → 5 above the camera's local mid-plane, with a conservative path τ as the update pass's cull:
-    the lowest τ_dyn in range × `wakeMinDensity()` × 0.8, the floor read from the WakeField's `uWakeBounds.x`), near
+    is typically ~0.3 of the smaller radius deep, 1–1.5 px at 3–5 px), not statistically occluded (the update pass's
+    own test `nearLosTau`, fading over τ 4 → 5, its inputs mirrored per particle — normal path τ, the zone's H, heights
+    above the particle's local mid-plane — at the drawn position, the guiding centre being unknown there; on only while
+    the update pass culls: an occluded particle is neither seen nor listed, so it neither jams nor pushes visible ones;
+    0.3–1.3 % of the drawn particles ≥ 6 px, at the cull's boundary, fall just beyond the fade), near
     the view frustum (dilated by two contact distances, the reach of a push, within R0's out-of-view coverage: rb + mw
     for a particle that follows the wakes, rb for one that does not — the update pass keeps those only that close, so
     they fade out across the frustum edge itself), and not around the camera (a body containing the camera is not
@@ -397,15 +399,17 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
     mass-weighted shares (∝ a³) within a size class, the smaller particle yields entirely across classes; a small
     particle lying entirely inside a larger one is hidden and left alone (ejecting it would cascade).
   - *the packing limit*: where the packing ceiling binds (the B-ring mid-plane, filling ≈ 0.65) the independent-orbit
-    positions are a jammed Poisson sample; a bounded, stateless projection leaves ~15–20 % of the visible overlaps
-    there (jammed clusters), and resolving more makes the result jump (the nearest non-overlapping configuration changes
-    discontinuously as the analytic one moves): measured trade-off in scripts/test/README.md (contact).
+    positions are a jammed Poisson sample; a bounded, stateless projection leaves ~10–15 % of the visible overlaps
+    there (jammed clusters; b-ring-inside 0.10, the near field of the dense zone at the Mimas 5:3 wave 0.15), and
+    resolving more makes the result jump (the nearest non-overlapping configuration changes discontinuously as the
+    analytic one moves; ~6e-4 of the drawn listed particles per frame, in rare bursts a cluster at once): measured
+    trade-off in scripts/test/README.md (contact).
   - *idle*: nothing runs when the camera is farther from the layer than the largest particles are resolved at; with
     an empty contact set only the list compaction runs, every 4th frame.
   - *bounds*: |x − x_analytic| ≤ 4 D_i (D_i = the particle's largest initial pair correction, raised by contacts
     that appear later only up to 0.5 a): no particle moves farther than overlaps require. Presence is never
-    changed; drawn flags are kept, except that a present particle moved into the view frustum becomes drawn
-    (count contract); the medium is untouched (it is statistical).
+    changed; drawn flags are kept, except that a present particle moved into the view frustum becomes drawn unless the
+    update pass's occlusion cull would hide it there (count contract); the medium is untouched (it is statistical).
   - *time*: no per-particle state — a deterministic function of the frame's analytic positions (bit-identical
     frames when paused; time warp, reverse time and re-anchoring need nothing).
   - *photometry*: particles that no longer interpenetrate block more light than independently placed ones of the

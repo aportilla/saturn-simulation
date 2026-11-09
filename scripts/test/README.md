@@ -23,7 +23,7 @@ follow [Adding a tool](#adding-a-tool) so the next session can run it too.
 | `npm run test:particles` | resolved-particle photometry and shape contract: GLSL vs CPU mirrors, factor LUT, relief area / photometry | ~20 s |
 | `npm run test:propellers` | propeller moonlets and the sub-km τ texture: named positions vs Tiscareno 2010 Table 1, texture statistics, footprint prefilter, GPU τ vs the CPU model, near-field presence and its cost gate, moonlet bodies | ~1 min |
 | `npm run test:relief` | the rings' vertical relief (one height field z0): model checks, GPU heights / slopes vs the CPU mirror, ray / height-field hits, equinox shadow length, near field and station keeping on the local mid-plane | ~1 min |
-| `npm run test:contact` | near-field contact resolution: overlaps before / after (independent CPU pair search), displacement bound, R0 write-back and drawn flags, frame-to-frame smoothness, warp, tilted mid-planes; `--cost`: GPU time | ~65 s (`--cost` +3–5 min) |
+| `npm run test:contact` | near-field contact resolution: overlaps before / after (independent CPU pair search), displacement bound, R0 write-back, drawn flags and coverage of the drawn particles, frame-to-frame smoothness over 6 frame pairs, warp, tilted mid-planes; `--bins` residual by distance / size / crowding; `--cost`: GPU time | ~85 s (`--cost` +3–5 min) |
 | `npm run test:wakecost` | GPU cost of the shared wake functions (`wakeDensity`, `wakeDisplacement`) per call, in-page micro-benchmark (informational) | ~10 s |
 | `node scripts/shot.mjs …` / `node scripts/shots.mjs …` | screenshots (one / batch spec) | — |
 | `node scripts/img.mjs profile\|mean\|crop\|rotate …` | PNG brightness profiles, region ratios, contrast-stretched zooms, rotate/scale | — |
@@ -469,7 +469,7 @@ imports the TypeScript sources in Node (type stripping, Node ≥ 23).
 Screenshots of every view in `<out>`; numbers per view in `results.json` (incl. the worst pixel). ~1 min.
 Model numbers in full: `node scripts/data/rings/relief_check.mjs`.
 
-### contact — `scripts/test/contact.mjs` (`--views b-inside,a-inside,a-30m,b-preset,mimas53,titan`, `--no-temporal`, `--cost [--cost-views …] [--reps 3] [--trials 12]`)
+### contact — `scripts/test/contact.mjs` (`--views b-inside,a-inside,a-30m,b-preset,mimas53,titan`, `--no-temporal`, `--pairs 6`, `--bins dist|px|crowd`, `--set JSON`, `--cost [--cost-views …] [--reps 3] [--trials 12]`)
 The contact step of the near field (`src/render/near/NearContact.ts`, contract in ARCHITECTURE.md → "Near-field frame
 and contact contract"). Views (paused, `t=2026-11-08T12:00:00Z`, render scale 1, astronaut off): `b-inside` =
 b-ring-inside at fov 35 (cassini-compare b-inside), `a-inside` = a-ring-inside at fov 35, `a-30m` = a-ring-30m,
@@ -486,20 +486,29 @@ weights, contact shapes), the result, the bound D_i and R0 are read back and eva
    1 render px); *crowded* = a particle with ≥ 3 initial overlaps with listed particles of any weight (clusters, wake
    cores and the B ring's jammed mid-plane, whose analytic packing is too dense to resolve locally: the solver resolves
    every listed particle, so neighbours in the weights' fades jam a particle as much as resolved ones). Limits:
-   residual / visible-before ≤ 0.2 (B) / 0.12 (A); uncrowded residual / resolved particles ≤ 0.012 (isolated pairs left
-   unresolved: a solver fault, not jamming).
+   residual / visible-before ≤ 0.2 at the packing limit (the B ring; mimas53, whose near field is a jammed dense zone —
+   below) / 0.12 (A, C ring); uncrowded residual / resolved particles ≤ 0.012 (isolated pairs left unresolved: a solver
+   fault, not jamming). `--bins dist|px|crowd` prints both counts binned by the pair's distance from the camera, the
+   smaller particle's radius in px or the larger crowding of the two.
 2. **bound**: max |x − x_analytic| / (clampK D_i) ≤ 1.0001 (float32: 4 ulps of the coordinates); D_i(GPU) ≥ D_i(CPU,
    first iteration) for ≥ 99.8 % of the particles with overlaps (the GPU search missed nothing that matters); hash
    bucket overflow (CPU simulation of the grid) ≤ 0.1 % of the list.
 3. **write-back**: R0 at every list slot = the resolved position; present particles unchanged; drawn (R0 w > 0)
-   with contact on − off = exactly the particles moved into view, ≤ 0.1 %; the HUD's ≥ 1 px count changes ≤ 0.1 %;
-   bodies around the camera (not drawn) have contact weight 0 (b-preset: 1 such body); the wake-field bounds the step
+   with contact on − off = exactly the particles moved into view and not statistically occluded there, ≤ 0.1 %; the
+   HUD's ≥ 1 px count changes ≤ 0.1 % (read back asynchronously every 4th frame: read 8 frames after each toggle, it
+   can still show the previous state); **coverage**: drawn
+   particles ≥ 6 px radius missing from the contact list ≤ 2 % (the set's occlusion fade mirrors the update pass's
+   test at the drawn position — below); bodies around the camera (not drawn) have contact weight 0 (b-preset: 1 such body); the wake-field bounds the step
    mirrors are sane — with wakes on 0 < density floor (= `wakeMinDensity()`) ≤ 1 ≤ core density 1/γ_core^s (the wake
    retune of Nov 2026 re-parameterized `uWakeShape`, and the old read turned the floor into 1/R_C² ≈ 1.6–2.8: the
    occlusion bound 30–50× too high, the contact set collapsed to a few metres).
-4. **temporal**: the same paused frame twice is bit-identical; one frame later (t + 1/30 s) "pops" (displacement
-   change > max(5 × the analytic motion, 1 render px)) / matched particles ≤ 2e-4 (B) / 1e-4 (A); +1 s and +10 s
-   reported; warp ±1000 running: no NaN, residual ratio ≤ 1.5 × the paused limit.
+4. **temporal**: the same paused frame twice is bit-identical; one frame later at 1× (t + 1/30 s), over 6 frame pairs
+   at t0 + 0, 7, …, 35 s (`--pairs`; 16 frames after each time jump: the ring layer's wake clipmap, which the occlusion
+   test reads, refreshes ≤ 2 levels per frame — in play it follows every frame; 4 frames after a 7 s jump left 135–144
+   pops per pair from stale levels), "pops" (displacement change > max(5 × the analytic motion, 1 render px)) of
+   particles drawn in both frames / the drawn matched particles ≤ 1e-3 at the packing limit (b-inside, mimas53) / 1e-4
+   (A, C ring); all listed particles' pops, +1 s and +10 s reported; warp ±1000 running: no NaN, residual ratio ≤ 1.5 ×
+   the paused limit.
 5. **cost** (`--cost`, informational): the step alone, re-run on the captured frame between synchronous 1-px
    read-backs, the configurations interleaved within every trial (min over trials; stages cumulative; "step before" =
    the 2026-11-08 configuration: 3 → 6 px, the whole grid, 12 undamped iterations), and whole frames
@@ -507,26 +516,60 @@ weights, contact shapes), the result, the bound D_i and R0 are read back and eva
    presets at the default render scale 0.5; optional views `b-fov12` (the B ring through a 12° fov at render scale 1,
    the largest contact set) and `a-1km` (an empty set: the step idles).
 
-Measured with the size rules of the contract physics (ring-morphology a7e56a7: wake participation, τ_dyn, per-zone
-vertical laws, the packing ceiling) + the contact update of Nov 2026 (fade-in 5 → 6 px, 48 iterations at ω 0.6;
-deterministic, identical in every run):
+Measured with the line-of-sight occlusion cull (ring-morphology 8f71e01) and the contact set on the shared occlusion
+test (Nov 2026, below; deterministic, identical in every run):
 
-| view | list | resolved | visible overlaps beyond tol. before → after (crowded) | deepest (× contact distance) | max displacement | moved into view | frame + 1/30 s pops (max px) |
+| view | list | resolved | visible overlaps beyond tol. before → after (crowded) | deepest (× contact distance) | max displacement | moved into view | +1 frame: visible pops in 6 pairs (max px) |
 |---|---|---|---|---|---|---|---|
-| b-inside | 45.9k | 27.0k | 16308 → 2979 (2741): 0.183 | 0.925 → 0.872 | 8.9 a (bound 1.0000) | 104 | 7 (6.9 px) |
-| a-inside | 4.3k | 2.5k | 480 → 7 (4): 0.015 | 0.936 → 0.664 | 3.0 a | 1 | 0 (0.13 px) |
-| a-30m | 1.4k | 0.81k | 156 → 1 (0): 0.006 | 0.762 → 0.034 | 2.5 a | 0 | 0 (0.02 px) |
-| b-preset | 25.2k | 14.1k | 9276 → 1292 (1190): 0.139 | 0.922 → 0.824 | 7.2 a | 65 | — |
-| mimas53 | 6.9k | 4.2k | 1159 → 90 (85): 0.078 | 0.823 → 0.487 | 5.0 a | 4 | 0 (0.34 px) |
-| titan | 0.49k | 0.32k | 5 → 0: 0 | 0.567 → 0.000 | 1.9 a | 0 | 0 (0.00 px) |
+| b-inside | 9.3k | 4.45k | 811 → 82 (57): 0.101 | 0.855 → 0.770 | 6.6 a (bound 1.0000) | 22 | 28: 4 3 13 4 1 3 (23 px), 6.3e-4 |
+| a-inside | 2.5k | 1.42k | 176 → 6 (4): 0.034 | 0.601 → 0.364 | 3.2 a | 0 | 0 (0.03 px) |
+| a-30m | 1.4k | 0.75k | 145 → 1 (0): 0.007 | 0.878 → 0.035 | 2.8 a | 0 | 0 (0.01 px) |
+| b-preset | 7.4k | 3.52k | 866 → 119 (104): 0.137 | 0.824 → 0.809 | 6.2 a | 13 | — |
+| mimas53 | 4.2k | 2.37k | 502 → 77 (67): 0.153 | 0.817 → 0.505 | 6.7 a | 3 | 6: 1 4 0 1 0 0 (5.4 px), 2.9e-4 |
+| titan | 0.46k | 0.28k | 1 → 0: 0 | 0.113 → 0.000 | 0.54 a | 0 | 0 (0.01 px) |
 
-Uncrowded residual / resolved particles: b-inside 0.0088, b-preset 0.0073, a-inside / a-30m / mimas53 0.0012, titan 0.
-GPU-missed 0, bucket overflow 0 (max bucket fill 3–13 of 16). Temporal, + 1 s / + 10 s: b-inside 476 / 330 pops (p99
-1.5 / 8.9 px), a-inside 0 / 0, a-30m 1 / 2, mimas53 29 / 7, titan 0 / 0; warp +1000 / −1000 residual ratios 0.16 / 0.17
-(b-inside), 0.03 / 0.01 (a-inside), 0.02 / 0.01 (a-30m), 0.07 / 0.08 (mimas53), 0 / 0 (titan). Relief on / flat
-(`relief=0`, measured before the contract physics): mimas53 0.224 / 0.242, titan 0 / 0 — the tilted mid-plane changes
-nothing (the grid, the contact distance and the camera fade are 3-D; the occlusion slab takes heights above the
-camera's local mid-plane).
+Uncrowded residual / resolved particles: b-inside 0.0056, b-preset 0.0043, mimas53 0.0042, a-inside 0.0014, a-30m
+0.0013, titan 0. Coverage (drawn ≥ 6 px, not listed): b-inside 16 of 5825 (0.27 %, up to 57 px), b-preset 15 of 4281
+(0.35 %), mimas53 34 of 2591 (1.3 %, up to 28 px), the others 0. Drawn change: b-inside 22 (6.1e-4), b-preset 13,
+mimas53 3. GPU-missed 0, bucket overflow 0 (max bucket fill 2–10 of 16). + 1 s / + 10 s: b-inside 101 / 50 pops (79 /
+40 drawn; p99 2.2 / 11.7 px), mimas53 18 / 21, a-inside, a-30m, titan 0 / 0; warp +1000 / −1000 residual ratios 0.17 /
+0.20 (b-inside: beyond |warp| 200 the occlusion's path test is off and the emptiest-gap bound alone lists 44–46k),
+0.002 / 0.017 (a-inside), 0.007 / 0.007 (a-30m), 0.067 / 0.074 (mimas53), 0 / 0 (titan). Relief on / flat (`relief=0`,
+measured before the contract physics): mimas53 0.224 / 0.242, titan 0 / 0 — the tilted mid-plane changes nothing for
+the solve (the grid, the contact distance and the camera fade are 3-D); the occlusion test takes heights above the
+particle's local mid-plane, as the update pass.
+
+**The shared occlusion test (Nov 2026).** The update pass's cull became the line of sight's own wake density
+(`nearLosTau`, ring-morphology 8f71e01: b-inside draws 36k particles instead of 866k). The contact set still faded with
+the emptiest-gap bound — 46.3k listed at b-inside, 5.7k of them resolved and drawn — and its drawn flip ignored the
+cull (120 culled particles drawn: drawn change 0.0033, failed). Now the set's fade (τ 4 → 5) is the update pass's test
+with its inputs mirrored per particle (`ctLosTau`: normal path τ = min(camera, the particle's τ_dyn × 2-D modulation ×
+streamline density, the midpoint's τ_dyn) × 0.8, the zone's H, heights above the particle's local mid-plane — at the
+drawn position: the guiding centre is not known there), on only while the update pass culls, and the flip applies the
+cull (path τ capped by the radial profile's lowest × 0.8: it never hides a particle the update pass would draw).
+b-inside: list 46.3k → 9.3k, residual 0.157 → 0.101 (10–30 m from the camera 0.19 → 0.08: occluded particles behind no
+longer jam the visible ones), drawn change 0.0033 → 0.0006, step 13.2 → 3.0 ms (below). Coverage: the radial profile's
+τ with the camera's mid-plane instead of the mirror dropped 2.5 % of the drawn particles ≥ 6 px at b-inside (up to
+101 px: the particle's own textured τ, ~15 % rms below the profile in the B ring) and 4.9 % at mimas53 (the mid-plane
+4 m lower 100 m away); mirrored 0.27 % / 1.3 %, all recovered by a fade 4.5 → 5.5 at b-inside and all but 2 by 5 → 6 at
+mimas53 (`--set '{"tauVisLo":5,"tauVisHi":6}'`): particles at the cull's boundary (τ ≳ 4.2, ≤ 1.5 % seen). Two limits
+were re-derived from surveys of three states — before the cull (44e6f7a), the cull with the old set (8f71e01), now —
+over the same 8 frame pairs (`--pairs 8 --bins dist|px|crowd`; older revisions extracted as for wakecost):
+- *pops*: the old check took one frame pair and divided by all listed particles (2e-4 B / 1e-4 A). Before the cull
+  b-inside's pair at t0 had 7 pops in 45.9k (1.5e-4), the quietest of the 8 (7–75; 247 in 367k: 6.7e-4); the cull with
+  the old set made 366 in 370k (9.9e-4), now 45 in 75k (6.0e-4) — 26 / 7 / 4 visible pops per frame. A smaller list of
+  nearer particles shows a higher rate for fewer pops: it rises with the projected radius (`--bins px`, b-inside now
+  0.7e-4 at 5–6 px, 3–6e-4 at 6–20 px, 2–3e-3 beyond 20 px: 1 px is a smaller part of a near particle). The check now counts the
+  pops of particles drawn in both frames over 6 pairs: ≤ 1e-3 at the packing limit — b-inside before the cull 6.0e-4,
+  with the old set 1.1e-3 (the occluded jammers), now 6.3e-4 — and 1e-4 elsewhere (a-inside, a-30m, titan: 0).
+- *mimas53*: the residual went 0.078 → 0.150 with the cull alone (old set; now 0.153). By distance from the camera:
+  < 30 m 0.24 → 0.20 (both states with the cull alike), 30–100 m 0.06 → 0.14, and before the cull 64 % of the visible
+  pairs lay 100–1000 m away (2–4 % residual: only large particles are resolved there, isolated pairs), which the cull
+  now hides. The near field of this dense zone (τ 0.92, wake cores) is jammed like the B ring — 56 % of the visible
+  pairs have a particle with ≥ 10 overlaps — so it takes the packing limits (0.2, 1e-3). Its pops are the same with
+  the old set and now (visible 1 4 0 1 0 0: 2.8e-4 / 2.9e-4; before the cull 8e-5); the 8th pair (t0 + 49 s) holds a
+  burst in both — 25 visible pops in one frame, 8–20 m from the camera, up to 47 px, with weights, list and neighbour
+  lists (≤ 5 of 8 entries) unchanged: the projection of a jammed cluster jumping. Open; outside the check's 35 s.
 
 **The B ring at the packing limit.** With the packing ceiling binding, the B-ring mid-plane sits at a filling factor of
 ≈ 0.65 — random close packing — and the analytic (independent-orbit) positions overlap twice as much as before: 0.81
@@ -542,12 +585,18 @@ pops per s): the setting as merged on a7e56a7 (24 iterations at ω 0.7) 0.272 / 
 16 / 506; 48 iterations, 6 rounds 0.169 / 24 / 647; both 0.103 / 31 / 736; clampK 30, yield 5, 96 iterations, 8 rounds
 0.047 / 26 (17.9 px) / 1084. The production setting (48 iterations at ω 0.6, fade-in 5 → 6 px) keeps the per-frame
 jumps at the stable level (7) with residual 0.183; the per-second count (476, was 30 before the packing ceiling) is
-informational.
+informational. (Measured then: the pair at t0 alone, 45.9k listed; for 8 pairs and today's lists see the shared
+occlusion test above.)
 
 Before the wake-mirror fix (b9dab72 as merged) the lists had collapsed to 1.4k (b-inside) / 2.5k (a-inside) and the
 check failed on 3 pops in 1430 (0.0021) and 4 residual overlaps of 26 (0.154); with the fix alone (3 → 6 px, 12
 iterations) b-inside listed 60.7k: residual 0.140, pops 6.6e-5; a-inside 0.068.
-Cost (`--cost`, on a heavily shared GPU — b-inside frames of 134 ms without the step during the run), ms — step now /
+Cost with the shared occlusion test (`--cost`, b-inside frames of 57 ms without the step), ms — step / whole-frame
+difference: b-default (2.5k list) 2.2 / 1.2–1.7, b-inside (9.3k) 3.0 / 2.0–2.2, a-default (0.4k) 1.3 / 0.9, a-inside
+(2.5k) 1.6 / 0.9; with the old set (8f71e01, the same GPU just after) b-default (6.4k) 3.6 / 3.0, b-inside (46.3k)
+13.2 / 15.1, a-default 1.5 / 0.3, a-inside (4.3k) 1.6 / 0.6. The mirror costs 0.1–0.35 ms in the list compaction (the
+classifier evaluates it for every candidate in view at ≥ 5 px: b-inside 0.67 → 1.0). Earlier
+(`--cost`, on a heavily shared GPU — b-inside frames of 134 ms without the step during the run), ms — step now /
 step with the 2026-11-08 configuration (3 → 6 px, whole grid, 12 undamped iterations; interleaved): b-default (6.4k
 list) 3.6 / 5.3, a-default (0.5k) 1.4 / 0.9, b-inside (45.9k) 14.7 / 18.0, a-inside (4.3k) 1.6 / 1.8; against the
 setting as merged on a7e56a7 (24 iterations, 4 → 6 px) b-inside 16.2 / 17.7 (another interleaved run). The contract
