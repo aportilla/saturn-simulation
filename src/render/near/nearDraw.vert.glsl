@@ -115,7 +115,11 @@ void main() {
   vec2 sdir = sh / shl;
   float dzdl = sunNp / shl;
   float Gs = lodAniso(uSunDir);
-  float mP = uLodPack.w > 0.5 && uWakeOn > 0.5 ? lodPackM(tau, wakeDensity(lp.xy)) : 1.0;
+  // the wake density at the particle for the packing ceiling and along its sun path: the ring layer's wake clipmap at the
+  // level the medium's march reads here (one fetch each instead of wakeDensity's 10-16; the medium's own field at the
+  // handover) where it covers the particle, else wakeDensity (nearOcclusion.glsl nfWakeLevelFor, display-pixel footprint)
+  int kw = uNfWcInfo.w > 0.5 && uWakeOn > 0.5 ? nfWakeLevelFor(lp.xy, s * uLodPixelAngle) : -1;
+  float mP = uLodPack.w > 0.5 && uWakeOn > 0.5 ? lodPackM(tau, nfWakeAtLevel(kw, lp.xy)) : 1.0;
   float fUp = 0.0, fUpP = 0.0, gz = 0.0, wsum = 0.0, wP = 0.0;
   vec2 cSun = vec2(0.0), cPart = vec2(0.0);   // (non-participating, participating), Sun-weighted
   for (int kk = 0; kk < LOD_CLASSES; kk++) {
@@ -163,14 +167,11 @@ void main() {
   // which dominates the brightness of the unlit face
   // (the stratified nodes of sv_ringLod ringSunNodeRise, exactly as the medium: a noisier estimate has more
   // variance and, through the convexity of exp(-tau W / mu0), would make the particles systematically brighter)
-  // (the density at the nodes: the ring layer's wake clipmap at the level the medium's march reads here -- one fetch
-  // instead of wakeDensity's 10-16, and the same sun-path field as the medium it hands over to -- where it covers the
-  // particle, else wakeDensity: nearOcclusion.glsl nfWakeLevelFor, display-pixel footprint)
+  // (the density at the nodes: the cached field kw above, as the medium's march)
   float Ws = 1.0;
   if (uWakeOn > 0.5 && wP > 0.0) {
     vec2 sh2 = sh / max(abs(sunNp), 0.02);
     float qsun = (sg > 0.0 ? fUpP : wP - fUpP) / wP, acc = 0.0;
-    int kw = uNfWcInfo.w > 0.5 ? nfWakeLevelFor(lp.xy, s * uLodPixelAngle) : -1;
     for (int j = 0; j < LOD_SUN_NODES; j++) acc += nfWakeAtLevel(kw, lp.xy + sh2 * (mP * ringSunNodeRise(j, qsun, sg * zl / (H * mP)) * H));
     Ws = acc / float(LOD_SUN_NODES);
   }
