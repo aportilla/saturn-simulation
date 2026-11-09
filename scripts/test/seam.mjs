@@ -48,8 +48,10 @@ export const VIEWS = [
   // with 6 realizations -> 6 wider strips and a 0.08 step limit. (It was 0.11 for a ~9 % particle deficit in the grazing
   // far strip and the contact brightening; with the N-body size rules -- participation, the vertical laws, tau_dyn,
   // docs/ring-physics.md 10.12 -- the far strip is within 2 % and the contact brightening +1-3 % in the nearest strips:
-  // step 0.041 in two runs.)
-  { id: 'a-ring-30m', note: 'preset; rows within ~60 m of the camera excluded (single metre-sized boulders dominate); realization noise, step limit 0.08', params: { preset: 'a-ring-30m', t: T_STD }, rows: [0.35, 0.78], strips: 6, jump: 0.08 },
+  // step 0.041 in two runs.) At least 16 realizations here: the frame-time work's slot-ordered presence threshold draws
+  // a different (statistically equivalent) particle sample, and with 6 realizations its strip-to-strip noise reached
+  // 0.086 (24 realizations: 0.042) -- shot noise of the few metre-sized boulders, not a seam.
+  { id: 'a-ring-30m', note: 'preset; rows within ~60 m of the camera excluded (single metre-sized boulders dominate); realization noise, step limit 0.08', params: { preset: 'a-ring-30m', t: T_STD }, rows: [0.35, 0.78], strips: 6, jump: 0.08, real: 16 },
   { id: 'lit-500m', note: '500 m below the lit A ring, looking up', params: { cam: 'ring', r: 128000e3, z: -500, yaw: -120, pitch: 10, t: T_ARC }, rows: [0.0, 0.55] },
   // (the former +5-8 % particle excess on the unlit face, step limit 0.09, is gone since the sun-path fix: step <= 0.011)
   { id: 'under-rings', note: 'preset (unlit face from below)', params: { preset: 'under-rings', t: T_STD }, rows: [0.0, 0.45] },
@@ -193,8 +195,10 @@ await withHarness('seam', { usage: 'node scripts/test/seam.mjs [--base URL] [--o
       console.log(`\n[seam] ${v.id} — ${v.note}`);
       const rects = strips(v.rows[0], v.rows[1], args.has('strips') ? nStrips : v.strips ?? nStrips);
       const chromaRect = [0, v.rows[0], 1, v.rows[1]];
-      const A = await stripMeans(browser, base, { ...COMMON, ...scale, ...v.params }, rects, nReal, { shot: join(out, `${v.id}-near.png`), chromaRect });
-      const B = await stripMeans(browser, base, { ...COMMON, ...scale, ...v.params, nearField: 0 }, rects, nReal, { shot: join(out, `${v.id}-medium.png`) });
+      // realizations: the CLI value, at least the view's own minimum (shot noise of few large particles)
+      const nr = Math.max(nReal, v.real ?? 0);
+      const A = await stripMeans(browser, base, { ...COMMON, ...scale, ...v.params }, rects, nr, { shot: join(out, `${v.id}-near.png`), chromaRect });
+      const B = await stripMeans(browser, base, { ...COMMON, ...scale, ...v.params, nearField: 0 }, rects, nr, { shot: join(out, `${v.id}-medium.png`) });
       const ratio = A.means.map((a, i) => a / B.means[i]);
       const rows = rects.map((r, i) => [`${fmt(r[1], 3)}-${fmt(r[3], 3)}`, fmt(A.means[i], 5), fmt(B.means[i], 5), fmt(ratio[i], 3)]);
       console.log(table(['rows (top=0)', 'near+medium', 'medium only', 'ratio'], rows));
