@@ -4,7 +4,9 @@
 usage ($PY = the venv python, see README.md):
   $PY scripts/data/nbody/procedural.py --verify
       bundle + run scripts/data/nbody/wakefield_ref.ts (the real WakeField.ts / ringRegions.ts, via rolldown + node)
-      and compare texture texels, lambda, tile, strength, the wake set and the uniforms with this port
+      and compare texture texels, lambda, tile, strength, the wake set and the uniforms with this port, and the
+      TypeScript CPU mirror of wakeDensity / wakeDisplacement (WakeField.densityAt / displacementAt, behind the
+      medium's tau_dyn) with this port's at 48 points (agree to ~1e-13)
   $PY scripts/data/nbody/procedural.py synth --like data-raw/nbody/A128-sd [--name A128-sd-proc] [--out DIR]
       [--orbits 6] [--snap 0.05] [--gamma G] [--gamma-gap G] [--spread-par P] [--spread-perp Q] [--rc R] [--t-life T]
       [--strength S] [--m0 1,6] [--env-w W] [--async-d D] [--async-ell L] [--legacy] [--seed 12345]
@@ -34,7 +36,10 @@ What is ported (deterministic: same seed 12345, same RNG streams as the app):
                            the local wave number K, the composite circle map (gap gamma), the local envelope (plateau
                            handover with the asynchrony phase), wakeGenDisp, wakeDisplacement, the Newton inverse,
                            wakeDensity (incl. its clamp). Evaluated in float64 (the GPU uses float32).
-  src/rings/RingLod.ts     sigZFracForRadius and the octave classes' aEff (vertical law sigma_z = sigZFrac(aEff) H).
+  src/rings/RingLod.ts     sigZFracForRadius and the octave classes' aEff (vertical law sigma_z = sigZFrac(aEff) H) --
+                           the app before Nov 2026: the synthetic runs still place every particle with the full
+                           wakeDisplacement and the old vertical law; the app's size rules (participation mixture,
+                           zone vertical laws, packing ceiling: docs/ring-physics.md 10.12) are not ported yet.
   src/rings/ringRegions.ts the zone values used here (A_in, A_out, B3) - checked by --verify.
 Not ported: wakeDensityFiltered (footprint fade for distant views), the ring-layer wake clipmap.
 
@@ -768,7 +773,10 @@ def verify(args):
                                        (128000, 1.7, 500.0, 9.1e8, dict(spreadPar=2.2, spreadPerp=3.3, asyncD=0.5, gammaGap=0.06))):
         om, ka, nu = nb.orbital_frequencies(r_km * 1e3)
         cases.append(dict(rKm=r_km, tau=tau, sigma=sigma, omega=om, kappa=ka, qShear=1.5, t=t, shape=shape))
-    res = subprocess.run(['node', bundle, json.dumps(dict(seed=12345, cases=cases))], check=True, capture_output=True, text=True)
+    # points (units of lambda) for the CPU mirror of the shared wake functions (WakeField.densityAt / displacementAt)
+    pts = np.random.default_rng(7).uniform(-3.0, 3.0, (48, 2))
+    res = subprocess.run(['node', bundle, json.dumps(dict(seed=12345, cases=cases, points=pts.tolist()))], check=True,
+                         capture_output=True, text=True)
     ref = json.loads(res.stdout)
     ok = True
     ts_key = dict(gamma='gamma', gamma_gap='gammaGap', spread_par='spreadPar', spread_perp='spreadPerp', rc='rc',
@@ -815,9 +823,20 @@ def verify(args):
             maxd = max(maxd, float(np.max(np.abs(wf.dtex[j, i] - np.array(tv, np.float32)))))
         checks.append(('texels (max |diff|)', maxtex, 0.0, 2e-6))
         checks.append(('delta texels (max |diff|)', maxd, 0.0, 2e-6))
+        # the TypeScript CPU mirror of wakeDensity / wakeDisplacement (WakeField.densityAt / displacementAt: the wake
+        # statistics behind the medium's tau_dyn, src/rings/WakeStats.ts) vs this port of wakes.glsl, both float64 with
+        # the same float32 textures
+        px, py = pts[:, 0] * lam, pts[:, 1] * lam
+        dport = wf.density(px, py)
+        dxp, dyp = wf.displacement(px, py)
+        dts = np.array(rc['density'])
+        disp_ts = np.array(rc['displacement'])
+        checks.append(('densityAt (max |ln ratio|)', float(np.max(np.abs(np.log(dport / dts)))), 0.0, 1e-6))
+        checks.append(('displacementAt (max |diff| / lambda)',
+                       float(np.max(np.hypot(dxp - disp_ts[:, 0], dyp - disp_ts[:, 1]))) / lam, 0.0, 1e-7))
         cok = True
         for lab, a, b, tol in checks:
-            err = abs(a - b) / max(1.0, abs(b)) if 'texels' not in lab else a
+            err = abs(a - b) / max(1.0, abs(b)) if '(max' not in lab else a
             good = err <= tol
             cok &= good
             if not good or args.verbose:

@@ -187,18 +187,29 @@ void main() {
       // LOD contract: where near-field particles are drawn the sheet carries only the optical depth they do
       // not, 1 - sum_k tauFrac_k carry_k (the column share: carry is constant across the thin slab crossing,
       // so this equals the march's integral of sigma_unres). carry decreases with distance and is < 0.5 % of
-      // tau at uRlLodRange, so stopping at 1.2x the range is invisible.
-      float unres = 1.0;
+      // tau at uRlLodRange, so stopping at 1.2x the range is invisible. With it: the participation of the classes the
+      // sheet carries (relative to the whole column's) and their aligned share (sv_ringLod size rules).
+      vec4 un = vec4(1.0, 1.0, uLodTidal.z, 0.0);
       if (uRlLodRange > 0.0 && tS < 1.2 * uRlLodRange) {
-        float carried = 0.0;
-        for (int k = 0; k < LOD_CLASSES; k++) carried += uLodTauFrac[k] * lodCarry(uLodAEff[k], k, tS, -(zc - stH.zeta));
-        unres = clamp(1.0 - carried, 0.0, 1.0);
+        float uw = uLodTauSub, up = 0.0, uf = 0.0;
+        for (int k = 0; k < LOD_CLASSES; k++) {
+          float w = uLodTauFrac[k];
+          if (w <= 0.0) continue;
+          float u = w * (1.0 - lodCarry(uLodAEff[k], k, tS, -(zc - stH.zeta)));
+          uw += u;
+          up += u * lodClassP(k);
+          uf += u * lodClassF(k);
+        }
+        float unres = clamp(uw, 0.0, 1.0);
+        un = vec4(unres, unres > 1e-6 ? up / (unres * max(uLodTidal.y, 1e-3)) : 1.0, unres > 1e-6 ? uf / unres : 0.0, 0.0);
       }
-      rlMainSheet(rd, p, dr, theta, fp, unres, stH, La, Ta, tauHit);
+      rlMainSheet(rd, p, dr, theta, fp, un, stH, La, Ta, tauHit);
       if (objIn) {
         // share of the layer's column between the camera's side and the object (same vertical model as the
-        // particles: anchor thickness), transmission and emission of that part
-        float q = rlExt(zObjRel, max(uLodH, 0.1), sd).z;
+        // particles: anchor thickness; the participating part at the mean packing thickening), transmission and
+        // emission of that part
+        float Hl = max(uLodH, 0.1), uO = zObjRel / Hl, mO = lodPackM(uLodTau, 1.0);
+        float q = rlLut(1, uO, sd).z - rlLut(0, uO, sd).z + rlLut(0, uO / mO, sd).z;
         float fr = clamp(zc - uRsCam.y > 0.0 ? q : 1.0 - q, 0.0, 1.0);
         float Tf = pow(max(Ta, 1e-6), fr);
         La *= 1.0 - Ta > 1e-4 ? (1.0 - Tf) / (1.0 - Ta) : fr;

@@ -27,6 +27,11 @@
 // instantiated (documented limitation: wave crests just downstream of Daphnis).
 // Vertical relief: each particle oscillates about the local mid-plane z0 of its guiding centre (the streamline height
 // zeta + the relief sources, ringStreamXi(..).y / ringStructureRelief), the same height field the medium follows.
+// Size rules (sv_ringLod, src/rings/ringDynamics.ts, docs/ring-physics.md 10.12): presence follows the particle
+// population's optical depth tau_dyn (lodTauDyn: the profile is photometric); a share p_k of the class follows the
+// self-gravity wakes (mixture: full wake displacement or none, exact against the medium's 1 + p (D - 1)); the
+// participating particles are thickened vertically by the packing ceiling at their density (the forward map's
+// Jacobian at their Lagrangian point: lodPackM), as the medium's participating channels are.
 
 uniform sampler2D tState;   // R: Y_e (guiding-center y relative to the box reference, m)
 uniform int uTexW;
@@ -100,25 +105,32 @@ void main() {
   // conservative bounding radius: ellipsoid major semi-axis (<= 1.36 a) times the outer relief bound at high quality
   // (~1.68 a in all), a for the spheres of medium / low quality (nearCommon.glsl)
   float rb = nearMaxExtent() * a;
+  // participation in the self-gravity wakes (mixture, share p_k of the class) and the packing ceiling's largest possible
+  // thickening of a participating particle (at the class's generation tau and the density cap)
+  bool part = uWakeOn > 0.5 && nearU(idx, seed, NS_PART) < lodClassP(uClass);
+  float mUp = part ? lodPackM(uTauBoxMax, uLodPack.z) : 1.0;
 
   // --- early out (most slots): a particle that is neither possibly in view and large enough to be drawn nor
   // a possible shadow caster is not needed this frame. Margin: the largest self-gravity wake displacement
-  // (two generations of at most half a wavelength each, wavelength <= tile / 6).
-  float mw = uWakeOn > 0.5 ? uWakeTile / 6.0 : 0.0;
+  // (two generations of at most half a wavelength each, wavelength <= tile / 6) and the packing ceiling's vertical one.
+  float mw = part ? uWakeTile / 6.0 : 0.0;
+  float mz = abs(z) * (mUp - 1.0);
   vec3 p0 = qe * uRingER + qy * uRingEPhi + vec3(0.0, 0.0, z + z0p - uRingCamLocal.z);
   bool cand;   // possibly in view and large enough to be drawn
   {
-    float r = rb + mw + zPad;
+    float r = rb + mw + zPad + mz;
     vec3 v = uWorldToCam * p0;
     float w = -v.z;
     float tx = uTanHalfFov * uAspect, ty = uTanHalfFov;
     bool outside = w < -r || abs(v.x) > w * tx + r * sqrt(1.0 + tx * tx) || abs(v.y) > w * ty + r * sqrt(1.0 + ty * ty);
-    cand = !outside && lodCarryParticle(a, uClass, max(length(p0) - mw - zPad, 1e-4), p0.z) > 0.0;
+    // margins: wake displacement (mw), the propellers' relief added below (zPad), the packing thickening (mz)
+    cand = !outside && lodCarryParticle(a, uClass, max(length(p0) - mw - zPad - mz, 1e-4), p0.z) > 0.0;
   }
-  if (!cand && !nearShadowCaster(p0, rb + mw + zPad, uClass)) { o = vec4(p0, 0.0); return; }
+  if (!cand && !nearShadowCaster(p0, rb + mw + zPad + mz, uClass)) { o = vec4(p0, 0.0); return; }
 
-  // --- presence: thin by the macroscopic optical depth at the guiding-center (Lagrangian) radius (empty gaps) times the
-  // 2-D modulation there (sv_ringStructure: sub-km texture, propellers -- the medium carries the same tau0 J M)
+  // --- presence: thin by the particle population's optical depth at the guiding-center (Lagrangian) radius (empty
+  // gaps; tau_dyn = the photometric profile x lodTauDyn) times the 2-D modulation there (sv_ringStructure: sub-km
+  // texture, propellers -- the medium carries the same tau0 J M)
   RingSample rs = ringSampleLagrangian(aL, 0.0);
   // (tau factor, -, self-gravity-wake strength factor). The propellers' hash-grid enumeration is costly: it runs for
   // particles that may be drawn, in the classes a propeller can reach this frame (CPU mask uRpNearMask; elsewhere
@@ -128,17 +140,27 @@ void main() {
   gRpAlsoRelief = rpZ && rpEval;   // the propellers' relief in the same enumeration (sv_ringPropellers mode 3)
   vec3 smod = rpEval ? ringStructureMod(aL, dthP, 0.0) : ringStructureModNoPropellers(aL, dthP, 0.0);
   gRpAlsoRelief = false;
-  float tauM = rs.tau * (1.0 - rs.dust) * smod.x;
+  float tauM = rs.tau * lodTauDyn(rs.tau) * (1.0 - rs.dust) * smod.x;
   if (nearU(idx, seed, NS_PRES) * uTauBoxMax >= tauM) { o = vec4(0.0); return; }
   // the propellers' relief at the guiding centre (present particles only; shadow casters outside the view: its own
   // enumeration -- their heights stay exact)
   if (rpZ) z0p += rsReliefPropellers(aL, dthP, 0.0).x;
 
-  // --- self-gravity wakes (Eulerian field), faded out at the particle's (Lagrangian) box edge, where it is too
-  // small to be drawn, and absent in a propeller's stirred material (sv_ringStructure wake factor)
+  // --- self-gravity wakes (Eulerian field) for the participating particles, faded out at the particle's (Lagrangian)
+  // box edge, where it is too small to be drawn, and absent in a propeller's stirred material (sv_ringStructure wake
+  // factor); with the packing ceiling binding, the forward map's density at the particle thickens its vertical motion
   vec2 ql = vec2(uRingCamLocal.x + qe, uRingCamLocal.y + qy);
-  float fw = (1.0 - smoothstep(0.85 * D, D, max(abs(qx), abs(qy)))) * smod.z;
-  vec2 dw = fw > 0.0 ? wakeDisplacement(ql) * fw : vec2(0.0);
+  float fw = part ? (1.0 - smoothstep(0.85 * D, D, max(abs(qx), abs(qy)))) * smod.z : 0.0;
+  vec2 dw = vec2(0.0);
+  if (fw > 0.0) {
+    if (mUp > 1.0001) {
+      float Df;
+      dw = wakeDisplacementJ(ql, Df) * fw;
+      z *= lodPackM(tauM * Jp, 1.0 + fw * (Df - 1.0));
+    } else {
+      dw = wakeDisplacement(ql) * fw;
+    }
+  }
 
   vec3 pl = vec3(qe + dw.x, qy + dw.y, z + z0p - uRingCamLocal.z);    // camera-relative, local axes
   vec3 p = pl.x * uRingER + pl.y * uRingEPhi + vec3(0.0, 0.0, pl.z);  // camera-relative, SEF axes
@@ -162,7 +184,7 @@ void main() {
     float zc = uRingCamLocal.z - z0p;
     float zt = z + clamp(zc - z, -rb, rb);
     RingSample rm = ringSampleLocal(vec3(uRingCamLocal.x + 0.5 * pl.x, uRingCamLocal.y + 0.5 * pl.y, 0.0), 0.0);
-    float tauPath = min(min(uTauCam, tauM * Jp), rm.tau * (1.0 - rm.dust)) * wakeMinDensity() * 0.8;
+    float tauPath = min(min(uTauCam, tauM * Jp), rm.tau * lodTauDyn(rm.tau) * (1.0 - rm.dust)) * wakeMinDensity() * 0.8;
     float tl = ringLayerSegmentTau(zc, zt, d, tauPath, rs.H);
     if (tl > uCull) drawn = false;
   }

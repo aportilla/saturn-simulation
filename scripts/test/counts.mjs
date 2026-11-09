@@ -6,9 +6,10 @@
 //
 // 1. drawn vs expected  per place (astronaut=0, statistical occlusion culling switched off for the comparison):
 //    measured = particles of class k in the near-field R0 read-back that are drawn (in view) and >= 0.5 display
-//    px in radius; expected = Monte Carlo of n_k(a) tau_macro(r) M(r, theta) over the class box (M = the 2-D tau
-//    modulation of sv_ringStructure: sub-km texture, propellers; CPU mirror), the Gaussian layer height,
-//    the class's power-law radii and the view frustum, with the same >= 1 px condition. Ratio within
+//    px in radius; expected = Monte Carlo of n_k(a) tau_dyn(r) M(r, theta) over the class box (tau_dyn = the
+//    particle population's optical depth: the photometric profile x RingLod.tauDynFactor, docs/ring-physics.md 10.12;
+//    M = the 2-D tau modulation of sv_ringStructure: sub-km texture, propellers; CPU mirror), the Gaussian layer
+//    height, the class's power-law radii and the view frustum, with the same >= 1 px condition. Ratio within
 //    1 +- max(4/sqrt(expected), 0.04) for the classes with the most expected particles (>= 300).
 // 2. HUD count line     pipeline.stats()['near.count'] starts with "complete" at every place checked, and at the
 //    B ring seen from above (heights --heights m) it is either "complete..." or an explicit "DEFICIT: ~x% ...".
@@ -38,7 +39,8 @@ async function countClasses(page, nClasses, nMc) {
     };
     const eR = f.ring.eR, eP = f.ring.ePhi, cam = f.ring.camLocal;
     const r0 = f.ring.r0 + cam.x;
-    const tauMacro = (rm) => { const l = prof.local(rm); return l.tau * (1 - l.dust); };
+    // presence follows the particle population's optical depth (nearUpdate.glsl: tau x lodTauDyn(tau))
+    const tauMacro = (rm) => { const l = prof.local(rm); return l.tau * lod.tauDynFactor(l.tau) * (1 - l.dust); };
     // the 2-D modulation of sv_ringStructure (sub-km texture, propellers) at a local-frame offset (lx, ly) from the
     // camera: the particles' presence follows tau0 M (CPU mirror, window.__sv.pipeline.ctx.structure)
     const st = sv.pipeline.ctx.structure, mo = [1, 0, 1];

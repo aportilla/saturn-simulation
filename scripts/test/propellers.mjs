@@ -29,7 +29,8 @@
 //               (E[m] = 1 within 0.5 %, ensemble <M> = 1 within 0.5 %); variance split (var of m + E[v]) / var M
 //               within 5 %.
 // 4. structure  the GPU sheet's tau (debug view 7/9: r, tau, theta) looking straight down at a belt propeller (dr ~
-//               1 km) and at Bleriot, texture off: median tau_GPU / (tau0(a') J M_CPU) within 0.97 .. 1.03, 95 % of
+//               1 km) and at Bleriot, texture off (tau0 = the medium's tau, RingProfile.mediumTauAtKm: tau_iso with the
+//               wakes off): median tau_GPU / (tau0(a') J M_CPU) within 0.97 .. 1.03, 95 % of
 //               pixels within +-8 %; the gaps present (min ratio to the unperturbed profile <= 0.65). The belt view
 //               again with the texture on: median within 0.97 .. 1.03, 90 % of pixels within +-8 %, rms of the
 //               modulation GPU / CPU within 0.9 .. 1.1.
@@ -297,7 +298,9 @@ await withHarness('propellers', { usage: 'node scripts/test/propellers.mjs [--ba
             const k = (y * w + x) * 4, r = b7[k] * 1e6, tau = b7[k + 2], th = b9[k + 2];
             if (!(r > 1e8) || !Number.isFinite(tau)) continue;
             st.streamAtSEF(r, th, fp, false, sp);
-            const t0 = prof.tauAtKm((r + sp.da) / 1e3) * sp.J;
+            // the rendered tau is the medium's (tau_iso without wakes; RingProfile.mediumTauAtKm, ring-physics.md 10.12)
+            const rLag = (r + sp.da) / 1e3;
+            const t0 = (prof.mediumTauAtKm ? prof.mediumTauAtKm(rLag, sv.frame.settings.wakes) : prof.tauAtKm(rLag)) * sp.J;
             if (t0 < 0.1) continue;
             const exp = t0 * sp.tauMod;
             ratios.push(tau / exp);
@@ -353,7 +356,8 @@ await withHarness('propellers', { usage: 'node scripts/test/propellers.mjs [--ba
           return !(w < -rb || Math.abs(vx) > w * tx + rb * Math.sqrt(1 + tx * tx) || Math.abs(vy) > w * ty + rb * Math.sqrt(1 + ty * ty));
         };
         const Mof = (lx, ly) => st.tauModAt(cam.x + lx, Math.atan2(cam.y + ly, f.ring.r0 + cam.x + lx), 0)[0];
-        const tauMacro = (rm) => { const l = prof.local(rm); return l.tau * (1 - l.dust); };
+        // presence follows the particle population's optical depth (tau_dyn: nearUpdate.glsl tau x lodTauDyn(tau))
+        const tauMacro = (rm) => { const l = prof.local(rm); return l.tau * lod.tauDynFactor(l.tau) * (1 - l.dust); };
         // groups of the local modulation M: partial gap, its flank, undisturbed (incl. the enhanced lobe)
         const grp = (M) => (M < 0.75 ? 0 : M < 0.95 ? 1 : 2);
         // the class with the most drawn particles >= 1 px

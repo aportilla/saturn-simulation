@@ -112,7 +112,9 @@ over ±40 km, except across dust ↔ macroscopic boundaries (gap and ring edges 
 * *Caveat*: the occultation size distributions and the wave-derived Σ disagree everywhere by factors of 2–10 unless
   the particles are very porous. The implied densities above are the measure of that tension.
 
-**Thickness H** (full thickness; RingLod puts small grains at σ_z = 0.4 H and metre-sized boulders at 0.15 H).
+**Thickness H** (full thickness; the vertical law σ_z(a) of each size is the zone's `sigZLaw` (§10.12): in the A and B
+rings the N-body laws, 0.45 H (a/1 m)^−0.5 capped at 0.8 H (A, H = 10 m) and 1.8 m (a/1 m)^−0.35 (B2/B3, ≈ 9 m
+equivalent H); elsewhere small grains at σ_z = 0.4 H and metre-sized boulders at 0.15 H).
 * Upper limits from density-wave damping (Tiscareno et al. 2007): ≤ 3.0 m (118,800 km), ≤ 4.5 m (120,700 km),
   ≤ 10–15 m in the inner A ring.
 * Wake heights: H/W = 0.15–0.37 with W ~20–30 m (Colwell et al. 2006); H/W < 0.12, i.e. H < 4 m, in later
@@ -136,9 +138,13 @@ over ±40 km, except across dust ↔ macroscopic boundaries (gap and ring edges 
   bodies" that grow and break up by collisions (Weidenschilling et al. 1984). Rendered as triaxial ellipsoids with a
   cellular relief of sub-clasts (weight 0 below ~10 cm, full above ~0.7 m) plus pebble- and grain-scale texture.
 * *Spin*: principal-axis rotation about the short axis (other states are damped by collisions and internal
-  friction); large particles near the orbit normal at ~Ω/2 (the vorticity of the Keplerian shear), small ones
-  faster and random. Aligned large bodies are kept nearly round in this model (`NR_ISO`) because the medium's
-  cross-section is isotropic; tidal (radial) alignment is not modelled.
+  friction); large particles slowly, with axes near the orbit normal, small ones faster and random (rotation rates
+  of order Ω for the largest bodies and roughly ∝ 1/a below: Schmidt et al. 2009). Modelled as a mixture: a
+  share f(a) of each size (0 below 5 cm, 1 above 1 m) spins about axes within ~10° of the normal, the rest randomly;
+  the shapes keep their full spread, and the medium carries the aligned classes' direction-dependent cross-section
+  (§10.12; the former stopgap kept aligned bodies nearly round, `NR_ISO`). Tidal (radial) locking of bound aggregates
+  (Karjalainen & Salo 2004) is supported but switched off by the physics: the Hill parameter r_h is 0.5–0.8 in every
+  main-ring zone, below the r_h ≈ 1.1–1.2 where aggregates form (Salo et al. 2018).
 * *Surface law*: Hapke's model with macroscopic roughness (Hapke 1984) and the 2002 H functions. θ̄ = 30°: Hapke fits
   to HST ring phase curves give 26 ± 9° for the C ring, 10 ± 5° for the Cassini Division and 63–70° for the A and
   B rings, "suggesting lumpy particles" (Poulet et al. 2002; beyond the model's range — that part of the roughness
@@ -212,10 +218,14 @@ from the PDS Rings Node "Vital statistics" table.
 ## 6. What it is like inside the rings
 
 Computed by `node scripts/data/rings/inside_numbers.mjs` from the zone table, the real τ (local mean), the
-J2–J6 orbital frequencies (`src/core/constants.ts`) and RingLod's vertical law (σ_z = sigZFrac(a)·H, Gaussian).
-Mid-plane extinction and filling include the finite particle size (a boulder bigger than its vertical scatter
-blocks its full chord). Velocity dispersion is taken as ν·σ_z. It is consistent with Toomre Q ~ 1–2 in the A/B
-rings, and with the ~1 mm/s inferred from density-wave damping, to within the factor-2 uncertainty of H.
+J2–J6 orbital frequencies (`src/core/constants.ts`) and the zone's vertical law (σ_z(a), Gaussian; the N-body laws
+of §10.12 in the A and B rings, the older σ_z = (0.4 → 0.15)·H elsewhere). Mid-plane extinction and filling include
+the finite particle size (a boulder bigger than its vertical scatter blocks its full chord). This is the mean layer:
+in the B-ring core its mid-plane filling (0.66) is at the packing ceiling, which the renderer enforces by thickening
+the participating particles (§10.12). Velocity dispersion is taken as ν·σ_z. It is consistent with Toomre Q ~ 1–2
+in the A/B rings, and with the ~1 mm/s inferred from density-wave damping, to within the factor-2 uncertainty of H.
+The counts below are for the photometric τ; the app's particle population carries the dynamical τ of the clumpy ring
+(§10.12: ×1.06 in the mid-A ring, ×2.2 in the B-ring core), and its HUD counts follow that.
 
 | quantity | C ring (82,000 km) | C plateau P7 (86,490) | B1 (95,000) | B3 core (107,000) | Cassini Div. (119,000) | A mid (128,000) | A outer (135,000) |
 |---|---|---|---|---|---|---|---|
@@ -225,15 +235,15 @@ rings, and with the ~1 mm/s inferred from density-wave damping, to within the fa
 | layer thickness H | 5 m | 5 m | 10 m | 15 m | 4 m | 10 m | 10 m |
 | Σ (literature) | 40 kg/m² | 15 | 400 | 680 | 12 | 284 | 186 |
 | particles per m² of ring > 1 cm / > 10 cm / > 1 m | 39 / 0.27 / 0.0018 | 110 / 0.79 / 0.0054 | 12 / 3.1 / 0.034 | 130 / 28 / 0.14 | 9.9 / 0.12 / 0.0015 | 37 / 1.8 / 0.021 | 150 / 1.3 / 0.012 |
-| per m³ at mid-plane > 1 cm / > 10 cm / > 1 m | 8.1 / 0.074 / 0.00075 | 24 / 0.22 / 0.0022 | 1.5 / 0.43 / 0.0068 | 11 / 2.6 / 0.018 | 2.6 / 0.044 / 0.0008 | 4.3 / 0.25 / 0.0043 | 16 / 0.18 / 0.0023 |
-| typical spacing of > 10 cm / > 1 m bodies | 2.4 m / 11 m | 1.7 / 7.7 m | 1.3 / 5.3 m | 0.7 / 3.8 m | 2.8 / 11 m | 1.6 / 6.2 m | 1.8 / 7.5 m |
-| mid-plane volume filling factor | 0.03 | 0.08 | 0.17 | 0.40 | 0.03 | 0.16 | 0.10 |
-| horizontal mean free path (mid-plane) | 31 m | 11 m | 7 m | 1.7 m | 56 m | 10 m | 12 m |
-| **how far you can see horizontally** (to 1 %) | ~140 m | ~50 m | ~33 m | ~8 m | ~260 m | ~46 m | ~57 m |
-| vertical: mid-plane → open sky, transmission | 0.93 | 0.82 | 0.65 | 0.05 (mfp 1.7 m) | 0.97 | 0.72 | 0.74 |
+| per m³ at mid-plane > 1 cm / > 10 cm / > 1 m | 8.1 / 0.074 / 0.00075 | 24 / 0.22 / 0.0022 | 1.1 / 0.37 / 0.0087 | 12 / 3.3 / 0.034 | 2.6 / 0.044 / 0.0008 | 1.9 / 0.091 / 0.0024 | 7.4 / 0.068 / 0.0013 |
+| typical spacing of > 10 cm / > 1 m bodies | 2.4 m / 11 m | 1.7 / 7.7 m | 1.4 / 4.9 m | 0.67 / 3.1 m | 2.8 / 11 m | 2.2 / 7.5 m | 2.5 / 9.1 m |
+| mid-plane volume filling factor | 0.03 | 0.08 | 0.20 | 0.66 | 0.03 | 0.11 | 0.08 |
+| horizontal mean free path (mid-plane) | 31 m | 11 m | 7 m | 1.2 m | 56 m | 20 m | 25 m |
+| **how far you can see horizontally** (to 1 %) | ~140 m | ~50 m | ~32 m | ~5 m | ~260 m | ~90 m | ~110 m |
+| vertical: mid-plane → open sky, transmission | 0.93 | 0.82 | 0.65 | 0.05 (mfp 1.2 m) | 0.97 | 0.72 | 0.74 |
 | whole layer, straight through (e^−τ) | 0.87 | 0.67 | 0.42 | 0.003 | 0.94 | 0.52 | 0.55 |
 | direct sunlight reaching mid-plane, Sun 8.2° above the rings (Nov 2026) | 62 % | 25 % | 5 % | 10⁻⁹ (night) | 80 % | 10 % | 12 % |
-| random velocity, cm grains / m boulders | 0.5 / 0.2 mm/s | 0.5 / 0.2 | 0.9 / 0.4 | 1.1 / 0.5 | 0.24 / 0.09 | 0.5 / 0.2 | 0.5 / 0.2 |
+| random velocity, cm grains / m boulders | 0.5 / 0.2 mm/s | 0.5 / 0.2 | 1.7 / 0.3 | 1.6 / 0.3 | 0.24 / 0.09 | 1.1 / 0.3 | 1.0 / 0.3 |
 | collisions per orbit: cm grain (≈2τ) / mean (ω_c ≈ 3Ωτ) | 0.25 / 2.5 | 0.7 / 7.5 | 1.2 / 16 | 2 / >100 (in contact) | 0.12 / 1.2 | 1 / 12 | 0.9 / 11 |
 | orbital period / speed | 6.61 h / 21.7 km/s | 7.16 h / 21.1 | 8.26 h / 20.1 | 9.88 h / 18.9 | 11.6 h / 17.9 | 12.94 h / 17.3 | 14.0 h / 16.8 |
 | shear speed 100 m away (1.5 Ω·100 m) | 4.0 cm/s | 3.7 | 3.2 | 2.7 | 2.3 | 2.0 | 1.9 |
@@ -242,15 +252,17 @@ rings, and with the ~1 mm/s inferred from density-wave damping, to within the fa
 
 In words:
 * **A ring (128,000 km).** About 37 particles per square metre of ring are larger than a centimetre. Fewer than
-  two are larger than 10 cm, and a boulder over 1 m comes once per ~50 m². Bodies larger than 10 cm sit ~1.6 m
-  apart in the 10 m-thick sheet. You can see ~10 m (1/e) to ~50 m (1 %) horizontally; looking straight up you see
-  72 % of the sky. Self-gravity clumps them into trailing wakes ~40 m apart. Everything moves with everything
-  else to within ~0.5 mm/s (a few cm per minute). A particle 100 m outward drifts backward at 2 cm/s. Each grain
-  is struck about once per 13-h orbit.
-* **B ring core (107,000 km).** A closely packed swarm in a 15 m layer: ~130 particles per m² of ring larger than
-  5 cm, ~28 larger than 10 cm, a 1–2 m body every ~7 m². Bodies are spaced ~0.7 m apart; you can see 2–8 m.
+  two are larger than 10 cm, and a boulder over 1 m comes once per ~50 m². The boulders lie in a thin sheet (rms
+  height ~2–4.5 m), the small particles in a thicker one (~8 m; §10.12), so bodies larger than 10 cm sit ~2.2 m apart
+  at the mid-plane. You can see ~20 m (1/e) to ~90 m (1 %) horizontally; looking straight up you see 72 % of the sky.
+  Self-gravity clumps the larger ones into trailing wakes ~40 m apart. The boulders move with each other to within
+  ~0.3 mm/s, the cm grains ~1 mm/s (a few cm per minute). A particle 100 m outward drifts backward at 2 cm/s. Each
+  grain is struck about once per 13-h orbit.
+* **B ring core (107,000 km).** A closely packed swarm in a layer of rms height ~1.4 m (2 m bodies) to ~5 m (5 cm): ~130 particles per m² of ring larger
+  than 5 cm, ~28 larger than 10 cm, a 1–2 m body every ~7 m². Bodies are spaced ~0.7 m apart; you can see 1–5 m.
   The layer above you has τ ≈ 3, so the mid-plane is in deep shadow (≤ 5 % of diffuse light; no direct Sun at
-  an 8° solar elevation). Particles are continually in contact. Wakes ~60 m apart.
+  an 8° solar elevation). Particles are continually in contact: the mid-plane is at the packing limit, and the
+  wakes (~60 m apart) are thickened to hold their material.
 * **C ring (82,000 km).** Sparse and dark: 39 particles per m² larger than 1 cm (mostly 0.4–6 cm grains), one
   > 1 m boulder per ~550 m² (11 m apart in a 5 m layer, the largest ~10 m across). You see ~30–140 m sideways
   and 93 % of the sky. A grain collides only every ~4 orbits (≈ 1 day). The shear is fastest here: 4 cm/s at
@@ -772,7 +784,8 @@ measures the window mean on the GPU: 0.995–1.006 in the A and B rings (stats `
 
 *(Status Nov 2026: the plateau envelope, the A/B parameter sets, strength 1 without the "chaos" in the B ring, the
 `wakeDensity` fix, the separate gap γ and local asynchrony are implemented and re-calibrated: §10.11; the outer A ring:
-§10.6. The size rules, the medium's τ_dyn and the vertical law below are open.)*
+§10.6. The size rules — participation, the vertical law, the packing ceiling — and the medium's τ_dyn are implemented
+as described in §10.12.)*
 
 The calibration (`calibrate.py`) scores Σ((m − m_N-body)/tol)² over 21 metrics: spacing, density quantiles, ACF, crest
 skeleton, pitch (pooled, within-snapshot spread and drift) and shearing-frame correlation. The tolerance is max(15 %, a
@@ -996,20 +1009,16 @@ the old model):
 * A ring: spacing 1.34 vs 1.67 λ_T; crests long along their length (L_par 1.33 vs 0.85 λ_T: the tile scale lengthens
   them); filaments 3.8 vs 3.1 λ_T; granola S/W 5.4 vs 3.7 (was 7.1).
 * B ring: gap floor p5 0.09 vs 0.03; wake cores less opaque (vertical τ_phot 4.2 vs 7.6); granola H/W 0.66 vs 0.37 (the
-  layer is twice too thick: the vertical law, next package).
-* All sizes follow the wakes fully (p = 1): A128-sd's τ field has more contrast than the N-body's (p5/p95 0.06/3.06 vs
-  0.28/2.47) — the participation rule of §10.9 (hooks: `wakeDisplacementP`, `wakeDensityTau`, `participationTau`).
-* The medium's τ: with strength 1 the B-ring medium τ_zone·D transmits like a lower τ through its deep gaps (the N-body
-  ring is 45 % more transparent than its τ_dyn); the profile τ is photometric, so the τ_dyn normalisation of §10.9 is
-  now the larger open item (next package).
+  layer was twice too thick: the vertical law of §10.12 now uses the N-body heights).
+* All sizes followed the wakes fully (p = 1): A128-sd's τ field had more contrast than the N-body's (p5/p95 0.06/3.06 vs
+  0.28/2.47) — the participation rule, implemented in §10.12.
+* The medium's τ: with strength 1 the B-ring medium τ_zone·D transmitted like a lower τ through its deep gaps (14.7×
+  exp(−τ) at normal incidence, A ring 1.15×) — the τ_dyn normalisation of §10.12.
 * The medium's statistical wakes (far-field sheet, the march's statistical branch) see the field through the ring-layer
   probe, which the port reproduces to 3 decimals, and their Gamma transmission model with the probe's table matches
-  explicit paths through the new field within ±4 % (χ ≤ 1.25). But they take the path parameter χ = H|V·n|/(μλ) with
-  the local Toomre λ ∝ Σ(r) (`rlToomre`), while the explicit field, and so the probe's unit of χ, has the anchor's λ:
-  a few km from the anchor, where Σ differs, the statistical transmission across the wakes is up to 14 % above the
-  explicit field at the march → sheet handover (`test:seam`, handover; with the anchor's λ in `rlMainSheet` and the
-  march's statistical branch every handover check of a-ring-1km and unlit-2km passes). The fix belongs to the
-  ring-layer shaders (scripts/test/README.md, handover residual 4).
+  explicit paths through the new field within ±4 % (χ ≤ 1.25). They take χ with the anchor's λ within the explicit
+  field's reach (`rlWakeLambda`), so the statistical transmission across the wakes agrees with the explicit field at
+  the march → sheet handover (`test:seam`, handover).
 
 **Cost** (`npm run test:wakecost`, GPU throughput per call, median of 3 runs interleaved with the previous revision on the
 same machine; a-ring-1km / b-ring-inside):
@@ -1028,6 +1037,106 @@ rates on the shared machine varied 3× between runs of identical code; qualitati
 ~2× and b-ring-inside ~2–3× slower. `WAKE_SETS.A.asyncD = 0` returns the A ring's wake cost to its old level (score
 65 → 106). Extrapolating δ inside the inverse instead of sampling it failed (it is sheared with the flow: 2–15 % of the
 particles > 20 % off).
+
+### 10.12 Size rules and the medium's dynamical τ (implemented, Nov 2026)
+
+The §10.9 size rules in the LOD contract (`src/rings/ringDynamics.ts`, `WakeStats.ts`, `RingLod.ts` + `ringLod.glsl`,
+`RingProfile.ts`; ARCHITECTURE.md → LOD contract). Both renderers take them from the same per-class constants, so the
+contract stays exact: near-field particles + medium = the population in every direction, counts physical.
+
+**Participation.** p_rel(a) = min(1, (a/a_p)^0.5), a_p = 1.2 m at τ 0.66 and 0.3 m at τ 2.5 (the two N-body sites),
+log-interpolated in the zone's typical τ (so it does not change while the camera crosses sub-km structure).
+* Implemented as a *mixture*: a share p of each size class follows the wake map fully (`wakeDisplacementP`: a per-particle
+  hash against the class's p, `NS_PART`), the rest is not displaced. The class's surface density is then exactly
+  1 + p (D − 1) at any contrast and the medium's D_τ = 1 + p̄ (D − 1) is the exact sum of its classes (scaling each
+  particle's displacement by p would leave gaps far emptier than the medium: at p = 0.5 a D = 0.05 gap stays at 0.095,
+  not 0.53). One p per class (its cross-section-weighted mean), as lodCarry is a class mean.
+* The column's τ-weighted p̄: 0.63 at 128,000 km (A), 0.79 at 105,000 km (B). The medium's contrast is p̄ × the wake
+  channel (`TauPyramid` folds it into the profile's wake channel; the sheet's and the march's statistics, the clipmap
+  and `wakeDensityTau` follow); the march's LUT carries the participating classes as their own band.
+* Result: the medium's D_τ in the A ring has p5/p95 0.44/2.41 (N-body τ field 0.28/2.47; with full participation
+  0.11/3.25). The p95 matches; the gaps stay fuller than in the N-body because the mixture's uniform part is a floor
+  (1 − p̄ = 0.37): the N-body's small particles avoid the gaps more than linearly at large contrast.
+
+**Dynamical optical depth.** The profile τ is photometric (occultations). The particles and the medium carry τ_dyn,
+solved per radius from the app's own field: ⟨exp(−τ_dyn g1 D_τ(x))⟩_x = exp(−τ_profile) at normal incidence, with g1
+the spin-aligned classes' normal-incidence cross-section (below) and D_τ from WAKE_D_BINS (the means of D in 256
+equal-probability bins of the CPU mirror `WakeField.densityAt`, sampled over 6 generation cycles; `test:lod` re-measures
+them and checks the GPU against the mirror, the Python port checks the mirror to 1e-13). The factor x = τ_dyn g1 / τ_profile:
+* A ring (128,000 km, τ_profile 0.594): x = 1.134 (§10.9 expected ≈ 1.15); g1 = 1.068, so τ_dyn = 0.629.
+* B ring (105,000 km, τ_profile 4.14): x = 2.27 (§10.9 expected 1.6–1.9 at the N-body site's τ; at B3's τ ≈ 4 the
+  deep gaps of the B set carry nearly all the transmission), τ_dyn = 9.22.
+* Wakes off: the homogeneous layer τ_iso = τ_profile / g1 (the pyramid holds both, `uRlTauHalf`). The two-stream
+  (multiple-scattering) layer is τ_iso in both cases; its source per unit of the medium's τ is the two-stream source at
+  the same column fraction in the march, the sheet (`rlLayerIFWA`: emission and view attenuation scale by τ_dyn/τ_iso)
+  and for the particles.
+* Near-field counts follow τ_dyn (`lodTauDyn`, presence in nearUpdate; `test:counts` expects the same).
+* Check (`npm run test:lod`, transmission at normal incidence, texture and propellers off, averaged over a generation
+  cycle and 3 wake patterns): A ring 1.000 × exp(−τ_profile) (every frame within 1 % of the prediction from the live
+  field), B ring 1.15× (−3.4 % in τ; frames 0.55–1.39× through the cycle: the B set's two generations hand over
+  globally). Before: 1.15× (A) and 14.7× (B: effective τ 1.5 instead of 4.2). The B residual: the march's clipmap
+  prefilter correction (a Gamma-model estimate of the texel smoothing) overshoots where T is set by the emptiest gaps
+  (+17 % over the reference field), and the reference itself is ~8 % below the 2-D column prediction (the thickened
+  wakes catch slightly oblique rays). Wakes off: 1.002 / 1.009.
+
+**Vertical law per zone** (`sigZLaw` in `ringRegions.ts`, σ_z(a) of each size; `zoneSigZ` blends zones; RingLod's class
+values are cross-section-weighted means, CPU and GLSL from the same uniforms):
+* A_in, A_out: σ_z = H · min(0.8, 0.45 (a/1 m)^−0.5) (H = 10 m): 2.0 m at 5 m, 4.5 m at 1 m, 8 m below 0.3 m (the cap
+  until the cm grains are constrained).
+* B zones: σ_z = 1.8 m (a/1 m)^−0.35 (the N-body law, capped at 0.8 H): 1.4 m at 2 m, 5 m at 5 cm. Measured at one B
+  site (105,000 km); applied to B1–B5.
+* Other zones: unchanged (0.4 → 0.15 H over 1 cm–5 m). The random velocities follow (c_r = κ 1.5 σ_z per class).
+* What it is like inside: §6 (A-ring mid-plane 2× less crowded, visibility ~90 m instead of ~46 m).
+
+**Packing ceiling.** Where the participating particles' mid-plane filling would exceed 0.65 (random close packing; N-body
+wake cores 0.64 at λ/16) they are thickened: σ_z,k(x) = σ_z,k m(x), m = max(1, τ_dyn ffP min(D, D_cap)/(0.65 − τ_dyn ffNP)),
+ffP / ffNP the mid-plane filling per unit τ_dyn of the participating / other classes (with the classes' σ_z as drawn),
+D_cap the mean D of the densest 0.4 % of the field (the top bin of WAKE_D_BINS: 7.4 A, 8.0 B).
+* Near field: the participating particles' vertical scatter × m from the forward-map density at their own position
+  (`wakeDisplacementJ`, nearUpdate); the medium: per column (march statistics: per two-column class; explicit field:
+  per step) through the LUT's participating band at z/m; the slab bound holds the layer thickened to D_cap
+  (`uLodSlabK`).
+* A ring: binds only in the densest cores (D > 6.4; m ≤ 1.16). B ring (105,000 km): binds already at the mean
+  density, because τ_dyn = 9.2 (m = 1.62 at D = 1, 4.85 at D = 3, 13 at D_cap; slab ±28 H; the N-body site, at
+  τ_sim 1.34, gives σ_z ∝ D^0.49 in the wakes). The mean layer stays ~±32 m (`layerHalf`, which sizes the near
+  field's allocation).
+* The non-participating particles are spread uniformly and add ≤ 0.03 to the filling everywhere, so only the
+  participating ones are thickened (where the near field already evaluates the wake map).
+
+**Spin alignment and tidal locking** (replacing the `NR_ISO` stopgap that kept aligned bodies nearly round).
+* Spins: large particles rotate slowly with axes near the orbit normal, small ones fast with random axes (rotation rates
+  of order Ω for the largest bodies, roughly ∝ 1/a below; Schmidt et al. 2009). Model: a share f(a) = smoothstep(0.05,
+  1, a/1 m) of each class spins about axes within ~10° of the normal (axis = mix(random, normal, 0.85), `NS_ALN`), the
+  rest randomly. The literature gives the trend, not a per-size share: the thresholds are a modelling choice (open;
+  with the 1/a law relative to the largest bodies the transition would scale with a/a_max).
+* Shapes keep their full spread. An aligned body spinning about its short axis presents more area along its axis:
+  the mean projected area of the aligned population is πa² (1 + G(μ)), G = −0.075 edge-on (μ = 0) … +0.138 along the
+  normal (μ = 1), measured from the shape and axis distributions (CPU mirror of `nearShape` / `nearSpinAxis`, checked
+  against the GLSL by `test:particles`); a class's mean is πa² (1 + f_k G(μ)). Column shares: f̄ = 0.49 (A), 0.31 (B).
+* The medium is direction-dependent with it: the view and Sun paths through the aligned classes scale by 1 + f G(μ)
+  (the LUT's aligned channels, the sheet's `gA`), the single scattering by the light intercepted along the Sun, the
+  diffuse field isotropically. τ_dyn is normalized at normal incidence (g1 = 1 + f̄ G(1)).
+* Tidal locking: bound aggregates rotate synchronously with the long axis nearly radial (Karjalainen & Salo 2004); they
+  form where the Hill parameter of a particle pair r_h ≳ 1.1 (transient) to 1.2 (persistent) (Salo et al. 2018; at
+  r_h = 1 a radially aligned, synchronously rotating pair in contact is just bound: Weidenschilling et al. 1984). The
+  locked share is smoothstep(1.1, 1.2, r_h) with r_h from the zone's bulk density and radius: 0.5–0.8 in every
+  main-ring zone, so 0. The orientation model (`nearOrientation`) and the contract (an azimuthal term T(μ) cos 2ψ)
+  support it.
+
+**Medium photometry with the rules** (`test:seam`): with participation, τ_dyn and the packing the clipmap's reflection
+excess (handover residual 1, was 3–20 %) is ≤ 2 %; the sheet's multiple scattering now uses the medium's τ metric (it was
+3.5 % below the march's statistics on the unlit face); and the sheet's Saturnshine beams no longer take the point-source
+shadow-hiding surge — an opposition peak of a few degrees applied to Saturn's half-disk of tens of degrees made the sheet
+up to 14 % too bright at high solar phase (the homogeneous "base radiative transfer" residual). Every handover view now
+passes the default limits except yaw120's statistics/sheet (0.05: the sheet's decorrelation onset across the wakes).
+
+**Cost** (`npm run test:fps`, quality high, one run each on a shared GPU, before → after): a-ring-inside 29.4 → 23.9
+fps (+26 % particles ≥ 1 px: the thicker small-particle layer), a-ring-1km 51.9 → 38.2, a-ring-30m 28.6 → 13.7 (the
+camera at 30 m is now inside the slab — the small particles' ±4σ reach ±32 m and the slab holds the packed cores, ±85 m
+— so the ring layer marches the whole frame), b-ring-inside 22.0 → 15.4 (+25 % particles: τ_dyn). Inside the B ring
+the near field's 12M slots no longer suffice 100 m above the layer (38 % of the ≥ 1 px particles missing, reported by
+the HUD; 9 % before). The B ring's mid-plane at the packing ceiling also leaves more overlaps to the contact step
+(`test:contact` b-preset: 21 % of the visible overlaps remain, 81 % of them at crowded particles; 2 % before).
 
 ## 11. Sub-km optical-depth texture (`src/rings/ringTexture.ts`, `shaders/ringTexture.glsl`)
 

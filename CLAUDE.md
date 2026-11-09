@@ -12,12 +12,15 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
 ## Commands
 - `npm run dev` → http://127.0.0.1:5173 (often already running; check with `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5173/`)
 - `npm run typecheck` (tsc --noEmit) and `npm run build` (typecheck + vite build) — keep both clean
-- **Regression suite** (real GPU, starts its own private Vite server unless `--base` answers; ~12 min):
+- **Regression suite** (real GPU, starts its own private Vite server unless `--base` answers; ~15 min):
   `npm test` = `test:smoke` (every preset: console/page/GL errors, pass fallbacks, NaN/negative pixels) +
   `test:physics` (ephemeris, J2–J6 frequencies, particle kinematics vs the exact Hill solution) +
-  `test:counts` (drawn particles vs the analytic expectation, HUD "complete") + `test:seam` (near field +
+  `test:counts` (drawn particles vs the analytic expectation, HUD "complete") + `test:lod` (the LOD contract's
+  size rules: CPU wake mirror vs GPU, the wake statistics behind τ_dyn — prints new `WAKE_D_BINS` when the wake model
+  changes — and the medium's transmission vs the occultation τ) + `test:seam` (near field +
   medium vs medium alone, incl. the old arc repro; `--only handover`: the medium's explicit wake field, its
-  statistics and the sheet vs a reference explicit field across the march -> sheet handover) + `test:exposure`
+  statistics and the sheet vs a reference explicit field across the march -> sheet handover; `--only base`: march vs
+  sheet without wakes) + `test:exposure`
   (the astronaut doesn't change the auto exposure) + `test:edges` (moonlet gap edges and B-ring edge modes: gaps
   empty, rendered edges = streamline model, near field follows) + `test:moonflux` (unresolved-moon point flux =
   resolved brightness, measured shapes) + `test:particles` (resolved-particle regolith law / factor LUT / relief:
@@ -93,6 +96,7 @@ mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,bod
 | time, frames, Sun, Saturn rotation, constants, co-orbiting (Hill) frame | `src/core/*` (`ephemeris.ts`, `RingAnchor.ts`, `constants.ts`, `FrameState.ts`) |
 | ring optical depth, zones (sizes q/aMin/aMax, thickness H, Σ, albedo, wakes, dust), features | `src/rings/ringRegions.ts`, `src/rings/RingProfile.ts`; data `public/data/rings/` |
 | LOD contract (which particles are drawn vs. carried by the medium), self-gravity wakes | `src/rings/RingLod.ts` + `shaders/ringLod.glsl`, `src/rings/WakeField.ts` + `shaders/wakes.glsl` (CPU/GLSL mirrors; wake sets per zone `wakeB` in `ringRegions.ts`; Python port + N-body calibration `scripts/data/nbody/procedural.py`, keep `--verify` passing) |
+| N-body size rules in the contract (participation, the vertical law per zone, packing ceiling, spin alignment / tidal locking) and the medium's dynamical τ | `src/rings/ringDynamics.ts`, `src/rings/WakeStats.ts` (`WAKE_D_BINS`: re-paste when `test:lod` prints new ones), `sigZLaw` in `ringRegions.ts`, `RingProfile.ts` (tauDyn / tauIso / pbar), `RingLod.ts` (per-class constants); ring-physics.md §10.12; check `npm run test:lod` |
 | 2-D ring structure (streamline map: moonlet gap edges, normal modes of eccentric edges; hooks for relief and 2-D τ modulation) — every main-ring τ lookup goes through it | `src/rings/RingStructure.ts` + `src/rings/streamlines.ts` + `src/rings/ringModes.ts` (CPU) + `shaders/ringStructure.glsl`; table `public/data/rings/moonlet_response.*` from `scripts/data/rings/moonlet_response.mjs` |
 | sub-km 2-D τ texture (sheared, evolving; footprint prefilter → `rlApplyTauMod` in `rlOptics.glsl`) | `src/rings/ringTexture.ts` + `shaders/ringTexture.glsl` (chunk `sv_ringTexture`, included by `sv_ringStructure`) |
 | propeller moonlets (named giants, belts: positions, partial gaps / lobes / wakes, relief; moonlet bodies) | `src/rings/propellers.ts` + `shaders/ringPropellers.glsl` (chunk `sv_ringPropellers`), `src/render/passes/PropellerMoonletPass.ts` + `src/render/propellers/*`; presets `propeller-bleriot`, `propeller-belt`; Cassini views `scripts/test/specs/propellers.json` |
@@ -130,9 +134,11 @@ mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,bod
   the remaining optical depth. If the 12M-slot memory cap ever binds (B ring seen from above), the HUD reports
   the deficit (`near.count` in `pipeline.stats()`); never hide it.
 - **One contract, two renderers**: the near field (particles) and the ring layer (medium) must share the LOD
-  functions (`ringLod.glsl`) and the particle phase function (`ringParticlePhase` power law in
-  `lighting.glsl`); the CPU mirrors (`RingLod.ts`, `WakeField.ts`, `render/rings/phase.ts`, `far/Ringshine.ts`)
-  must stay in sync with the GLSL. Resolved particles keep it through the regolith law × the per-particle factor
+  functions (`ringLod.glsl`: incl. the size rules' per-class participation, aligned share, anisotropy, τ_dyn and
+  packing) and the particle phase function (`ringParticlePhase` power law in
+  `lighting.glsl`); the CPU mirrors (`RingLod.ts`, `WakeField.ts` incl. `densityAt` / `displacementAt`,
+  `ringDynamics.ts`, `render/rings/phase.ts`, `far/Ringshine.ts`) must stay in sync with the GLSL. The profile τ is
+  photometric; particles and medium carry τ_dyn (with wakes) so that the medium's transmission is the occultation τ. Resolved particles keep it through the regolith law × the per-particle factor
   (`near/NearRegolith.ts` mirrors `ringRegolithIF` and builds the LUT); their shapes keep ⟨projected area⟩ = πa²
   (κ, `NR_K0..3`) and the relief photometry table `RELIEF_PHOT` (`near/NearRelief.ts`) — after changing the relief
   or the shading, run `npm run test:particles` and paste the constants it prints.

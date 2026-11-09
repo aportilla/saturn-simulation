@@ -225,12 +225,18 @@ export class Pipeline {
       c.structure.prepareNear(rKm * 1000, thCam);
       modKey = c.structure.nearBoundKey(c.lod.box);
     }
-    if (anchorChanged || movedFar || drifted || c.lod.needsRealloc(pa, camZ) || modKey !== this.lastModKey) {
+    const wakesOn = f.settings.wakes;
+    if (anchorChanged || movedFar || drifted || c.lod.needsRealloc(pa, camZ) || modKey !== this.lastModKey || wakesOn !== this.lastWakesOn) {
       const driftKm = c.structure.maxDisplacementNear(rKmE * 1000) / 1000;
       c.structure.prepareNear(rKm * 1000, thCam);
-      // each size class is generated at the max tau over the radial span of its own box (+ the possible drift)
-      c.lod.configure(local, (halfWidth) => c.profile.maxTauKm(rKm, halfWidth / 1000 + driftKm) * c.structure.maxTauModNear(rKm * 1000, halfWidth + driftKm * 1000), camZ, { pixelAngle: pa, maxSlots: this.policy.maxSlots });
+      // each size class is generated at the max particle optical depth (tau_dyn with wakes: RingProfile.tauDyn) over the
+      // radial span of its own box (+ the possible drift)
+      const tauArr = wakesOn ? c.profile.tauDyn : c.profile.tauIso;
+      c.lod.configure(local, (halfWidth) => c.profile.maxTauKm(rKm, halfWidth / 1000 + driftKm, tauArr) * c.structure.maxTauModNear(rKm * 1000, halfWidth + driftKm * 1000), camZ, { pixelAngle: pa, maxSlots: this.policy.maxSlots, wakes: wakesOn });
       c.wakes.configure(local, f.ring);
+      // the medium's mean participation in the wakes (sv_wakes wakeDensityTau, the tau-weighted mean of the column)
+      c.wakes.participationTau = wakesOn ? c.lod.pbarTot : 1;
+      this.lastWakesOn = wakesOn;
       this.lastAnchorId = f.ring.anchorId;
       this.lastLocalRKm = rKmE;
       this.lastLocalRKmL = rKm;
@@ -245,7 +251,6 @@ export class Pipeline {
     const nearAllowed = f.settings.nearField && Math.abs(camZ) < c.lod.maxReach && c.lod.totalParticles > 0;
     c.lod.setActive(nearAllowed && (this.passes.near?.enabled ?? false));
     c.wakes.enabled = f.settings.wakes;
-    if (this.lastWakesOn !== f.settings.wakes) this.lastWakesOn = f.settings.wakes;
     c.wakes.update(f.t);
   }
 

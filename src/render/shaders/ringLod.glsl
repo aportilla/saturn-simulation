@@ -20,6 +20,54 @@ uniform float uLodTauSub;                  // share of tau in particles below th
 uniform float uLodSigZSub;                 // vertical std-dev of that sub-class layer as a fraction of H
 uniform vec2 uLodARange[LOD_CLASSES];      // radius range (aLo, aHi) of class k (m)
 uniform float uLodQ;                       // power-law index q of the size distribution dN/da ~ a^-q
+// size rules (src/rings/ringDynamics.ts, RingLod.ts; docs/ring-physics.md 10.12), vec4-packed per class k = 4i + c
+uniform vec4 uLodClassP[4];                // participation p_k in the self-gravity wakes (mixture: share following them)
+uniform vec4 uLodClassF[4];                // share f_k in the spin-aligned population
+uniform vec4 uLodAniso[5];                 // aligned population: G(mu_i), i = 0..8 (mu_i = i / 8), then T(mu_i)
+uniform vec4 uLodTidal;                    // (tidally locked share of the aligned population, pbar of the column,
+                                           //  aligned share of the column, 1 / g1 = tau_iso / tau_profile at the anchor)
+uniform vec4 uLodPack;                     // packing ceiling: (participating / other particles' mid-plane filling per
+                                           //  unit tau_dyn, density cap, 1 if it can bind)
+uniform float uLodSlabK;                   // slab half-thickness / H (4 sigma of the thickest class, packing included)
+uniform vec4 uLodTauDyn[8];                // tau_dyn / tau_profile of the anchor's zone at LOD_DYN_N log-spaced tau
+#define LOD_DYN_N 32
+#define LOD_DYN_LO 0.005
+#define LOD_DYN_HI 20.0
+#define LOD_ANISO_N 9
+#define LOD_PACK_MAX 0.65
+
+float lodClassP(int k) { return uLodClassP[k >> 2][k & 3]; }
+float lodClassF(int k) { return uLodClassF[k >> 2][k & 3]; }
+float lodTabAniso(int i) { return uLodAniso[i >> 2][i & 3]; }
+// Class k of a particle of radius a (m): the octave [A0 2^k, A0 2^(k+1)) (the top class absorbs larger radii).
+int lodClassOf(float a) { return clamp(int(floor(log2(max(a, 1e-6) * 1000.0))), 0, LOD_CLASSES - 1); }
+// g - 1 of the spin-aligned population along the unit direction d (SEF): its mean projected area relative to the
+// isotropic one is 1 + G(mu) (+ tidal share x T(mu) cos 2psi, psi from the radial direction); class k: 1 + f_k (g - 1)
+float lodAniso(vec3 d) {
+  float x = clamp(abs(d.z), 0.0, 1.0) * float(LOD_ANISO_N - 1);
+  int i = min(int(x), LOD_ANISO_N - 2);
+  float f = x - float(i);
+  float G = mix(lodTabAniso(i), lodTabAniso(i + 1), f);
+  if (uLodTidal.x <= 0.0) return G;
+  float T = mix(lodTabAniso(LOD_ANISO_N + i), lodTabAniso(LOD_ANISO_N + i + 1), f);
+  vec2 h = vec2(dot(d, uRingER), dot(d, uRingEPhi));
+  float hh = dot(h, h);
+  return G + uLodTidal.x * T * (hh > 1e-12 ? (h.x * h.x - h.y * h.y) / hh : 0.0);
+}
+// tau_dyn / tau_profile of the anchor's zone at photometric tau (the particle population's optical depth: presence,
+// lighting columns; the medium reads the profile's per-radius values from the same function)
+float lodTauDyn(float tau) {
+  float x = clamp(log(max(tau, LOD_DYN_LO) / LOD_DYN_LO) / log(LOD_DYN_HI / LOD_DYN_LO), 0.0, 1.0) * float(LOD_DYN_N - 1);
+  int i = min(int(x), LOD_DYN_N - 2);
+  float f = x - float(i);
+  return mix(uLodTauDyn[i >> 2][i & 3], uLodTauDyn[(i + 1) >> 2][(i + 1) & 3], f);
+}
+// Packing ceiling: vertical thickening of the participating particles where the mid-plane filling would exceed 0.65,
+// at particle optical depth tauDyn (incl. any density factor of the structure) and wake density D (capped)
+float lodPackM(float tauDyn, float D) {
+  if (uLodPack.w < 0.5) return 1.0;
+  return max(1.0, tauDyn * uLodPack.x * min(D, uLodPack.z) / max(LOD_PACK_MAX - tauDyn * uLodPack.y, 0.1 * LOD_PACK_MAX));
+}
 
 // 0 beyond the class's instantiated box (horizontal half-size around the camera); only below 1 where it matters
 // if the slot cap clipped the box
@@ -114,8 +162,56 @@ float ringLayerTauBeyond(float z, float tau, float H, float dirSign) {
   return tau * f;
 }
 
-// Half-thickness (m) of the slab that contains essentially all particles (4 sigma of the thickest class).
-float ringSlabHalfThickness(float H) { return 1.6 * H + 0.5; }
+// Half-thickness (m) of the slab that contains essentially all particles (4 sigma of the thickest class, thickened
+// by the packing ceiling up to its density cap; RingLod.slabHalfFor).
+float ringSlabHalfThickness(float H) { return uLodSlabK * H + 0.5; }
+
+// Channels of the vertical structure (per unit optical depth, densities in units of 1/H: the ring layer's LUT) at height
+// z (m) and 3-D camera distance s (m), heights relative to the camera dz, for a layer of thickness H. Per class k (tau
+// share w_k, Gaussian pdf_k (density x H) / column fraction above Q_k, carried share c_k = lodCarry, participation p_k,
+// aligned share f_k) and the sub-class particles (never drawn, not participating, random):
+//   Bp = (RP = sum w p pdf, UP = sum w p pdf (1 - c), QP = sum w p Q, UFP = sum w f p pdf (1 - c))   participating
+//   Bt = (R = sum w pdf,    U = sum w pdf (1 - c),    Q = sum w Q,    UF = sum w f pdf (1 - c))      all particles
+//   Bs = (QS = sum w (1 + f Gs) Q, QSP = sum w (1 + f Gs) p Q, 0, 0)                                  along the Sun
+// with Gs = lodAniso(sun direction). The medium's extinction along a view direction d of the unresolved part at wake
+// density W is (tau / H) [U - UP + W UP + G(d) (UF - UFP + W UFP)]: exact for the mixture models (ringDynamics.ts). The
+// packing ceiling thickens the participating part: its channels are read at z / m (densities / m).
+void ringLodChannels(float s, float z, float dz, float H, float Gs, out vec4 Bp, out vec4 Bt, out vec4 Bs) {
+  Bp = vec4(0.0); Bt = vec4(0.0); Bs = vec4(0.0);
+  float wsum = 0.0;
+  for (int k = 0; k < LOD_CLASSES; k++) {
+    float w = uLodTauFrac[k];
+    if (w <= 0.0) continue;
+    float sig = max(uLodSigZ[k] * H, 0.02);
+    float g = w * lodGaussPdf(z, sig) * H;
+    float qa = w * lodGaussQ(z, sig);
+    float un = g * (1.0 - lodCarry(uLodAEff[k], k, s, dz));
+    float p = lodClassP(k), f = lodClassF(k), gs = 1.0 + f * Gs;
+    Bp += p * vec4(g, un, qa, f * un);
+    Bt += vec4(g, un, qa, f * un);
+    Bs.xy += gs * qa * vec2(1.0, p);
+    wsum += w;
+  }
+  if (uLodTauSub > 0.0) {
+    float sig = max(uLodSigZSub * H, 0.02);
+    float g = uLodTauSub * lodGaussPdf(z, sig) * H;
+    float qa = uLodTauSub * lodGaussQ(z, sig);
+    Bt.xyz += vec3(g, g, qa);
+    Bs.x += qa;
+    wsum += uLodTauSub;
+  }
+  if (wsum <= 0.0) {
+    // no macroscopic size distribution at the anchor: one Gaussian layer, nothing resolved, no wakes
+    float sig = max(0.3 * H, 0.02);
+    float g = lodGaussPdf(z, sig) * H, qa = lodGaussQ(z, sig);
+    Bt = vec4(g, g, qa, 0.0);
+    Bs = vec4(qa, 0.0, 0.0, 0.0);
+    return;
+  }
+  Bp.z /= wsum;
+  Bt.z /= wsum;
+  Bs.xy /= wsum;
+}
 
 // ---- helpers built on the same vertical model (added for the near field; usable by any pass)
 

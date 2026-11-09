@@ -11,9 +11,14 @@
 // at r = rMin + (j*2^L + (2^L-1)/2) * dr0. tauEff of coarse levels preserves the mean transmission at
 // mu = MU_REF: tauEff = -MU_REF * ln(mean(exp(-tau/MU_REF))) (radial prefiltering for distant views).
 import { DataTexture, FloatType, NearestFilter, RGBAFormat, ClampToEdgeWrapping } from 'three';
-import { RING_FEATURES, RING_ZONES, zoneParamsAtKm, describeRadiusKm, type RingZone, type ZoneParams } from './ringRegions';
+import { RING_FEATURES, RING_ZONES, zoneParamsAtKm, zoneSigZ, describeRadiusKm, type RingZone, type ZoneParams } from './ringRegions';
 import { EDGE_FEATURES, snapshotDisplacement } from './ringModes';
 import { dataUrl } from '../core/assets';
+import { orbitalFrequencies } from '../core/constants';
+import {
+  anisotropyAt, anisotropyTables, crossSectionMean, participation, participationScale, spinAlignedShare, toomreLambda,
+} from './ringDynamics';
+import { dynFactor } from './WakeStats';
 
 export const PROFILE_R_MIN_KM = 66_000;
 export const PROFILE_R_MAX_KM = 139_500;
@@ -24,7 +29,12 @@ export const MAX_LEVELS = 16;
 
 export interface RingLocal {
   rKm: number;
+  /** photometric normal optical depth (the profile: occultations) */
   tau: number;
+  /** optical depth of the particle population (isotropic-equivalent cross-section per area) with self-gravity wakes:
+   *  <exp(-tauDyn g1 D_tau)> = exp(-tau) (WakeStats.ts); tauIso without wakes (tau / g1) */
+  tauDyn: number;
+  tauIso: number;
   H: number;
   sigma: number;
   wake: number;
@@ -36,6 +46,57 @@ export interface RingLocal {
   macroscopic: boolean;
   zone: RingZone | null;
   description: string;
+  /** vertical std-dev (m) of a particle of radius a (the zone's vertical law, ringRegions.ts) */
+  sigZ: (a: number) => number;
+  /** participation scale a_p (m) of the zone (ringDynamics.ts) and the tau-weighted mean participation */
+  partAp: number;
+  pbar: number;
+  /** tau-weighted share of the spin-aligned population */
+  fAlign: number;
+  /** wake parameter set (0 = A, 1 = B; blended), the zone's bulk density (kg/m^3) */
+  wakeB: number;
+  rhoBulk: number;
+  /** self-gravity wake strength as WakeField.configure derives it (wake x the lambda / a_max test) */
+  wakeStrength: number;
+  /** tau_dyn / tau_profile of this zone at a photometric tau (with wakes; tau_iso / tau without: dynFactor(tau, false)) */
+  dynFactor: (tau: number, wakes?: boolean) => number;
+}
+
+/** Wake strength at a ring point as WakeField.configure derives it: the zone's wake value faded at low tau times the
+ *  lambda / a_max test (wakes need a Toomre wavelength well above the largest particles). */
+export function wakeStrengthAt(wake: number, sigma: number, kappa: number, aMax: number, macroscopic: boolean): number {
+  const lambda = toomreLambda(sigma, kappa);
+  const sizeOk = Math.min(1, Math.max(0, (lambda / Math.max(aMax, 0.1) - 2) / 4));
+  return macroscopic ? Math.min(1, wake * sizeOk) : 0;
+}
+
+/** Participation / alignment statistics of a zone's size distribution (cached by its parameters). */
+const zoneStatCache = new Map<string, { ap: number; pbar: number; fAlign: number }>();
+export function zoneSizeStats(zp: ZoneParams): { ap: number; pbar: number; fAlign: number } {
+  const key = `${zp.q.toFixed(4)}/${zp.aMin.toPrecision(5)}/${zp.aMax.toPrecision(5)}/${zp.tauTypical.toFixed(4)}`;
+  let s = zoneStatCache.get(key);
+  if (!s) {
+    const ap = participationScale(zp.tauTypical);
+    s = {
+      ap,
+      pbar: crossSectionMean(zp.aMin, zp.aMax, zp.q, (a) => participation(a, ap), [ap]),
+      fAlign: crossSectionMean(zp.aMin, zp.aMax, zp.q, spinAlignedShare, [0.05, 1]),
+    };
+    if (zoneStatCache.size > 4096) zoneStatCache.clear();
+    zoneStatCache.set(key, s);
+  }
+  return s;
+}
+
+/**
+ * Dynamical optical depth factors at a ring point: (with wakes, without) = (x / g1, 1 / g1) with x from the wake
+ * statistics (WakeStats.dynFactor) for contrast c = strength x pbar, and g1 = 1 + fAlign G(1) the spin-aligned classes'
+ * cross-section at normal incidence (ringDynamics.ts anisotropy).
+ */
+export function tauDynFactors(tau: number, wakeB: number, strength: number, pbar: number, fAlign: number): [number, number] {
+  const g1 = 1 + fAlign * anisotropyAt(anisotropyTables(), 1);
+  const x = strength > 1e-3 ? dynFactor(wakeB >= 0.5 ? 'B' : 'A', tau, strength * pbar) : 1;
+  return [x / g1, 1 / g1];
 }
 
 // ------------------------------------------------------------------ deterministic noise
@@ -173,6 +234,11 @@ export class RingProfile {
   readonly wake: Float32Array;
   readonly dust: Float32Array;
   readonly albedo: Float32Array; // rgb interleaved
+  /** optical depth of the particle population with self-gravity wakes / without (RingLocal.tauDyn / tauIso) */
+  readonly tauDyn: Float32Array;
+  readonly tauIso: Float32Array;
+  /** tau-weighted mean participation of the zone's particles in the wakes (ringDynamics.ts) */
+  readonly pbar: Float32Array;
   source = 'procedural';
 
   texA: DataTexture | null = null;
@@ -188,6 +254,9 @@ export class RingProfile {
     this.wake = new Float32Array(n);
     this.dust = new Float32Array(n);
     this.albedo = new Float32Array(n * 3);
+    this.tauDyn = new Float32Array(n);
+    this.tauIso = new Float32Array(n);
+    this.pbar = new Float32Array(n);
   }
 
   static async load(): Promise<RingProfile> {
@@ -267,6 +336,14 @@ export class RingProfile {
       this.albedo[i * 3] = zp.albedo[0];
       this.albedo[i * 3 + 1] = zp.albedo[1];
       this.albedo[i * 3 + 2] = zp.albedo[2];
+      // the particle population's optical depth (photometric profile -> dynamical: wake clumping, aligned classes)
+      const macro = zp.macroscopic && tau > 0.002;
+      const st = zoneSizeStats(zp);
+      const s = this.wake[i] > 0 && macro ? wakeStrengthAt(this.wake[i], this.sigma[i], orbitalFrequencies(r * 1000).kappa, zp.aMax, macro) : 0;
+      const [fOn, fOff] = macro ? tauDynFactors(tau, zp.wakeB, s, st.pbar, st.fAlign) : [1, 1];
+      this.tauDyn[i] = tau * fOn;
+      this.tauIso[i] = tau * fOff;
+      this.pbar[i] = macro ? st.pbar : 1;
     }
   }
 
@@ -343,13 +420,30 @@ export class RingProfile {
     return this.tau[i0] * (1 - f) + this.tau[i0 + 1] * f;
   }
 
-  /** Max tau over [rKm - halfWidthKm, rKm + halfWidthKm] */
-  maxTauKm(rKm: number, halfWidthKm: number): number {
+  /**
+   * The medium's (particle population's) optical depth at radius rKm: tau_dyn with self-gravity wakes, tau_iso without
+   * (the profile's tau is photometric; ring-physics.md 10.12) -- what the ring layer's pyramid holds and its debug views
+   * report.
+   */
+  mediumTauAtKm(rKm: number, wakes: boolean): number {
+    return this.atKm(wakes ? this.tauDyn : this.tauIso, rKm);
+  }
+
+  /** Max tau over [rKm - halfWidthKm, rKm + halfWidthKm] (of `arr`: the photometric profile by default) */
+  maxTauKm(rKm: number, halfWidthKm: number, arr: Float32Array = this.tau): number {
     const i0 = Math.max(0, Math.floor((rKm - halfWidthKm - PROFILE_R_MIN_KM) / PROFILE_DR_KM));
     const i1 = Math.min(this.n - 1, Math.ceil((rKm + halfWidthKm - PROFILE_R_MIN_KM) / PROFILE_DR_KM));
     let m = 0;
-    for (let i = i0; i <= i1; i++) m = Math.max(m, this.tau[i]);
+    for (let i = i0; i <= i1; i++) m = Math.max(m, arr[i]);
     return m;
+  }
+  /** Linear-interpolated value of a per-sample array at radius rKm */
+  private atKm(arr: Float32Array, rKm: number): number {
+    const fi = (rKm - PROFILE_R_MIN_KM) / PROFILE_DR_KM;
+    const i0 = Math.floor(fi);
+    if (i0 < 0 || i0 + 1 >= this.n) return 0;
+    const f = fi - i0;
+    return arr[i0] * (1 - f) + arr[i0 + 1] * f;
   }
 
   /** Full local physical description at radius r (meters). */
@@ -357,20 +451,39 @@ export class RingProfile {
     const rKm = rMeters / 1000;
     const zp = zoneParamsAtKm(rKm);
     const tau = this.tauAtKm(rKm);
+    const st = zoneSizeStats(zp);
+    const macro = zp.macroscopic && tau > 0.002;
+    const sigma = sigmaModel(zp, tau);
+    const wake = zp.wake * smooth(0.15, 0.4, tau);
     return {
       rKm,
       tau,
+      tauDyn: this.atKm(this.tauDyn, rKm),
+      tauIso: this.atKm(this.tauIso, rKm),
       H: zp.H,
-      sigma: sigmaModel(zp, tau),
-      wake: zp.wake * smooth(0.15, 0.4, tau),
+      sigma,
+      wake,
       dust: zp.macroscopic ? Math.max(zp.dust, 1 - smooth(0.002, 0.02, tau)) : 1,
       albedo: zp.albedo,
       q: zp.q,
       aMin: zp.aMin,
       aMax: zp.aMax,
-      macroscopic: zp.macroscopic && tau > 0.002,
+      macroscopic: macro,
       zone: zp.zone,
       description: describeRadiusKm(rKm),
+      sigZ: (a: number) => zoneSigZ(zp, a),
+      partAp: st.ap,
+      pbar: st.pbar,
+      fAlign: st.fAlign,
+      wakeB: zp.wakeB,
+      rhoBulk: zp.rhoBulk ?? 300,
+      wakeStrength: wake > 0 && macro ? wakeStrengthAt(wake, sigma, orbitalFrequencies(rMeters).kappa, zp.aMax, macro) : 0,
+      dynFactor: (t: number, wakes = true) => {
+        if (!zp.macroscopic || !(t > 0.002)) return 1;
+        const w = zp.wake * smooth(0.15, 0.4, t);
+        const s = wakes && w > 0 ? wakeStrengthAt(w, sigmaModel(zp, t), orbitalFrequencies(rMeters).kappa, zp.aMax, true) : 0;
+        return tauDynFactors(t, zp.wakeB, s, st.pbar, st.fAlign)[wakes ? 0 : 1];
+      },
     };
   }
 
