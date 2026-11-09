@@ -4,8 +4,13 @@
 // are drawn, and smoothly in time.
 //
 // usage: node scripts/test/contact.mjs [--base URL] [--out DIR] [--views b-inside,a-inside,a-30m,b-preset] [--w 1280 --h 720]
-//                                      [--no-temporal] [--cost [--cost-views b-default,a-default,b-inside,a-inside]
-//                                      [--reps 3] [--trials 12]]
+//                                      [--no-temporal] [--pairs 6] [--bins dist|px|crowd] [--set '{"tauVisHi":5.5}']
+//                                      [--cost [--cost-views b-default,a-default,b-inside,a-inside] [--reps 3] [--trials 12]]
+//   --pairs: frame pairs of the temporal check (surveys: e.g. 8 -> t0 .. t0 + 49 s); --bins: print the residual binned
+//   by the pair's distance from the camera (m), the smaller particle's radius (render px) or its crowding (initial
+//   overlaps), with px also the drawn particles' frame-to-frame pops by radius; --set: NearContact properties for the
+//   run (experiments: fades, iterations, ...). For a before / after
+//   comparison run this script against an extracted older revision (git archive, see scripts/test/README.md wakecost).
 //
 // Per view (paused, t fixed, render scale 1, astronaut off) the contact list (analytic positions, R0 slots, weights,
 // contact shapes), the result and R0 are read back and checked against an independent CPU evaluation in the page:
@@ -24,13 +29,18 @@
 //    D_i(GPU) >= D_i(CPU, the first iteration's pair corrections) for >= 99.8 % of the particles with overlaps (the GPU's
 //    neighbour search missed nothing that matters). Hash-grid bucket overflow (CPU simulation of the GPU hash) <= 0.1 %.
 // 3. write-back: R0 at every list entry's slot = its resolved position, the drawn flag kept or set where the
-//    displacement moved a present particle into the view (counted); drawn-particle counts (R0 w > 0 and the HUD's
-//    >= 1 px list) with contact on vs off differ only by those particles (<= 0.1 %); present particles unchanged;
-//    bodies around the camera (not drawn) have contact weight 0 (b-preset: the camera inside a 1.8 m boulder).
-// 4. temporal (unless --no-temporal; not for b-preset): the same frame again -> bit-identical; one frame later at 1x time (t + 1/30 s) the
-//    displacement field x - x_analytic must not jump: "pops" = particles whose displacement changes by more than
-//    max(5 x their analytic motion, 1 render px) <= the view's limit; t + 1 s and t + 10 s reported (p99 / max change in
-//    px); warp +-1000x (running): no NaN, residual within 1.5x the paused limit.
+//    displacement moved a present particle into the view and it is not statistically occluded there (counted);
+//    drawn-particle counts (R0 w > 0 and the HUD's >= 1 px list) with contact on vs off differ only by those particles
+//    (<= 0.1 %); present particles unchanged; bodies around the camera (not drawn) have contact weight 0 (b-preset: the
+//    camera inside a 1.8 m boulder); coverage: drawn particles at >= rhoHi render px radius missing from the contact
+//    list (the set's occlusion fade must keep what the update pass draws) <= COVERAGE_MISS.
+// 4. temporal (unless --no-temporal; not for b-preset): the same frame again -> bit-identical; one frame later at 1x
+//    time the displacement field x - x_analytic must not jump: over FRAME_PAIRS frame pairs (t_k, t_k + 1/30 s), t_k =
+//    t0 + k x PAIR_STEP s, PAIR_SETTLE frames after each time jump (the ring layer's wake clipmap, which the occlusion
+//    bound reads, refreshes <= 2 levels per frame; in play it follows every frame), "pops" = particles drawn in both
+//    frames whose displacement changes by more than max(5 x their analytic motion, 1 render px), / the drawn matched
+//    particles <= the view's limit (all listed particles' pops reported); t + 1 s and t + 10 s reported (p99 / max change
+//    in px); warp +-1000x (running): no NaN, residual within 1.5x the paused limit.
 // 5. cost (--cost, informational): the contact step's own GPU time - the captured frame's step re-run between
 //    synchronous 1-pixel read-backs, min over trials (robust when other agents share the GPU), with the list
 //    compaction / materialization / first grid + search split (cumulative stages, each measured on its own: noisy
@@ -42,20 +52,35 @@ import { pathToFileURL } from 'node:url';
 import { fmt, openApp, sleep, table, waitFrames, withHarness } from './lib.mjs';
 
 // limits: resid = residual / visible overlaps before; free = uncrowded residual / resolved particles; pops = frame-to-frame
-// pops / matched particles (measured 2026-11-08: see scripts/test/README.md)
+// pops of drawn particles / drawn matched particles over FRAME_PAIRS frame pairs. At the packing limit (the B ring, the
+// near field of mimas53's dense zone) a stateless projection leaves jammed overlaps and jumps where the nearest
+// non-overlapping configuration changes: resid 0.2, pops 1e-3; elsewhere 0.12, 1e-4 (measured values and the
+// derivation: scripts/test/README.md, "contact")
 const VIEWS = {
-  'b-inside': { preset: 'b-ring-inside', fov: 35, scale: 1, what: 'B ring mid-layer (cassini-compare b-inside)', resid: 0.2, free: 0.012, pops: 2e-4 },
+  'b-inside': { preset: 'b-ring-inside', fov: 35, scale: 1, what: 'B ring mid-layer (cassini-compare b-inside)', resid: 0.2, free: 0.012, pops: 1e-3 },
   'a-inside': { preset: 'a-ring-inside', fov: 35, scale: 1, what: 'A ring mid-plane, wakes (cassini-compare a-inside)', resid: 0.12, free: 0.012, pops: 1e-4 },
   'a-30m': { preset: 'a-ring-30m', scale: 1, what: '30 m above the lit A ring (wake crests from above)', resid: 0.12, free: 0.012, pops: 1e-4 },
   // the preset itself (fov 60: other particle boxes than at fov 35): the camera lies inside a 1.8 m boulder there
-  'b-preset': { preset: 'b-ring-inside', scale: 1, what: 'B ring preset, fov 60 (the camera inside a boulder)', resid: 0.2, free: 0.012, pops: 2e-4, temporal: false },
+  'b-preset': { preset: 'b-ring-inside', scale: 1, what: 'B ring preset, fov 60 (the camera inside a boulder)', resid: 0.2, free: 0.012, pops: 1e-3, temporal: false },
   // vertical relief: inside the layer, on the local mid-plane (cam=ring heights are relative to it) of the Mimas 5:3
   // bending wave (A ring, slopes up to ~9 deg) and of the Titan -1:0 wave (C ring, up to 45 deg; scripts/test/relief.mjs).
-  // (mimas53 lies in a dense zone, tau 0.92; with the per-zone vertical laws its residual is 0.08 - the A-ring limit)
-  'mimas53': { params: { cam: 'ring', r: 131850000, phi: 31, z: 0, yaw: 0, pitch: -10 }, fov: 35, scale: 1, what: 'Mimas 5:3 bending wave, inside the layer on the tilted mid-plane', resid: 0.12, free: 0.012, pops: 1e-4 },
+  // mimas53 lies in a dense zone (tau 0.92, wake cores): its near field is jammed like the B ring (residual 0.20-0.24
+  // within 30 m of the camera; 56 % of the visible pairs at a particle with >= 10 overlaps). Its residual was 0.08 while
+  // 64 % of the visible pairs lay 100-1000 m away (only large particles resolved there: isolated pairs, 2-4 %
+  // residual); the line-of-sight occlusion cull now hides those, so the check sees the near field: the packing limits
+  'mimas53': { params: { cam: 'ring', r: 131850000, phi: 31, z: 0, yaw: 0, pitch: -10 }, fov: 35, scale: 1, what: 'Mimas 5:3 bending wave, inside the layer on the tilted mid-plane', resid: 0.2, free: 0.012, pops: 1e-3 },
   'titan': { params: { cam: 'ring', r: 77545500, phi: 31, z: 0, yaw: 0, pitch: -10 }, fov: 35, scale: 1, what: 'Titan -1:0 bending wave (C ring), inside the layer on the tilted mid-plane', resid: 0.12, free: 0.012, pops: 1e-4 },
 };
 const BASE = { t: '2026-11-08T12:00:00Z', hud: 0, labels: 0, paused: 1, astronaut: 0 };
+/** temporal check: frame pairs (t_k, t_k + 1/30 s), t_k = t0 + k x PAIR_STEP s, PAIR_SETTLE frames after each time jump */
+const FRAME_PAIRS = 6, PAIR_STEP = 7, PAIR_SETTLE = 16;
+/**
+ * coverage: drawn particles >= rhoHi px missing from the contact list / drawn at that size. The set's occlusion fade
+ * (tau 4 -> 5) mirrors the update pass's test at the particle's drawn position - its guiding centre is not known there
+ * (epicycle, wake and streamline displacements), so a few particles the update pass draws at its cull boundary (its tau
+ * ~4.2-5: <= 1.5 % of such a particle is seen) fall just beyond the fade (README "contact")
+ */
+const COVERAGE_MISS = 0.02;
 /** URL parameters of a view: its preset (or explicit camera parameters), fov, render scale */
 const viewParams = (v) => ({ ...(v.params ?? { preset: v.preset }), fov: v.fov, scale: v.scale });
 
@@ -191,6 +216,25 @@ export function analyzeInPage() {
     }
     return { overlapping: ov, hidden, beyondTol: resid, beyondTolCrowded: residCrowd, maxRel, maxRelUncrowded: maxRelFree, maxPx, sumDelta, beyondTolAnyDrawn: residAnyDrawn };
   };
+  // binned (--bins, informational): visible overlaps before, beyond tolerance before, after (of which crowded) by the
+  // pair's distance from the camera (m), the smaller particle's radius (render px) or the larger crowding of the two
+  const BIN_EDGES = { dist: [0, 10, 20, 30, 50, 100, 300, 1000, Infinity], px: [0, 6, 8, 12, 20, 50, Infinity], crowd: [0, 1, 2, 3, 4, 6, 10, Infinity] };
+  const binOf = { dist: (P, p) => P.s[p], px: (P, p) => P.rmin[p] / (P.s[p] * pa), crowd: (P, p) => Math.max(n0.get(P.i[p]) ?? 0, n0.get(P.j[p]) ?? 0) };
+  const bins = {};
+  for (const [m, E] of Object.entries(BIN_EDGES)) {
+    const H = E.slice(1).map(() => [0, 0, 0, 0]);
+    for (const [P, isBefore] of [[before, true], [after, false]]) {
+      for (let p = 0; p < P.i.length; p++) {
+        if (P.e[p] < 0.999 || !P.vis[p] || P.delta[p] >= 2 * P.rmin[p]) continue;
+        const x = binOf[m](P, p);
+        let b = 0;
+        while (b < H.length - 1 && x >= E[b + 1]) b++;
+        const beyond = P.delta[p] > tolOf(P, p);
+        if (isBefore) { H[b][0]++; if (beyond) H[b][1]++; } else if (beyond) { H[b][2]++; if (crowded(P.i[p]) || crowded(P.j[p])) H[b][3]++; }
+      }
+    }
+    bins[m] = { edges: E.map((e) => (Number.isFinite(e) ? e : null)), H };
+  }
   // resolved: in the contact set at full weight and drawn
   let resolved = 0, crowdedN = 0;
   for (const j of ids) { if (M[j * 4 + 1] >= 0.999 && M[j * 4] > 0) resolved++; if (crowded(j)) crowdedN++; }
@@ -255,10 +299,25 @@ export function analyzeInPage() {
       else if (buf[k + 3] !== P0[j * 4 + 3]) flipped++;
     }
   }
+  // coverage: drawn particles at full size (>= rhoHi render px radius) that are not in the contact list - the set's
+  // occlusion fade (the update pass's nearLosTau with a conservative path tau) must keep what the update pass draws
+  let drawnFull = 0, notListed = 0, notListedPx = 0;
+  for (let y0 = 0; y0 < texRows; y0 += CH) {
+    const h = Math.min(CH, texRows - y0), buf = new Float32Array(W * h * 4);
+    r.readRenderTargetPixels(r0, 0, y0, W, h, buf);
+    for (let i = 0; i < W * h; i++) {
+      const w = buf[i * 4 + 3];
+      if (w <= 0) continue;
+      const px = w / (Math.max(Math.hypot(buf[i * 4], buf[i * 4 + 1], buf[i * 4 + 2]), 1e-4) * pa);
+      if (px < C.rhoHi) continue;
+      drawnFull++;
+      if (!bySlot.has(y0 * W + i)) { notListed++; notListedPx = Math.max(notListedPx, px); }
+    }
+  }
   return {
     n: ids.length, count: C.count, cap: C.cap, buckets: C.bucketsUsed || C.buckets, iterations: C.iterations, resolved, crowded: crowdedN, nan, camInside, camInsideW,
-    before: summarize(before), after: summarize(after), pairsBefore: before.i.length, pairsAfter: after.i.length,
-    moved, maxDispA, maxDispBound, missed, withD, overflow, maxFill, wbBad, flipped, checked,
+    before: summarize(before), after: summarize(after), pairsBefore: before.i.length, pairsAfter: after.i.length, bins,
+    moved, maxDispA, maxDispBound, missed, withD, overflow, maxFill, wbBad, flipped, checked, drawnFull, notListed, notListedPx, rhoHi: C.rhoHi,
     pixelAngle: pa, ext,
     // the wake-field bounds the step mirrors (wakeMinDensity(), the cores' compression) and whether the wakes are on
     bounds: { ...C.bounds }, wakeOn: sv.pipeline.ctx.wakes.uniforms.uWakeOn.value > 0.5,
@@ -291,7 +350,7 @@ export function r0DigestInPage() {
   return { drawn, present, hash: h, listDrawn: near.listCounts?.[3] ?? null };
 }
 
-/** Displacement field per R0 slot from the last run (slot -> [dx, dy, dz, analytic x, y, z, a]). Runs in the page. */
+/** Displacement field per R0 slot from the last run (slot -> [dx, dy, dz, analytic x, y, z, a, drawn 1 / 0]). Runs in the page. */
 export function fieldInPage() {
   const sv = window.__sv;
   const C = (sv.pipeline.passes.near?.inner ?? sv.pipeline.passes.near).contact;
@@ -311,7 +370,7 @@ export function fieldInPage() {
   const out = new Map();
   for (let j = 0; j < n; j++) {
     if (M[j * 4] === 0) continue;
-    out.set(Math.round(P0[j * 4 + 3]), [P1[j * 4] - P0[j * 4], P1[j * 4 + 1] - P0[j * 4 + 1], P1[j * 4 + 2] - P0[j * 4 + 2], P0[j * 4], P0[j * 4 + 1], P0[j * 4 + 2], Math.abs(M[j * 4])]);
+    out.set(Math.round(P0[j * 4 + 3]), [P1[j * 4] - P0[j * 4], P1[j * 4 + 1] - P0[j * 4 + 1], P1[j * 4 + 2] - P0[j * 4 + 2], P0[j * 4], P0[j * 4 + 1], P0[j * 4 + 2], Math.abs(M[j * 4]), M[j * 4] > 0 ? 1 : 0]);
   }
   return out;
 }
@@ -405,14 +464,22 @@ const analyze = (page) => page.evaluate(analyzeInPage);
 const r0Digest = (page) => page.evaluate(r0DigestInPage);
 /** store the displacement field of the current frame under `name` (in the page) */
 const storeField = (page, name) => page.evaluate(`(() => { const f = (${fieldInPage.toString()})(); window.__ctField = window.__ctField || {}; window.__ctField[${JSON.stringify(name)}] = f; return f.size; })()`);
-/** compare two stored fields: matched particles, max |change| (m), pops, bit-identical */
+/**
+ * compare two stored fields: matched particles, max |change| (m), pops, bit-identical; and the same among the particles
+ * drawn in both (visible pops / drawn matched: a jump of a particle that is not drawn cannot be seen)
+ */
 const compareFields = (page, a, b, pxMin) => page.evaluate((a, b, pxMin) => {
   const A = window.__ctField[a], B = window.__ctField[b], pa = window.__sv.frame.pixelAngle;
-  let matched = 0, pops = 0, identical = true, maxChange = 0, maxChangePx = 0, p99 = [];
+  // drawn matched particles and their pops by projected radius (render px; --bins px): 1 px is a smaller part of a
+  // nearer, larger-looking particle, so the rate rises with the radius
+  const PX = [0, 6, 8, 12, 20, 50, Infinity], pxBins = PX.slice(1).map(() => [0, 0]);
+  let matched = 0, pops = 0, matchedDrawn = 0, visPops = 0, identical = true, maxChange = 0, maxChangePx = 0, p99 = [];
   for (const [s, u] of A) {
     const v = B.get(s);
     if (!v) continue;
     matched++;
+    const drawn = u[7] === 1 && v[7] === 1;
+    if (drawn) matchedDrawn++;
     const dd = Math.hypot(v[0] - u[0], v[1] - u[1], v[2] - u[2]);
     const mv = Math.hypot(v[3] - u[3], v[4] - u[4], v[5] - u[5]);
     const dist = Math.max(Math.hypot(u[3], u[4], u[5]), 1e-3);
@@ -421,19 +488,31 @@ const compareFields = (page, a, b, pxMin) => page.evaluate((a, b, pxMin) => {
     const px = dd / (dist * pa);
     maxChangePx = Math.max(maxChangePx, px);
     p99.push(px);
-    if (dd > Math.max(5 * mv, pxMin * dist * pa)) pops++;
+    const popped = dd > Math.max(5 * mv, pxMin * dist * pa);
+    if (popped) { pops++; if (drawn) visPops++; }
+    if (drawn) {
+      const r = u[6] / (dist * pa);
+      let k = 0;
+      while (k < pxBins.length - 1 && r >= PX[k + 1]) k++;
+      pxBins[k][0]++;
+      if (popped) pxBins[k][1]++;
+    }
   }
   p99.sort((x, y) => x - y);
-  return { matched, pops, identical, maxChange, maxChangePx, p99px: p99.length ? p99[Math.floor(0.99 * (p99.length - 1))] : 0 };
+  return {
+    matched, pops, matchedDrawn, visPops, identical, maxChange, maxChangePx, p99px: p99.length ? p99[Math.floor(0.99 * (p99.length - 1))] : 0,
+    pxBins, pxEdges: PX.map((e) => (Number.isFinite(e) ? e : null)),
+  };
 }, a, b, pxMin);
 
 // (the in-page functions above are exported for tuning scripts; the test runs only when executed directly)
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await withHarness('contact', {
   bool: ['cost', 'no-temporal'],
   uncapped: process.argv.includes('--cost'),
-  usage: 'node scripts/test/contact.mjs [--base URL] [--out DIR] [--views b-inside,a-inside,a-30m,b-preset] [--no-temporal] [--cost [--cost-views ids] [--reps 3] [--trials 12]]',
+  usage: 'node scripts/test/contact.mjs [--base URL] [--out DIR] [--views b-inside,a-inside,a-30m,b-preset] [--no-temporal] [--pairs 6] [--bins dist|px|crowd] [--set JSON] [--cost [--cost-views ids] [--reps 3] [--trials 12]]',
 }, async ({ args, rep, base, browser }) => {
   const views = args.list('views', Object.keys(VIEWS));
+  const nPairs = args.num('pairs', FRAME_PAIRS), binMode = args.str('bins', ''), setProps = JSON.parse(args.str('set', '{}'));
   const rows = [], trows = [];
   for (const id of views) {
     const v = VIEWS[id];
@@ -441,12 +520,16 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await withHar
     console.log(`\n[contact] ${id}: ${v.what}`);
     const { page } = await openApp(browser, base, { ...BASE, ...viewParams(v) }, { settle: 3500 });
     try {
-      // contact off: the analytic frame (R0 digest), then on
+      if (Object.keys(setProps).length) {
+        await page.evaluate((c) => Object.assign((window.__sv.pipeline.passes.near.inner ?? window.__sv.pipeline.passes.near).contact, c), setProps);
+      }
+      // contact off: the analytic frame (R0 digest), then on (8 frames: the HUD's list counts are read back
+      // asynchronously, every 4th frame)
       await setContact(page, false);
-      await waitFrames(page, 3);
+      await waitFrames(page, 8);
       const off = await r0Digest(page);
       await setContact(page, true);
-      await waitFrames(page, 6);
+      await waitFrames(page, 8);
       const on = await r0Digest(page);
       const s = await analyze(page);
       if (s.error) { rep.check(`${id}: analysis`, false, s.error); continue; }
@@ -455,7 +538,12 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await withHar
       console.log(`  list ${s.n} (read-back ${s.count}, cap ${s.cap}, ${s.buckets} buckets, max bucket fill ${s.maxFill}), resolved ${s.resolved}, crowded ${s.crowded}${s.slopeDeg > 0.01 ? `; local mid-plane slope ${fmt(s.slopeDeg, 2)} deg` : ''}`);
       console.log(`  overlapping resolved pairs ${b.overlapping} -> ${a.overlapping} (hidden: the smaller one entirely inside, ${b.hidden} -> ${a.hidden}); visible beyond tolerance ${b.beyondTol} -> ${a.beyondTol} (${a.beyondTolCrowded} at crowded particles; not requiring both drawn: ${b.beyondTolAnyDrawn} -> ${a.beyondTolAnyDrawn}); deepest ${fmt(b.maxRel, 3)} -> ${fmt(a.maxRel, 3)} of the contact distance (uncrowded ${fmt(a.maxRelUncrowded, 3)}), ${fmt(a.maxPx, 2)} px`);
       console.log(`  moved ${s.moved}, max displacement ${fmt(s.maxDispA, 3)} a, ${fmt(s.maxDispBound, 4)} of the bound; GPU bound below CPU for ${s.missed} of ${s.withD}; bucket overflow ${s.overflow}`);
-      console.log(`  R0: ${s.checked} list slots checked, ${s.wbBad} mismatches, ${s.flipped} set drawn (moved into view); drawn ${off.drawn} -> ${on.drawn}, present ${off.present} -> ${on.present}, >= 1 px list ${off.listDrawn} -> ${on.listDrawn}`);
+      console.log(`  R0: ${s.checked} list slots checked, ${s.wbBad} mismatches, ${s.flipped} set drawn (moved into view); drawn ${off.drawn} -> ${on.drawn}, present ${off.present} -> ${on.present}, >= 1 px list ${off.listDrawn} -> ${on.listDrawn}; drawn at >= ${s.rhoHi} px radius ${s.drawnFull}, not listed ${s.notListed}${s.notListed ? ` (up to ${fmt(s.notListedPx, 1)} px)` : ''}`);
+      if (s.bins[binMode]) {
+        const { edges, H } = s.bins[binMode], e = (x) => (x === null ? 'inf' : x);
+        console.log(table([`${binMode} bin`, 'visible before', 'beyond tol before', 'after', 'after: crowded', 'ratio'],
+          H.map((h, i) => [`${e(edges[i])}-${e(edges[i + 1])}`, h[0], h[1], h[2], h[3], fmt(h[2] / Math.max(h[1], 1), 3)])));
+      }
       rep.data[id] = { ...s, r0off: off, r0on: on };
       rep.check(`${id}: no NaN in the resolved positions`, s.nan === 0, `${s.nan}`);
       rep.range(`${id}: residual visible overlaps / visible overlaps before`, a.beyondTol / Math.max(b.beyondTol, 1), 0, v.resid);
@@ -473,23 +561,54 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await withHar
         `floor ${fmt(wb.wakeMin, 4)}, cores ${fmt(wb.wakeCore, 3)}, path tau ${fmt(wb.tauPath, 4)}${s.wakeOn ? '' : ' (wakes off)'}`);
       rep.check(`${id}: drawn (R0) change = particles moved into view`, on.drawn - off.drawn === s.flipped, `${on.drawn - off.drawn} vs ${s.flipped}`);
       rep.range(`${id}: drawn change / drawn`, Math.abs(on.drawn - off.drawn) / Math.max(off.drawn, 1), 0, 0.001);
+      rep.range(`${id}: drawn particles >= ${s.rhoHi} px radius missing from the contact list / drawn at that size`, s.notListed / Math.max(s.drawnFull, 1), 0, COVERAGE_MISS);
       if (off.listDrawn !== null) rep.range(`${id}: HUD >= 1 px count change / count`, Math.abs(on.listDrawn - off.listDrawn) / Math.max(off.listDrawn, 1), 0, 0.001);
 
       if (!args.flag('no-temporal') && v.temporal !== false) {
-        // same frame twice -> identical; one frame later (1/30 s at 1x) -> no jumps; 1 s, 10 s reported
+        // same frame twice -> identical
         await storeField(page, 't0');
         await waitFrames(page, 3);
         await storeField(page, 't0b');
         const same = await compareFields(page, 't0', 't0b', 1);
         rep.check(`${id}: paused frames bit-identical`, same.identical && same.matched > 0, `${same.matched} matched`);
         const t0 = await page.evaluate(() => window.__sv.clock.t);
-        for (const dt of [1 / 30, 1, 10]) {
-          await page.evaluate((t) => { window.__sv.clock.paused = true; window.__sv.clock.t = t; }, t0 + dt);
+        const setT = (t) => page.evaluate((t) => { window.__sv.clock.paused = true; window.__sv.clock.t = t; }, t);
+        // one frame later (1/30 s at 1x) -> no jumps, over nPairs (FRAME_PAIRS) frame pairs t_k -> t_k + 1/30 s, t_k =
+        // t0 + k x PAIR_STEP (PAIR_SETTLE frames at t_k: after a time jump the ring layer's wake clipmap - the occlusion
+        // bound's line-of-sight density - refreshes <= 2 levels per frame; in play it follows every frame)
+        const fp = { matched: 0, pops: 0, matchedDrawn: 0, visPops: 0, maxChange: 0, maxChangePx: 0, p99px: 0, per: [] };
+        for (let k = 0; k < nPairs; k++) {
+          const tk = t0 + k * PAIR_STEP;
+          if (k > 0) {
+            await setT(tk);
+            await waitFrames(page, PAIR_SETTLE);
+            await storeField(page, `p${k}`);
+          }
+          await setT(tk + 1 / 30);
           await waitFrames(page, 4);
+          await storeField(page, `p${k}b`);
+          const c = await compareFields(page, k ? `p${k}` : 't0', `p${k}b`, 1);
+          for (const key of ['matched', 'pops', 'matchedDrawn', 'visPops']) fp[key] += c[key];
+          for (const key of ['maxChange', 'maxChangePx', 'p99px']) fp[key] = Math.max(fp[key], c[key]);
+          fp.per.push(c.visPops);
+          fp.pxBins = fp.pxBins ? fp.pxBins.map((h, i) => [h[0] + c.pxBins[i][0], h[1] + c.pxBins[i][1]]) : c.pxBins;
+          fp.pxEdges = c.pxEdges;
+        }
+        if (binMode === 'px') {
+          const e = (x) => (x === null ? 'inf' : x);
+          console.log(table(['radius px bin', 'drawn matched', 'pops (drawn)', 'rate'],
+            fp.pxBins.map((h, i) => [`${e(fp.pxEdges[i])}-${e(fp.pxEdges[i + 1])}`, h[0], h[1], (h[1] / Math.max(h[0], 1)).toExponential(2)])));
+        }
+        trows.push([id, `+1 frame, ${nPairs} pairs`, fp.matched, `${fp.pops} (drawn ${fp.visPops}: ${fp.per.join(' ')})`, fmt(fp.maxChange * 1000, 2), fmt(fp.p99px, 3), fmt(fp.maxChangePx, 2)]);
+        rep.data[id].framePairs = fp;
+        rep.range(`${id}: one frame later: pops (displacement jump > 1 px) of drawn particles / drawn matched particles, ${nPairs} frame pairs`, fp.visPops / Math.max(fp.matchedDrawn, 1), 0, v.pops);
+        // + 1 s, + 10 s (informational)
+        for (const dt of [1, 10]) {
+          await setT(t0 + dt);
+          await waitFrames(page, PAIR_SETTLE);
           await storeField(page, `dt${dt}`);
           const c = await compareFields(page, 't0', `dt${dt}`, 1);
-          trows.push([id, dt < 1 ? '+1 frame' : `+${dt} s`, c.matched, c.pops, fmt(c.maxChange * 1000, 2), fmt(c.p99px, 3), fmt(c.maxChangePx, 2)]);
-          if (dt < 1) rep.range(`${id}: one frame later: pops (displacement jump > 1 px) / matched particles`, c.pops / Math.max(c.matched, 1), 0, v.pops);
+          trows.push([id, `+${dt} s`, c.matched, `${c.pops} (drawn ${c.visPops})`, fmt(c.maxChange * 1000, 2), fmt(c.p99px, 3), fmt(c.maxChangePx, 2)]);
         }
         // time warp, both directions, running
         for (const w of [1000, -1000]) {

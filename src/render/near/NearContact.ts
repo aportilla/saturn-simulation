@@ -15,12 +15,14 @@
 // An overlap is at most the smaller particle's diameter deep and typically ~0.3 of its radius, i.e. 1-1.5 px of
 // silhouette at 3-5 px radius: at most marginally visible, so pairs are corrected with min(w_i, w_j); the fades make
 // every correction continuous in time (a wider fade-in listed 50-70 % more B-ring particles - the search's cost - for
-// the same residual, and at the packing limit more jumps in jammed clusters). tau_los: slab-model optical depth from the
-// camera to the particle's near side (heights above the camera's local mid-plane) with a conservative path tau (min(tau
-// at the camera x its streamline density, the lowest tau_dyn - the particle population's optical depth, lodTauDyn -
-// within the contact range) x wakeMinDensity() x 0.8, as the update pass's cull; the density floor is read from the
-// WakeField's uWakeBounds.x, the uniform wakeMinDensity() returns) - direction-independent; at tau 4-5 only
-// e^-tau = 2-0.7 % of a particle is seen. out: the centre's distance outside the view frustum; e1 = rb + min(M a + F, mw): the frustum
+// the same residual, and at the packing limit more jumps in jammed clusters). tau_los: the update pass's own
+// statistical-occlusion test (nearOcclusion.glsl nearLosTau, uniforms NearFieldPass.occlusionUniforms: the emptiest-gap
+// bound first, then the line of sight's own self-gravity-wake density from the ring layer's wake clipmap,
+// participation-aware) from the camera to the particle's near side, with the update pass's inputs mirrored per particle
+// (ctLosTau below: its normal path tau, zone thickness and local mid-plane, at the drawn position), exact up to the fade's
+// upper end; on only while the update pass culls (uCull > 0). The set follows what the update pass draws (its cull:
+// nearLosTau > 5): an occluded particle is neither seen nor listed, so it neither jams nor pushes the visible ones; at
+// tau 4-5 only e^-tau = 2-0.7 % of a particle is seen. out: the centre's distance outside the view frustum; e1 = rb + min(M a + F, mw): the frustum
 // dilated by M = 4 x the largest semi-axis / a (two of the particle's own contact distances: a smaller particle
 // yields to a larger one, so only particles about that close can push a visible one), fading out over F = half
 // of it - but never beyond the coverage of R0 (the update pass keeps out-of-view particles within rb + mw, mw = the
@@ -78,8 +80,9 @@
 //      (0.5) x a_i: nothing moves farther than overlaps require, and pushes cannot cascade far through a dense packing.
 //   3. scatter: one point per moved list entry writes the final position back to its R0 texel. Drawn flags are
 //      kept, except that a present particle whose displacement moved it into the view frustum (the update pass's
-//      sphere test failed at the analytic position and passes now) is drawn (count contract: every particle >= 1 px
-//      in view is drawn).
+//      sphere test failed at the analytic position and passes now) and that is not statistically occluded there
+//      (ctLosTau <= the update pass's uCull, its path tau capped by the radial profile's lowest) is drawn - as the
+//      update pass would decide (count contract: every particle >= 1 px in view and not occluded is drawn).
 // The medium (ring layer) is not touched: it is statistical. No state persists between frames, so time warp,
 // reverse time, pausing (bit-identical frames) and re-anchoring need nothing special.
 // IDLE: nothing runs when the camera is farther from the layer than the largest particles are resolved at; with an
@@ -98,6 +101,7 @@ import type { RingProfile } from '../../rings/RingProfile';
 import type { WakeField } from '../../rings/WakeField';
 import type { FrameState } from '../../core/FrameState';
 import { NEAR_PYR_GLSL, type NearCompaction } from './NearCompaction';
+import nearOcclusion from './nearOcclusion.glsl?raw';
 
 /** width of the contact list textures */
 export const CT_W = 2048;
@@ -144,7 +148,48 @@ float ctQuad(vec4 m, vec4 s, vec3 n) {
 }
 `;
 
-/** Contact-set classifier of an R0 slot (level 1 of the pyramid and its traversal). Requires nearCommon. */
+/**
+ * Line-of-sight optical depth to a particle at camera-relative p (SEF axes, bounding radius rb): the update pass's
+ * statistical-occlusion test (nearUpdate.glsl; nearOcclusion.glsl nearLosTau, included before this: the emptiest-gap
+ * bound, then the line of sight's own self-gravity-wake density from the ring layer's clipmap) with the update pass's
+ * own inputs, mirrored at the particle: the normal path tau min(tau at the camera, the particle's tau_dyn x its 2-D
+ * modulation (the modulation cache, else the texture) x streamline density, tau_dyn at the path's midpoint) x 0.8, its
+ * zone's thickness H, heights above its local mid-plane (streamline zeta + vertical relief) - evaluated at its drawn
+ * position for its guiding centre (the epicycle, streamline and wake displacements are metres to tens of metres; the
+ * profile, the modulation's coarse octaves and the relief vary over >= 100 m) and without a propeller's own modulation
+ * outside the cache and its relief. The inputs are mirrored so that the set follows what the update pass draws: the
+ * radial profile's lowest tau_dyn in range x 0.8 (uCtVis.x) with heights above the camera's local mid-plane dropped
+ * 2.5 % of the drawn particles >= 6 px at b-ring-inside (up to 100 px radius: the particle's own textured tau, ~15 % rms
+ * below the profile in the B ring) and 4.9 % at the Mimas 5:3 bending wave (2.3 deg: the mid-plane 4 m lower 100 m
+ * away); mirrored, 0.3 % / 1.3 % remain, at the cull's boundary (scripts/test/contact.mjs, coverage). tauMax caps the
+ * path tau (the scatter's drawn flip: never hide a visible particle). Exact up to tauCap, only known to exceed it.
+ */
+const LOS_GLSL = /* glsl */ `
+uniform float uCtTauCam;   // the update pass's uTauCam: tau_dyn at the camera's radius x its streamline density
+float ctLosTau(vec3 p, float rb, float tauCap, float tauMax) {
+  vec2 pxy = vec2(dot(p, uRingER), dot(p, uRingEPhi));
+  float aL, dth;
+  ringLocalPolar(vec3(uRingCamLocal.x - uRsCam.x + pxy.x, uRingCamLocal.y + pxy.y, 0.0), aL, dth);
+  float Jp = 1.0, z0 = 0.0;
+  if (uRsCam.w > 0.5) {
+    vec3 sx = ringStreamXi(aL, dth, 0.0);
+    Jp = sx.z;
+    z0 = sx.y;
+  } else if (uRrCamN.w > 0.5) {
+    z0 = ringStructureRelief(aL, dth, 0.0).x;
+  }
+  RingSample rs = ringSampleLagrangian(aL, 0.0);
+  vec2 mcw;
+  float M = rsModCached(aL, uRingR0 * dth, mcw) ? mcw.x : ringStructureModNoPropellers(aL, dth, 0.0).x;
+  RingSample rm = ringSampleLocal(vec3(uRingCamLocal.x + 0.5 * pxy.x, uRingCamLocal.y + 0.5 * pxy.y, 0.0), 0.0);
+  float tauP = min(min(uCtTauCam, rs.tau * lodTauDyn(rs.tau) * (1.0 - rs.dust) * M * Jp),
+                   rm.tau * lodTauDyn(rm.tau) * (1.0 - rm.dust)) * 0.8;
+  float zc = uRingCamLocal.z - z0, z = p.z + uRingCamLocal.z - z0;
+  float zt = z + clamp(zc - z, -rb, rb);
+  return nearLosTau(uRingCamLocal.xy, pxy, rb, zc, zt, min(tauP, tauMax), rs.H, tauCap);
+}`;
+
+/** Contact-set classifier of an R0 slot (level 1 of the pyramid and its traversal). Requires nearCommon, nearOcclusion. */
 const CLASSIFY_GLSL = /* glsl */ `
 uniform sampler2D tR0;
 uniform int uTexW;
@@ -153,8 +198,9 @@ uniform int uClsRow0[LOD_CLASSES];
 uniform int uClsRows[LOD_CLASSES];   // 0 for inactive classes
 uniform int uClsSeed[LOD_CLASSES];
 uniform vec4 uCtSel;   // (resolved: render-px radius fade-in lo, hi; occluded: line-of-sight tau fade-out lo, hi)
-uniform vec4 uCtVis;   // (conservative path tau (0: no occlusion test), layer thickness H (m), frustum dilation M and
-                       //  its fade width F in units of the particle radius)
+uniform vec4 uCtVis;   // (conservative normal path tau (the scatter's), -, frustum dilation M and its fade width F in units
+                       //  of the particle radius)
+uniform float uCtCull; // the update pass's statistical-occlusion cull threshold uCull (0: off - no occlusion test)
 uniform float uCtMw;   // the update pass's wake margin mw (m): R0 holds a participating particle within rb + mw of the view
 int nearClassOfRow(int row) {
   for (int k = 0; k < LOD_CLASSES; k++) {
@@ -162,6 +208,7 @@ int nearClassOfRow(int row) {
   }
   return -1;
 }
+${LOS_GLSL}
 // weight of a present particle (class k, slot idx) of radius a at camera-relative p in the contact set (0: not in it)
 float nearContactWeight(vec3 p, float a, int k, uint idx) {
   float s = max(length(p), 1e-4);
@@ -181,14 +228,11 @@ float nearContactWeight(vec3 p, float a, int k, uint idx) {
   float F = mw > 0.0 ? uCtVis.w * a : rb;
   float e1 = rb + min(uCtVis.z * a + F, mw);
   w *= 1.0 - smoothstep(e1 - min(F, e1), e1, outD);
-  if (w <= 0.0 || uCtVis.x <= 0.0) return w;
-  // statistical occlusion from the camera (slab model, conservative tau: as the update pass's cull)
-  float d = max(length(vec2(dot(p, uRingER), dot(p, uRingEPhi))) - rb, 0.0);
-  // heights above the camera's local mid-plane (vertical relief: the update pass uses the particle's own z0, which
-  // differs by the relief's slope across the few hundred metres the contact set spans)
-  float zc = ringCamHeight(), zp = p.z + zc;
-  float zt = zp + clamp(zc - zp, -rb, rb);
-  return w * (1.0 - smoothstep(uCtSel.z, uCtSel.w, ringLayerSegmentTau(zc, zt, d, uCtVis.x, uCtVis.y)));
+  if (w <= 0.0 || uCtCull <= 0.0) return w;
+  // statistical occlusion from the camera: the update pass's own test (nearOcclusion.glsl nearLosTau: the emptiest-gap
+  // bound, then the line of sight's own self-gravity-wake density from the ring layer's clipmap; its inputs mirrored),
+  // exact up to the fade's upper end
+  return w * (1.0 - smoothstep(uCtSel.z, uCtSel.w, ctLosTau(p, rb, uCtSel.w, 1e30)));
 }
 vec4 nearClassify(ivec2 tc) {
   if (tc.x >= uTexW || tc.y >= uTexRows) return vec4(0.0);
@@ -468,17 +512,25 @@ void main() {
   oP = vec4(x, D);
 }`;
 
-/** Write the resolved positions back to R0 (one point per moved list entry). */
+/** Write the resolved positions back to R0 (one point per moved list entry). Requires nearCommon, nearOcclusion. */
 const SCATTER_VS = /* glsl */ `
 uniform sampler2D tCP;    // final positions (xyz)
 uniform sampler2D tCP0;   // analytic positions (xyz, R0 texel index)
 uniform sampler2D tCM;    // (signed a, ...)
 uniform ivec2 uR0Size;    // R0 (width, rows)
+uniform vec4 uCtVis;      // (conservative normal path tau, -, -, -): as the contact set
+uniform float uCtCull;    // the update pass's statistical-occlusion cull threshold uCull (0: off)
 flat out vec4 vP;
+${LOS_GLSL}
 bool ctInView(vec3 p, float rb) {
   vec3 v = uWorldToCam * p;
   float w = -v.z, tx = uTanHalfFov * uAspect, ty = uTanHalfFov;
   return !(w < -rb || abs(v.x) > w * tx + rb * sqrt(1.0 + tx * tx) || abs(v.y) > w * ty + rb * sqrt(1.0 + ty * ty));
+}
+// the update pass's statistical-occlusion cull at p (nearLosTau > uCull: present but not drawn), its path tau capped by
+// the conservative one of the radial profile (uCtVis.x) - it never hides a particle the update pass would draw
+bool ctOccluded(vec3 p, float rb) {
+  return uCtCull > 0.0 && ctLosTau(p, rb, uCtCull, uCtVis.x) > uCtCull;
 }
 void main() {
   gl_PointSize = 1.0;
@@ -489,11 +541,12 @@ void main() {
   vec4 P0 = texelFetch(tCP0, c, 0);
   vec3 x = texelFetch(tCP, c, 0).xyz;
   if (x == P0.xyz) return;
-  // count contract: a present particle that the displacement moved into the view frustum is drawn (the update
-  // pass's sphere test decided the flag at the analytic position)
+  // count contract: a present particle that the displacement moved into the view frustum is drawn - as the update pass
+  // decides: in view and not statistically occluded (its sphere test failed at the analytic position, so it never
+  // tested the occlusion there; a particle it culled as occluded in view stays culled)
   if (w < 0.0) {
     float rb = nearMaxExtent() * abs(w);
-    if (!ctInView(P0.xyz, rb) && ctInView(x, rb)) w = -w;
+    if (!ctInView(P0.xyz, rb) && ctInView(x, rb) && !ctOccluded(x, rb)) w = -w;
   }
   vP = vec4(x, w);
   // (an exact integer below 2^24; adding 0.5 would round to even above 2^23)
@@ -540,6 +593,8 @@ export interface NearContactFrame {
   quality: number;
   /** the R0 slot layout changed (reallocation): the read-back list size is stale */
   layoutChanged: boolean;
+  /** the update pass's statistical-occlusion cull threshold uCull (0: off) */
+  cull: number;
 }
 
 export class NearContact {
@@ -624,23 +679,28 @@ export class NearContact {
   private readonly aHiU = { value: new Float32Array(LOD_CLASSES) };
   private readonly maskU = { value: 0 };
   private readonly lvU = { value: [0, 0] };
+  private readonly cullU = { value: 0 };
+  private readonly tauCamU = { value: 0 };
 
   /**
    * common: the near-field GLSL prelude (SV_HEADER_ALL + nearCommon + NEAR_SHADOW_COMMON); shared: the uniforms it
    * needs (shared + near-field ones); tables: tR0 and the class tables (uTexW, uTexRows, uClsRow0/Rows/Seed);
-   * spinW: uClsSpinW; pyr: the near field's pyramid (its atlases are reused before the draw lists are built).
+   * spinW: uClsSpinW; pyr: the near field's pyramid (its atlases are reused before the draw lists are built);
+   * occlusion: the statistical-occlusion bound's uniforms (NearFieldPass.occlusionUniforms, nearOcclusion.glsl: the same
+   * objects the update pass reads, updated every frame before it).
    */
-  constructor(common: string, shared: Record<string, IUniform>, tables: Record<string, IUniform>, spinW: IUniform, pyr: NearCompaction) {
+  constructor(common: string, shared: Record<string, IUniform>, tables: Record<string, IUniform>, spinW: IUniform, pyr: NearCompaction,
+    occlusion: Record<string, IUniform>) {
     this.pyr = pyr;
-    const sel = { uCtSel: this.selU, uCtVis: this.visU, uCtMw: this.mwU };
+    const sel = { uCtSel: this.selU, uCtVis: this.visU, uCtMw: this.mwU, uCtTauCam: this.tauCamU, uCtCull: this.cullU };
     const grid = { uCtInvCell: this.invCellU, uCtMask: this.maskU };
     const fsMat = (fragmentShader: string, uniforms: Record<string, IUniform>) => new RawShaderMaterial({
       glslVersion: GLSL3, vertexShader: FS_VERT, fragmentShader, uniforms, depthTest: false, depthWrite: false, blending: NoBlending,
     });
-    const classify = common + GRID_GLSL + CLASSIFY_GLSL;
-    this.l1Mat = fsMat(classify + LEVEL1_FRAG, { ...shared, ...tables, ...sel, uDstOff: { value: [0, 0] } });
+    const classify = common + nearOcclusion + GRID_GLSL + CLASSIFY_GLSL;
+    this.l1Mat = fsMat(classify + LEVEL1_FRAG, { ...shared, ...tables, ...sel, ...occlusion, uDstOff: { value: [0, 0] } });
     this.matMat = fsMat(classify + NEAR_PYR_GLSL + MATERIALIZE_FRAG, {
-      ...shared, ...tables, ...sel, ...grid, ...pyr.uniforms(), uClsSpinW: spinW, uCtN: { value: 0 },
+      ...shared, ...tables, ...sel, ...occlusion, ...grid, ...pyr.uniforms(), uClsSpinW: spinW, uCtN: { value: 0 },
     });
     const list = () => ({ tCP: { value: null }, tCM: { value: null }, tCS: { value: null } });
     this.srMat = fsMat(MIN_HEADER + GRID_GLSL + SEARCH_FRAG, {
@@ -664,8 +724,11 @@ export class NearContact {
       stencilWrite: true, stencilFunc: AlwaysStencilFunc, stencilRef: 0xff, stencilWriteMask: 1, stencilZPass: ReplaceStencilOp,
     });
     this.scMat = new RawShaderMaterial({
-      glslVersion: GLSL3, vertexShader: common + GRID_GLSL + SCATTER_VS, fragmentShader: SCATTER_FS,
-      uniforms: { ...shared, tCP: { value: null }, tCP0: { value: null }, tCM: { value: null }, uR0Size: { value: [CT_W, 1] } },
+      glslVersion: GLSL3, vertexShader: common + nearOcclusion + GRID_GLSL + SCATTER_VS, fragmentShader: SCATTER_FS,
+      uniforms: {
+        ...shared, ...occlusion, tCP: { value: null }, tCP0: { value: null }, tCM: { value: null }, uR0Size: { value: [CT_W, 1] },
+        uCtVis: this.visU, uCtCull: this.cullU, uCtTauCam: this.tauCamU,
+      },
       depthTest: false, depthWrite: false, blending: NoBlending,
     });
     this.fs = new Mesh(fullscreenGeometry(), this.itMat);
@@ -775,11 +838,13 @@ export class NearContact {
     const sel = this.selU.value;
     sel[0] = this.rhoLo; sel[1] = this.rhoHi; sel[2] = this.tauVisLo; sel[3] = this.tauVisHi;
     this.mwU.value = wakeOn ? (wk.uWakeTile.value as number) / 6 : 0;   // nearUpdate.glsl's out-of-view margin
-    // conservative path tau, as the update pass's cull (min(tau at the camera incl. its streamline density, the lowest
-    // profile tau within the contact range) x wakeMinDensity() x 0.8); the sub-km texture factor M is left out (a
-    // line of sight crosses many of its 15-500 m cells; the update pass takes the particle's own M)
+    // statistical occlusion: on with the update pass's cull (its threshold uCull; ctLosTau mirrors its inputs per
+    // particle). The scatter's drawn flip caps the path tau by a conservative one: the lowest tau_dyn within the contact
+    // range (the camera's incl. its streamline density) x 0.8, without the 2-D modulation. No wake floor: nearLosTau
+    // applies the wakes itself (the emptiest gap, then the path's own density)
+    const occl = this.occlusion && fr.cull > 0;
     let tauPath = 0;
-    if (this.occlusion) {
+    if (occl) {
       const rKm = (f.ring.r0 + f.ring.camLocal.x) / 1000, hw = reach / 1000 + 1;
       let tmin = fr.tauCam;
       for (let x = -hw; x <= hw + 1e-9; x += 0.25) {
@@ -787,12 +852,14 @@ export class NearContact {
         // the particle population's optical depth tau_dyn (lodTauDyn), as the update pass's cull
         tmin = Math.min(tmin, l.tau * lod.tauDynFactor(l.tau) * (1 - l.dust));
       }
-      tauPath = Number.isFinite(tmin) ? tmin * wMin * 0.8 : 0;
+      tauPath = Number.isFinite(tmin) ? tmin * 0.8 : 0;
     }
     this.bounds.tauPath = tauPath;
+    this.cullU.value = occl ? fr.cull : 0;
+    this.tauCamU.value = fr.tauCam;
     // frustum dilation per particle (units of its radius): two of its own contact distances, + a fade of one
     const vis = this.visU.value;
-    vis[0] = tauPath; vis[1] = Math.max(lod.H, 0.5); vis[2] = 4 * ext; vis[3] = 2 * ext;
+    vis[0] = tauPath; vis[1] = 0; vis[2] = 4 * ext; vis[3] = 2 * ext;
     // capacity: grow when the read-back size approaches it
     if (!this.cRT || (this.count > 0.85 * this.cap && this.cap < CT_MAX)) {
       this.allocate(r, Math.min(CT_MAX, Math.max(this.cap, Math.ceil(this.count * 1.5), CT_MIN_ROWS * CT_W)));

@@ -424,7 +424,7 @@ export class NearFieldPass implements RenderPass {
     cg.setDrawRange(0, 0);
     this.casters = new Points(cg, this.shMat);
     this.casters.frustumCulled = false;
-    this.contact = new NearContact(common, sh, tables(), this.clsSpinW, this.pyr);
+    this.contact = new NearContact(common, sh, tables(), this.clsSpinW, this.pyr, this.occlusionUniforms);
 
     this.fsMesh = new Mesh(fullscreenGeometry(), this.updMat);
     this.fsMesh.frustumCulled = false;
@@ -688,6 +688,7 @@ export class NearFieldPass implements RenderPass {
       this.contact.run({
         renderer: r, frame: f, lod, profile: ctx.profile, wakes: ctx.wakes, tauCam: u.uTauCam.value as number, r0RT: this.r0RT, texRows: this.texRows,
         active: this.classes.map((c) => c.active), quality: this.qualityU.value, layoutChanged: this.contactLayoutChanged,
+        cull: u.uCull.value as number,
       });
       this.contactLayoutChanged = false;
     } else this.contact.ran = false;
