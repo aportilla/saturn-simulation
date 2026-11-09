@@ -4,6 +4,7 @@
 // usage: node scripts/test/counts.mjs [--base URL] [--out DIR] [--places a-ring-30m,a-ring-1km,cassini-division]
 //                                     [--classes N] [--mc 400000] [--heights 100,1000,5000] [--w 1280 --h 720]
 //                                     [--cull-views b-ring-inside,a-ring-inside,a-ring-30m]
+//                                     [--skip-views a-ring-1km,propeller-belt,b-ring-inside]
 //
 // 1. drawn vs expected  per place (astronaut=0, statistical occlusion culling switched off for the comparison):
 //    measured = particles of class k in the near-field R0 read-back that are drawn (in view) and >= 0.5 display
@@ -21,6 +22,11 @@
 //    the cull on and off, after the draw lists settled -- mean HDR radiance ratio within 1 +- 0.005, pixels whose
 //    radiance changes by > 5 % <= 0.5 % (a culled particle that was visible leaves a hole: at the cull's tau >= 5 / 0.8
 //    it is seen with probability <= e^-6.25 = 0.2 %); drawn >= 1 px with the cull off / on reported.
+// 5. presence skip      (--skip-views a-ring-1km,propeller-belt,b-ring-inside) the update pass leaves the slots whose
+//    presence threshold lies above this frame's bound of tau0 M over their class's box (ctx.presenceBound, the
+//    modulation cache's block maxima) unevaluated: the same frame with NearFieldPass.presenceSkip off / on must give a
+//    bit-identical particle field (every present slot's R0, present and drawn counts), and the bound must be in use
+//    (below tauMax in >= 1 class; the share of slots skipped is reported).
 import { fmt, openApp, retry, sleep, table, withHarness } from './lib.mjs';
 
 const BASE_PARAMS = { hud: 0, labels: 0, paused: 1, astronaut: 0, t: '2026-11-07T20:00:00Z' };
@@ -129,6 +135,47 @@ async function cullCompare(page) {
   });
 }
 
+// --- in-page: the update pass's presence skip (slots whose presence threshold lies above this frame's bound of tau0 M
+// over their class's box, ctx.presenceBound, are left unevaluated) must not change a single present particle
+async function skipCompare(page) {
+  return page.evaluate(async () => {
+    const sv = window.__sv, near = sv.pipeline.passes.near?.inner ?? sv.pipeline.passes.near, ctx = sv.pipeline.ctx;
+    if (!near || !near.r0RT || near.presenceSkip === undefined) return { error: 'near-field internals (r0RT / presenceSkip) not found — update counts.mjs' };
+    if (!ctx.lod.active) return { error: 'near field not active here' };
+    const frames = (n) => new Promise((r) => { let k = 0; const f = () => (++k >= n ? r() : requestAnimationFrame(f)); requestAnimationFrame(f); });
+    const grab = () => near.classes.filter((c) => c.slots > 0 && c.active).map((c) => {
+      const b = new Float32Array(2048 * c.rows * 4);
+      sv.renderer.readRenderTargetPixels(near.r0RT, 0, c.row0, 2048, c.rows, b);
+      return { k: c.k, slots: c.slots, tauMax: c.tauMax, bound: ctx.presenceBound[c.k], b };
+    });
+    const was = near.presenceSkip;
+    try {
+      near.presenceSkip = false; await frames(6);
+      const A = grab();
+      near.presenceSkip = true; await frames(6);
+      const B = grab();
+      let present = 0, presentB = 0, drawn = 0, drawnB = 0, diff = 0, active = 0, skipShare = 0, slots = 0;
+      for (let j = 0; j < A.length; j++) {
+        const a = A[j], bb = B[j];
+        if (bb.bound < a.tauMax) active++;
+        skipShare += a.slots * (1 - Math.min(bb.bound, a.tauMax) / a.tauMax);
+        slots += a.slots;
+        for (let i = 0; i < a.slots; i++) {
+          const wa = a.b[i * 4 + 3], wb = bb.b[i * 4 + 3];
+          if (wa !== 0) present++;
+          if (wb !== 0) presentB++;
+          if (wa > 0) drawn++;
+          if (wb > 0) drawnB++;
+          if (wa !== wb || (wa !== 0 && (a.b[i * 4] !== bb.b[i * 4] || a.b[i * 4 + 1] !== bb.b[i * 4 + 1] || a.b[i * 4 + 2] !== bb.b[i * 4 + 2]))) diff++;
+        }
+      }
+      return { present, presentB, drawn, drawnB, diff, classes: A.length, active, skipShare: skipShare / Math.max(slots, 1), bounds: B.map((c) => `${c.k}:${(c.bound / c.tauMax).toFixed(3)}`).join(' ') };
+    } finally {
+      near.presenceSkip = was;
+    }
+  });
+}
+
 // --- in-page: radius / box sampler density check (mirror of nearRadiusBox in nearCommon.glsl)
 function samplerCheck(page) {
   return page.evaluate(() => {
@@ -168,7 +215,7 @@ function samplerCheck(page) {
   });
 }
 
-await withHarness('counts', { usage: 'node scripts/test/counts.mjs [--base URL] [--out DIR] [--places a,b] [--classes N] [--mc N] [--heights 100,1000,5000] [--cull-views a,b]' }, async ({ args, rep, base, browser }) => {
+await withHarness('counts', { usage: 'node scripts/test/counts.mjs [--base URL] [--out DIR] [--places a,b] [--classes N] [--mc N] [--heights 100,1000,5000] [--cull-views a,b] [--skip-views a,b]' }, async ({ args, rep, base, browser }) => {
   const places = args.list('places', ['a-ring-30m', 'a-ring-1km', 'cassini-division']);
   const nClasses = args.num('classes', 4), nMc = args.num('mc', 400000);
   const rows = [];
@@ -243,4 +290,20 @@ await withHarness('counts', { usage: 'node scripts/test/counts.mjs [--base URL] 
     rep.data[`cull-${v}`] = r;
   }
   console.log(`\n${table(['cull view', 'drawn >= 1 px, cull off', 'cull on', 'radiance on / off', 'pixels changed > 5 %'], crows)}`);
+
+  // ---- the update pass's presence skip leaves the particle field bit-identical
+  const srows = [];
+  for (const v of args.list('skip-views', ['a-ring-1km', 'propeller-belt', 'b-ring-inside'])) {
+    const r = await retry(async () => {
+      const { page } = await openApp(browser, base, { ...BASE_PARAMS, preset: v }, { settle: 2500 });
+      try { return await skipCompare(page); } finally { await page.close(); }
+    }, { label: `skip ${v}` });
+    if (r.error) { rep.check(`skip ${v}: setup`, false, r.error); continue; }
+    srows.push([v, r.present, r.presentB, r.drawn, r.drawnB, r.diff, `${r.active} / ${r.classes}`, `${fmt(100 * r.skipShare, 1)} %`, r.bounds]);
+    rep.check(`skip ${v}: present / drawn particles identical with the presence skip off / on`, r.diff === 0 && r.present === r.presentB && r.drawn === r.drawnB,
+      `present ${r.present} -> ${r.presentB}, drawn ${r.drawn} -> ${r.drawnB}, slots differing ${r.diff}`);
+    rep.check(`skip ${v}: the cache's presence bound is in use`, r.active > 0, `${r.active} of ${r.classes} classes below tauMax; ${fmt(100 * r.skipShare, 1)} % of the slots skipped`);
+    rep.data[`skip-${v}`] = r;
+  }
+  console.log(`\n${table(['skip view', 'present, skip off', 'on', 'drawn off', 'on', 'slots differing', 'classes bounded', 'slots skipped', 'bound / tauMax per class'], srows)}`);
 });

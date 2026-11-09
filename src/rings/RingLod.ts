@@ -228,11 +228,6 @@ export class RingLod {
   version = 0;
   /** increments only when the particle allocation (boxes / slots / tauBoxMax / size bins) changes */
   allocVersion = 0;
-  /**
-   * set to make the next configure() re-allocate even within its tau_max hysteresis (the pipeline's periodic bound
-   * check found a class's bound >= 10 % too high: Pipeline.updateLocalRing); cleared by configure()
-   */
-  reallocRequested = false;
   private I2all = 0;
 
   readonly uniforms = {
@@ -483,8 +478,7 @@ export class RingLod {
 
     // keep the allocation (same particles) unless the size bins, the max tau over a class's box or the display
     // pixel angle (beyond the zoom headroom) changed
-    let keep = this.allocVersion > 0 && !this.reallocRequested && !this.needsRealloc(o.pixelAngle, camZ);
-    this.reallocRequested = false;
+    let keep = this.allocVersion > 0 && !this.needsRealloc(o.pixelAngle, camZ);
     if (keep) {
       for (let k = 0; k < LOD_CLASSES; k++) {
         if (Math.abs(this.aLo[k] - prevLo[k]) > 1e-6 * prevLo[k] || Math.abs(this.aHi[k] - prevHi[k]) > 1e-6 * prevHi[k]) { keep = false; break; }

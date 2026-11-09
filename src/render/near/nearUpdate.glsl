@@ -40,6 +40,9 @@ uniform vec2 uCamOff;       // camera position - box reference c0 (local frame, 
 uniform vec4 uKin;          // (kappa phase, nu phase, Omega/kappa, 0)
 uniform vec4 uShear;        // (q Omega (t - t_e), q Omega c0x (t - t_e) (m), F = frac(q Omega (t - tRef)), 0)
 uniform float uTauBoxMax;
+// this frame's upper bound of the presence test's tau0 M over the class's box (<= uTauBoxMax; the modulation cache's
+// block maxima, Pipeline ctx.presenceBound): a slot whose presence threshold lies above it is absent wherever it is
+uniform float uTauPres;
 uniform float uTauCam;      // macroscopic tau at the camera's radius
 uniform float uCull;        // > 0: statistical occlusion culling beyond this line-of-sight optical depth
 // (the occlusion bound nearLosTau and its uniforms: nearOcclusion.glsl, included before this file)
@@ -51,6 +54,13 @@ void main() {
   int i = (tc.y - uRow0) * uTexW + tc.x;
   if (i >= uCount) { o = vec4(0.0); return; }
   uint idx = uint(i), seed = uint(uSeed);
+  // presence threshold (tested below at the guiding centre: absent if uPr uTauBoxMax >= tau0 M there), stratified by
+  // the slot index -- uniform over the slots and independent of every other attribute (their own hash streams), so
+  // the present particles are the same random sample -- and therefore increasing with it: the slots are allocated at
+  // the bound of tau0 M for all times, and those above this frame's bound (uTauPres) form one contiguous tail that the
+  // pass need not evaluate (NearFieldPass renders only the rows below it; the tail's first rows are zeroed here)
+  float uPr = (float(i) + nearU(idx, seed, NS_PRES)) / float(uCount);
+  if (uPr * uTauBoxMax >= uTauPres) { o = vec4(0.0); return; }
   float a, D;
   nearRadiusBox(nearU(idx, seed, NS_RAD), a, D);
   float D2 = 2.0 * D;
@@ -138,10 +148,13 @@ void main() {
     gRpAlsoRelief = false;
   }
   float tauM = rs.tau * (1.0 - rs.dust) * smod.x;
-  if (nearU(idx, seed, NS_PRES) * uTauBoxMax >= tauM) { o = vec4(0.0); return; }
-  // the propellers' relief at the guiding centre (present particles only; shadow casters outside the view: its own
-  // enumeration -- their heights stay exact)
-  if (rpZ) z0p += rsReliefPropellers(aL, dthP, 0.0).x;
+  if (uPr * uTauBoxMax >= tauM) { o = vec4(0.0); return; }
+  // the propellers' relief at the guiding centre (present particles only): from the cache where it covers the point (the
+  // level the presence test read: exact to its texels, like M), else its own enumeration (or the one above: mode 3)
+  if (rpZ) {
+    vec4 zr;
+    z0p += rsReliefPropCached(aL, uRingR0 * dthP, 1e30, zr) ? zr.x : rsReliefPropellers(aL, dthP, 0.0).x;
+  }
 
   // --- self-gravity wakes (Eulerian field), faded out at the particle's (Lagrangian) box edge, where it is too
   // small to be drawn, and absent in a propeller's stirred material (sv_ringStructure wake factor)

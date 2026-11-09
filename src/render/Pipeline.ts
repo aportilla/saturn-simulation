@@ -30,14 +30,12 @@ import { ModClipmap } from './rings/ModClipmap';
 import { registerShaderChunks } from './shaders/chunks';
 import { SKY_DISTANCE } from '../core/constants';
 
-/** margin on the modulation cache's maximum for the near-field allocation bound (the cache evolves between checks) */
-const MOD_BOUND_MARGIN = 1.02;
 /**
- * the periodic bound check re-fits a class whose need fell below this fraction of its tau_max (fewer slots; a re-fit
- * re-seeds the classes whose tau_max changes, so not for small savings: the B ring's local maximum of M is ~12 % below
- * the texture's 3-sigma bound, the A ring's 20-30 %)
+ * margin on the modulation cache's block maxima for the near-field presence bound (float rounding; a level refreshed for
+ * the pattern's drift since the read-back -- <= 1/2 azimuthal texel, ModClipmap.maxNear -- moves its samples between the
+ * dilated blocks' texels)
  */
-const BOUND_REFIT_DOWN = 0.9;
+const MOD_BOUND_MARGIN = 1.02;
 
 export interface PipelineContext {
   renderer: WebGLRenderer;
@@ -55,6 +53,13 @@ export interface PipelineContext {
    * camera); updated and rendered by the pipeline before any pass renders
    */
   modClip: ModClipmap;
+  /**
+   * per near-field size class: an upper bound of the presence test's tau0 M over the class's box this frame (the
+   * modulation cache's block maxima, ModClipmap.maxNear), <= the class's tauMax -- the update pass skips the slots whose
+   * presence threshold exceeds it before computing anything (cost only: they would fail the presence test anyway);
+   * = tauMax where no current bound is known. Set by the pipeline every frame (updateLocalRing).
+   */
+  presenceBound: Float64Array;
   /** far + near opaque scene: rgb radiance + distance (a), with depth texture */
   sceneRT: WebGLRenderTarget;
   /** radiance after the ring layer */
@@ -141,6 +146,8 @@ export class Pipeline {
   private lastLocalMacro = false;
   private lastModKey = '';
   private modCheckFrame = 0;
+  /** the near-field presence bound's box centre (aL, S) and drift margin (m), from updateLocalRing */
+  private readonly presCam = [0, 0, 0];
   ready = false;
 
   constructor(readonly renderer: WebGLRenderer, passes: PipelinePasses) {
@@ -160,7 +167,8 @@ export class Pipeline {
     Object.assign(shared.u, modClip.uniforms);
     const sceneRT = Pipeline.makeTarget(width, height, true);
     const hdrRT = Pipeline.makeTarget(width, height, false);
-    this.ctx = { renderer: this.renderer, shared, profile, lod, wakes, structure, modClip, sceneRT, hdrRT, width, height };
+    const presenceBound = new Float64Array(lod.tauMax.length);
+    this.ctx = { renderer: this.renderer, shared, profile, lod, wakes, structure, modClip, presenceBound, sceneRT, hdrRT, width, height };
     // color clear via shader (float targets: clearColor values may be clamped); depth via renderer.clear
     this.clearPass = new FullscreenPass({
       fragmentShader: /* glsl */ `
@@ -242,40 +250,26 @@ export class Pipeline {
     // the camera's height above the local mid-plane (vertical relief; the frame stays in the SEF plane)
     const camZ = f.ring.camLocal.z - f.ring.zMid;
     // The particles are thinned by tau0 M / tauMax with M the 2-D modulation (sub-km texture, propellers): each class's
-    // tauMax covers the largest tau0 M in its box -- where the modulation cache covers the box, the cache's joint maximum
-    // of tau0 x M there (ModClipmap.maxNear: what the presence test actually reads), else max tau0 x the analytic bound
-    // of M (texture clamp x the propellers' lobes: RingStructure.maxTauModNear). Propellers drift through the co-orbiting
-    // boxes and the pattern evolves: the analytic propeller bounds are re-checked every 60 frames, the whole bound every
-    // 15 frames (re-fit when a class's need exceeds its tau_max, or is >= 10 % below it: BOUND_REFIT_DOWN).
+    // tauMax covers the largest M in its box AT ANY TIME (the texture's 3-sigma clamp: the pattern evolves and shears
+    // through the co-orbiting boxes -- its maximum over a box varies by +-15 % within a day -- and a re-fit re-seeds the
+    // particles, so the allocation must not follow it). Propellers drift through the boxes: their bounds are re-checked
+    // every 60 frames and the allocation re-fitted when one changes.
     const thCam = Math.atan2(f.camPos.y, f.camPos.x);
     const driftKm = c.structure.maxDisplacementNear(rKmE * 1000) / 1000;
-    // the camera's Lagrangian polar position in the ring frame (the cache's coordinates: aL = a' - r0, S = r0 dth)
-    const aLcam = rKm * 1000 - f.ring.r0;
-    const sCam = f.ring.r0 * Math.atan2(f.ring.camLocal.y, f.ring.r0 + f.ring.camLocal.x);
-    const tauMaxAt = (halfWidth: number): number => {
-      const h = halfWidth + driftKm * 1000;
-      const p = c.modClip.maxNear(aLcam, sCam, h, f.ring.anchorId, 1);
-      if (p !== null) return p * MOD_BOUND_MARGIN;
-      return c.profile.maxTauKm(rKm, halfWidth / 1000 + driftKm) * c.structure.maxTauModNear(rKm * 1000, h);
-    };
+    // (the presence bound's box centre and margin: the camera's Lagrangian polar position in the ring frame -- the
+    // modulation cache's coordinates aL = a' - r0, S = r0 dth -- and the streamline map's drift)
+    this.presCam[0] = rKm * 1000 - f.ring.r0;
+    this.presCam[1] = f.ring.r0 * Math.atan2(f.ring.camLocal.y, f.ring.r0 + f.ring.camLocal.x);
+    this.presCam[2] = driftKm * 1000;
     let modKey = this.lastModKey;
     if (++this.modCheckFrame % 60 === 0 && c.lod.active) {
       c.structure.prepareNear(rKm * 1000, thCam);
       modKey = c.structure.nearBoundKey(c.lod.box);
     }
-    let boundRefit = false;
-    if (this.modCheckFrame % 15 === 0 && c.lod.active && !anchorChanged) {
-      for (let k = 0; k < c.lod.slots.length && !boundRefit; k++) {
-        if (c.lod.slots[k] <= 0) continue;
-        const need = Math.max(local.tau, tauMaxAt(c.lod.box[k] + 500));
-        boundRefit = need > c.lod.tauMax[k] * 1.0001 || need < c.lod.tauMax[k] * BOUND_REFIT_DOWN;
-      }
-      if (boundRefit) c.lod.reallocRequested = true;
-    }
-    if (anchorChanged || movedFar || drifted || c.lod.needsRealloc(pa, camZ) || modKey !== this.lastModKey || boundRefit) {
+    if (anchorChanged || movedFar || drifted || c.lod.needsRealloc(pa, camZ) || modKey !== this.lastModKey) {
       c.structure.prepareNear(rKm * 1000, thCam);
       // each size class is generated at the max tau over the radial span of its own box (+ the possible drift)
-      c.lod.configure(local, tauMaxAt, camZ, { pixelAngle: pa, maxSlots: this.policy.maxSlots });
+      c.lod.configure(local, (halfWidth) => c.profile.maxTauKm(rKm, halfWidth / 1000 + driftKm) * c.structure.maxTauModNear(rKm * 1000, halfWidth + driftKm * 1000), camZ, { pixelAngle: pa, maxSlots: this.policy.maxSlots });
       c.wakes.configure(local, f.ring);
       this.lastAnchorId = f.ring.anchorId;
       this.lastLocalRKm = rKmE;
@@ -302,7 +296,7 @@ export class Pipeline {
     c.structure.update(f);
     this.updateLocalRing(f);
     c.shared.update(f, c.profile);
-    // the 2-D modulation around the camera, over the near field's largest particle box (+ the allocation bound's 500 m
+    // the 2-D modulation around the camera, over the near field's largest particle box (+ the presence bound's 500 m
     // margin and room for the boxes to grow at a re-fit)
     {
       const P = c.structure.propellers, tf = P.uniforms.uRpTF.value;
@@ -311,6 +305,15 @@ export class Pipeline {
       const propNear = P.scale > 0 && rc > tf.y - reach && rc < tf.z + reach;
       c.modClip.update(f, c.structure, reach, propNear);
       c.modClip.render(r);
+      // per size class: the largest presence tau0 M over its box (+ the allocation's 500 m margin and the streamline
+      // drift) the cache's lookups can return this frame -- the update pass skips the slots above it unevaluated
+      const pb = c.presenceBound, L = c.lod;
+      for (let k = 0; k < pb.length; k++) {
+        pb[k] = L.tauMax[k];
+        if (!L.active || L.slots[k] <= 0) continue;
+        const p = c.modClip.maxNear(this.presCam[0], this.presCam[1], L.box[k] + 500 + this.presCam[2], f.ring.anchorId, 1, f.t);
+        if (p !== null) pb[k] = Math.min(L.tauMax[k], Math.max(p * MOD_BOUND_MARGIN, L.tau));
+      }
     }
     for (const p of this.ordered()) {
       if (p && p.enabled) p.update?.(f, c);
