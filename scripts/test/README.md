@@ -89,6 +89,8 @@ run caught tiny negative radiances from the F-ring line profiles, since fixed).
    displacement vs 2|sin(κdt/2)|σx, 2|sin(νdt/2)|σz, |qΩdt cos(κdt/2) − 4(Ω/κ) sin(κdt/2)| σx (the shear is
    removed at the instantaneous x but acts on the guiding centre) — ratios 0.95 … 1.05 (measured 0.994 … 1.002).
    For |qΩdt| > 0.25 the boxes wrap azimuthally, so only dx and dz are checked (dt = 20000 s: κdt ≈ 2.5 rad).
+   Each step also checks that the near-field allocation did not change (`lod.allocVersion`: a re-fit re-seeds every
+   particle — an allocation bound that followed the texture's evolving local maximum did on every time step).
 
 ### counts — `scripts/test/counts.mjs`
 1. **drawn vs expected** at `--places a-ring-30m,a-ring-1km,cassini-division` (astronaut off, statistical
@@ -118,7 +120,15 @@ run caught tiny negative radiances from the F-ring line profiles, since fixed).
    at 1280×720 (drawn ≥ 1 px off → on, ratio, pixels changed): b-ring-inside 877k → 86k, 0.9996, 0.059 %;
    a-ring-inside 235k → 57k, 1.0003, 0.12 %; a-ring-30m 204k → 180k, 1.0000, 0.008 %. At 1920×1080: b-ring-inside
    1.17 M → 0.10 M drawn, a-ring-inside 0.54 M → 0.10 M, a-ring-30m 0.49 M → 0.41 M; with the emptiest-gap bound alone,
-   as before Nov 2026: 1.17 M, 0.35 M, 0.49 M.
+   as before Nov 2026: 1.17 M, 0.35 M, 0.49 M. With the size rules (wake participation: the path's density bound
+   1 + (W ≥ 1 ? p_min : p_max)(W − 1), uNfPart): b-ring-inside 1.01 M → 0.22 M, 1.0000, 0.11 %; a-ring-inside 243k →
+   100k, 1.0000, 0.012 %; a-ring-30m 219k → 169k, 1.0000, 0.000 %.
+5. **presence skip** (`--skip-views a-ring-1km,propeller-belt,b-ring-inside`): the update pass leaves the slots whose
+   (slot-index-stratified) presence threshold lies above this frame's bound of τ_dyn M over their class's box
+   (`ctx.presenceBound`, the modulation cache's block maxima) unevaluated — only the rows below them are rendered. The same
+   frame with `NearFieldPass.presenceSkip` off / on: every present slot's R0 bit-identical, present and drawn counts
+   identical, and the bound in use (below τ_max in ≥ 1 class). Measured: 0 slots differing at all three views; 22 % /
+   21 % / 13 % of the slots skipped (bound / τ_max 0.74–0.82, 0.78–0.84, 0.87).
 
 ### seam — `scripts/test/seam.mjs` (`--only seam,flux,handover,base`, `--views id,…`)
 1. **seam**: per view, mean HDR radiance (`hdrRT`, after the ring layer and before glare / tone mapping, so
@@ -265,7 +275,7 @@ the same page — rounds of off / on in ABBA order, each measured for `--secs`; 
 difference ± its standard error. Steadier than comparing fresh pages on a shared GPU. Example (sub-km texture and
 propellers): `--ab-off "s=__sv.pipeline.ctx.structure;s.texture.amp=0;s.propellers.scale=0"` /
 `--ab-on "…amp=1;…scale=1"`; add `;__sv.pipeline.lastModKey='force'` to both and `--ab-settle 3000` to include
-the near-field allocation bound (the local LOD re-fits within 60 frames).
+the near-field allocation (the local LOD re-fits within 60 frames).
 
 **Compare mode** (`--compare DIR|URL`, `--rounds 3`, `--label-a`, `--label-b`): this checkout (A) against another one
 (B) — a directory holding another revision (`git archive <rev> -o x.tar`, untar into an empty directory, symlink
@@ -296,7 +306,10 @@ Far less noisy than fps counting on a shared GPU (another agent's browser triple
 repeat runs). Measured with it (Nov 2026, 1920×1080, min ms): the near field's update pass a-ring-1km 5.4 → 2.0 with
 the modulation cache, a-ring-30m 14.3 → 8.4, propeller-belt 6.1 → 2.1; the line-of-sight occlusion test costs
 +0.4 ms (b-ring-inside) / +1.2 ms (a-ring-30m) in the update pass and saves 3.8 / 2.8 ms of the near field in
-b-ring-inside / a-ring-inside.
+b-ring-inside / a-ring-inside; the slot-index-stratified presence threshold with the row-limited skip (`near.presenceSkip`)
+took the update pass from 5.1 / 10.2 / 6.0 / 6.8 / 9.8 to 3.5 / 7.4 / 4.4 / 5.7 / 7.1 ms (a-ring-1km / a-ring-30m /
+propeller-belt / b-ring-inside / a-ring-inside); the layer's own slab (`P.localSlab`) a-ring-30m 64.7 → 58.1 ms,
+a-ring-inside 43.1 → 38.4 ms per frame.
 
 ### exposure — `scripts/test/exposure.mjs` (`--presets id,…`, `--tol EV`, `--settle ms`)
 

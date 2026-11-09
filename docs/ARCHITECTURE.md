@@ -248,9 +248,11 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   particles that may be drawn and in the size classes a propeller can reach this frame (`uRpNearMask`,
   `PropellerSystem.nearClassMask`, exact); shadow casters outside the view then take the texture only (shadow fidelity).
   The march reads it where its footprint and the cache's texels are ≤ 4 m (`RL_MC_FP`, near the camera). Its block
-  maxima (16 × 16 texels + a one-texel ring, read back asynchronously) bound M over a particle box: the allocation bound
-  below (`ModClipmap.maxNear`). Measured (test:propellers, cache section): texels = the CPU mirror to ≤ 1e-3 (float32),
-  0.4–1 % of the drawn particles' presence differs from the direct evaluation (the prefiltered coarse levels).
+  maxima (16 × 16 texels + a one-texel ring, read back asynchronously; a third channel holds the presence test's whole
+  optical depth, the largest τ0 τ_dyn/τ0 over each texel's support × M) bound the presence factor over a particle box
+  (`ModClipmap.maxNear`): the near field's presence skip and the march's slab (below). Measured (test:propellers, cache
+  section): texels = the CPU mirror to ≤ 1e-3 (float32), ~0.9 % of the drawn particles' presence differs from the direct
+  evaluation (the prefiltered coarse levels).
   Sources of ξ / ζ: the
   moonlets Pan and Daphnis (Hill-problem response table, `public/data/rings/moonlet_response.*`) and the normal modes
   of eccentric edges (`src/rings/ringModes.ts` `EDGE_FEATURES`: the B-ring outer edge's four modes; uniforms
@@ -309,7 +311,11 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   `RingLod.anisoAt`), `lodTauDyn(tau)` (`uLodTauDyn`: τ_dyn/τ_profile vs τ at the anchor; the particles' presence
   and the medium follow τ_dyn), `lodPackM(tau, W)` (`uLodPack`: the packing ceiling's thickening of the participating
   classes at density W), `uLodTidal` = (tidally locked share, p̄, f̄, 1/g1), `ringSlabHalfThickness(H)` = `uLodSlabK`·H
-  + 0.5 (the slab holds the layer thickened to the density cap), and `ringLodChannels(s, z, dz, H, Gs, out Bp, out Bt,
+  + 0.5 (the slab holds the layer: RingLod.configure sets 4 σ of the thickest class, thickened to the density cap at the
+  worst τ near the camera; `Pipeline.updateSlab` lowers it every 10 frames to the layer's own 2 Q(4) = 6.3e-5 column tail
+  — the class mixture, the participating share at the wake field's density distribution `WAKE_D_BINS` with its packing
+  at the modulation cache's current maximum of τ_dyn × M over ±5 km; 41 m instead of 85 m at a-ring-30m), and
+  `ringLodChannels(s, z, dz, H, Gs, out Bp, out Bt,
   out Bs)` — the three bands of the ring layer's LUT. σ_z per class from the zone's `sigZLaw` (`zoneSigZ`).
 * `sv_wakes` (mirror of `src/rings/WakeField.ts`; Python port with a bit-exact `--verify`:
   `scripts/data/nbody/procedural.py`): `wakeDisplacement(q)` (particles, at their epicyclic position), `wakeDensity(x)`
@@ -453,25 +459,28 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   which it falls below the handover band (with zoom headroom) from the lowest camera height served (dz above
   the slab; 0 normally), so nothing is simulated where it could not be drawn; radii within a class are sampled
   from n(a)·D(a)² (≤ 6 power-law pieces, box a power of a on each: ~1% over the exact D), boxes up to 60 km
-  (10 m boulders are ≥ 1 px out to ~20 km at 1080p), each class generated at the largest presence factor τ0·M over its
-  own box (+ 500 m): where the modulation cache covers the box, its joint maximum of τ0 × M (`ModClipmap.maxNear(…, 1)`
-  × 1.02: each texel holds the largest τ0 over its bilinear support × its M, so the block maxima bound exactly what the
-  presence test reads, texture × propellers jointly; M's local maximum is 1.18–1.42 in the A ring and ~1.26 in the
-  B-ring core, depending on the box), else max τ0 × the analytic bound of M (`RingStructure.maxTauModNear`: texture
-  1 + 0.70 A, i.e. 1.22 in the A ring and 1.43 in the B-ring core; a propeller's lobe factor 1.27 × its wake bound only
-  where a propeller's band crosses the box — `prepareNear` / `nearBoundKey`, re-checked every 60 frames).
-  `Pipeline.updateLocalRing` re-checks the bound every 15 frames: a class whose need exceeds
-  its τ_max re-fits, and one whose need fell ≥ 10 % below it (`BOUND_REFIT_DOWN`; `RingLod.reallocRequested`) — the
-  first allocation after loading / re-anchoring uses the analytic bound until the cache's maxima are read back. Presence
-  then accepts τ0 J M / bound.
+  (10 m boulders are ≥ 1 px out to ~20 km at 1080p), each class generated at the largest presence factor over its own
+  box (+ 500 m) AT ANY TIME: max τ_dyn × the analytic bound of M (`RingStructure.maxTauModNear`: texture 1 + 0.70 A,
+  i.e. 1.22 in the A ring and 1.43 in the B-ring core; a propeller's lobe factor 1.27 × its wake bound only where a
+  propeller's band crosses the box — `prepareNear` / `nearBoundKey`, re-checked every 60 frames). (A bound that followed
+  M's current local maximum — the modulation cache's — re-fitted, i.e. re-seeded every particle, whenever the evolving,
+  shearing texture raised it: it varies by ±15 % within a day; test:physics now checks the allocation across time
+  steps.) Presence then accepts τ_dyn J M / bound with a threshold **stratified by the slot index** — slot i's is
+  (i + u_i)/N, u_i its hash: uniform over the slots and independent of every other attribute (their own hash streams), so
+  the present particles are the same random sample — which makes it increase along the class's rows: the slots above
+  this frame's local maximum of τ_dyn × M over the box (`ModClipmap.maxNear(…, 1)` × 1.02, `ctx.presenceBound`; each
+  cache texel holds the largest τ0 τ_dyn/τ0 over its bilinear support × its M, so the block maxima bound exactly what the
+  presence test reads) form one contiguous tail that the update pass does not evaluate (`NearFieldPass`: only the rows
+  below it, the tail zeroed once when the bound falls; bit-identical particle field: test:counts §5). The bound is used
+  only while the cache's read-back describes the levels the shaders read (same centres, drift ≤ ½ azimuthal texel).
   Independent of the camera position (particles persist while flying) unless the total exceeds the 12M-slot
   cap (dense B ring, ~46M): then it is fitted to the camera height h (valid for [h/1.5, 1.5h], re-fit
   outside); above the layer the zoom-in margin and the band below h are given up first (down to 1.07× / 1.13×:
   they hold nothing drawn now, but re-fits come sooner), only then are the largest boxes clipped at a common
   radius; the stats report the visibility-weighted deficit (~0 inside the B ring, where the layer hides
   everything farther; B ring at 1080p: complete from ≥ 700 m above, ~3–30% short at 50–500 m; the texture's global
-  allocation bound 1.43 raised the 1280×720 deficit at 100 m from 0.3 % to 9.2 %, the cache's local bound brought it to
-  2.9 %, `npm run test:counts`). Vertical
+  allocation bound 1.43 raised the 1280×720 deficit at 100 m from 0.3 % to 9.2 %, the size rules' τ_dyn ≈ 2.2 τ_profile
+  to 38 %, boxes clipped at 118 m, `npm run test:counts`). Vertical
   visibility is not used to thin it: every particle crosses the mid-plane, and wake gaps leave even the B ring
   at τ ~ 1. The near field is active while the camera is within the largest particles' reach. Seeds depend on
   the anchor id and class only; classes whose allocation is unchanged keep their particles across re-fits.
