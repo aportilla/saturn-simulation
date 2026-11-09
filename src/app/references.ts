@@ -1574,6 +1574,38 @@ export const REFERENCES: Reference[] = [
     usedFor: 'Partial gaps of about half the density around small moonlets: the propellers\' gap depth D0 = 0.6 (src/rings/propellers.ts)',
     verified: true, verifiedBy: CR,
   },
+  // ---------------------------------------------------------------------------- particle spins and aggregates: the LOD size rules (ring-physics.md §10.12)
+  {
+    id: 'karjalainen2004', type: 'paper', year: 2004,
+    authors: ['Karjalainen, R.', 'Salo, H.'],
+    title: "Gravitational accretion of particles in Saturn's rings",
+    venue: 'Icarus', volume: '172', pages: '328–348',
+    doi: '10.1016/j.icarus.2004.05.022',
+    topics: ['nbody', 'sizes'],
+    usedFor: 'Bound aggregates rotate synchronously with their long axis nearly radial (tidal alignment, supported by the near-field orientation model; src/rings/ringDynamics.ts)',
+    verified: true, verifiedBy: CR,
+  },
+  {
+    id: 'salo2018', type: 'paper', year: 2018,
+    authors: ['Salo, H.', 'Ohtsuki, K.', 'Lewis, M. C.'],
+    title: 'Computer simulations of planetary rings',
+    venue: 'in Planetary Ring Systems (Tiscareno & Murray, eds.), Cambridge University Press', pages: '434–493',
+    doi: '10.1017/9781316286791.016',
+    topics: ['nbody', 'dynamics'],
+    usedFor: 'Aggregates form where the Hill parameter r_h exceeds ~1.1 (transient) to ~1.2 (persistent), and r_h from the bulk density and radius (its eq. for r_h): no tidally locked particles in the main-ring zones (r_h 0.5–0.8; src/rings/ringDynamics.ts)',
+    verified: true, verifiedBy: `${CR} (book chapter; its record has no issue date: the year and the editors from the book's record, 10.1017/9781316286791)`,
+    note: 'Read in the arXiv preprint version (dated 8.3.2016) of the chapter.',
+  },
+  {
+    id: 'schmidt2009', type: 'paper', year: 2009,
+    authors: ['Schmidt, J.', 'Ohtsuki, K.', 'Rappaport, N.'], etAl: true,
+    title: "Dynamics of Saturn's dense rings",
+    venue: 'in Saturn from Cassini-Huygens (Dougherty, Esposito & Krimigis, eds.), Springer', pages: '413–458',
+    doi: '10.1007/978-1-4020-9217-6_14',
+    topics: ['dynamics', 'nbody'],
+    usedFor: 'Particle spins: rotation rates of order Ω for the largest bodies and roughly ∝ 1/a below, slowly spinning large particles with axes near the ring normal, small ones random (the spin-alignment model of the near field and the medium; src/rings/ringDynamics.ts)',
+    verified: true, verifiedBy: `${CR} (authors Schmidt, Ohtsuki, Rappaport, Salo, Spahn); editors from the book's record, 10.1007/978-1-4020-9217-6`,
+  },
   // ---------------------------------------------------------------------------- Cassini images the relief and propellers are compared with
   {
     id: 'pia11655', type: 'dataset', year: 2009,

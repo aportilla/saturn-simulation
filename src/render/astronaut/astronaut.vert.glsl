@@ -108,43 +108,61 @@ void main() {
     float shl = max(length(sh), 1e-6);
     vec2 sdir = sh / shl;
     float dzdl = sunNc / shl;
-    float fUp = 0.0, fPart = 0.0, wsum = 0.0;
+    // the size rules as the particles (nearDraw.vert.glsl): the particle population's tau_dyn, the participating share
+    // thickened by the packing ceiling, the spin-aligned classes' cross-section along the Sun; two-stream at tau_iso
+    float tauD = rc.tau * lodTauDyn(rc.tau);
+    float Gs = lodAniso(uSunDir);
+    float mP = uLodPack.w > 0.5 && uWakeOn > 0.5 ? lodPackM(rs.tau * lodTauDyn(rs.tau), wakeDensity(lp.xy)) : 1.0;
+    float fUp = 0.0, fUpP = 0.0, wsum = 0.0, wP = 0.0;
+    vec2 fSun = vec2(0.0), fPart = vec2(0.0);   // (non-participating, participating), Sun-weighted
     for (int k = 0; k < LOD_CLASSES; k++) {
       float wk = uLodTauFrac[k];
       if (wk <= 0.0) continue;
-      float sig = max(uLodSigZ[k] * H, 0.02);
-      float qu = lodGaussQ(zl, sig);
-      fUp += wk * qu;
+      float sig = max(uLodSigZ[k] * H, 0.02), sigP = sig * mP;
+      float pk = lodClassP(k), gk = wk * (1.0 + lodClassF(k) * Gs);
+      float quN = lodGaussQ(zl, sig), quP = lodGaussQ(zl, sigP);
+      fUp += wk * mix(quN, quP, pk);
+      fUpP += wk * pk * quP;
       wsum += wk;
-      float qs = sg > 0.0 ? qu : 1.0 - qu;
+      wP += wk * pk;
+      vec2 qs = sg > 0.0 ? vec2(quN, quP) : 1.0 - vec2(quN, quP);
+      fSun += gk * vec2(1.0 - pk, pk) * qs;
       if (uShInfo.y > 0.5 && float(k) >= uShInfo.z) {
         float D = uNearAllocD[k];
         float tx = abs(sdir.x) > 1e-6 ? (sign(sdir.x) * D - pl2.x) / sdir.x : 1e9;
         float ty = abs(sdir.y) > 1e-6 ? (sign(sdir.y) * D - pl2.y) / sdir.y : 1e9;
-        qs = lodGaussQ(sg * (zl + max(min(tx, ty), 0.0) * dzdl), sig);
+        float hx = sg * (zl + max(min(tx, ty), 0.0) * dzdl);
+        qs = vec2(lodGaussQ(hx, sig), lodGaussQ(hx, sigP));
       }
-      fPart += wk * qs;
+      fPart += gk * vec2(1.0 - pk, pk) * qs;
     }
     if (uLodTauSub > 0.0) {
       float sig = max(uLodSigZSub * H, 0.02);
       float qu = lodGaussQ(zl, sig);
       fUp += uLodTauSub * qu;
-      fPart += uLodTauSub * (sg > 0.0 ? qu : 1.0 - qu);
+      float qs = uLodTauSub * (sg > 0.0 ? qu : 1.0 - qu);
+      fSun.x += qs;
+      fPart.x += qs;
       wsum += uLodTauSub;
     }
-    if (wsum <= 0.0) { float sig = max(0.3 * H, 0.02); fUp = lodGaussQ(zl, sig); fPart = sg > 0.0 ? fUp : 1.0 - fUp; wsum = 1.0; }
-    // self-gravity wakes along the sun path (the stratified nodes the medium and the particles use)
+    if (wsum <= 0.0) {
+      float sig = max(0.3 * H, 0.02);
+      fUp = lodGaussQ(zl, sig); fSun = vec2(sg > 0.0 ? fUp : 1.0 - fUp, 0.0); fPart = fSun; wsum = 1.0;
+    }
+    // self-gravity wakes along the sun path (the stratified nodes the medium and the particles use: the participating
+    // column, thickened by mP)
     float Ws = 1.0;
-    if (uWakeOn > 0.5) {
-      float qsun = (sg > 0.0 ? fUp : wsum - fUp) / wsum, acc = 0.0;
-      for (int j = 0; j < LOD_SUN_NODES; j++) acc += wakeDensity(lp.xy + sh2 * (ringSunNodeRise(j, qsun, sg * zl / H) * H));
+    if (uWakeOn > 0.5 && wP > 0.0) {
+      float qsun = (sg > 0.0 ? fUpP : wP - fUpP) / wP, acc = 0.0;
+      for (int j = 0; j < LOD_SUN_NODES; j++) acc += wakeDensity(lp.xy + sh2 * (mP * ringSunNodeRise(j, qsun, sg * zl / (H * mP)) * H));
       Ws = acc / float(LOD_SUN_NODES);
     }
-    tSun = exp(-vec2(sg > 0.0 ? fUp : wsum - fUp, fPart) * (rc.tau * Ws / mu0));
+    tSun = exp(-vec2(fSun.x + Ws * fSun.y, fPart.x + Ws * fPart.y) * (tauD / mu0));
     // two-stream diffuse field of the layer at the body's depth below the lit face (outside the layer: the
     // glow of the face it is on)
-    float tUp = rs.tau * fUp, tDn = rs.tau * (wsum - fUp);
-    nearTwoStream(sg > 0.0 ? tUp : tDn, rs.tau, rs.albedo, uNearBeta.x, uNearBeta.y, mu0, Fl, Fd);
+    float tauMS = rs.tau * uLodTidal.w;
+    float tUp = tauMS * fUp, tDn = tauMS * (wsum - fUp);
+    nearTwoStream(sg > 0.0 ? tUp : tDn, tauMS, rs.albedo, uNearBeta.x, uNearBeta.y, mu0, Fl, Fd);
     Fl *= Esun * uAstroPlaneW;
     Fd *= Esun * uAstroPlaneW;
   } else {

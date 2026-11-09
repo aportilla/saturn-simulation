@@ -41,23 +41,28 @@ import rlOuter from '../rings/rlOuter.glsl?raw';
 import rlMarch from '../rings/rlMarch.glsl?raw';
 import rlMain from '../rings/rlMain.glsl?raw';
 
-// Vertical-structure LUT: the shared sv_ringLod contract evaluated on a (u = z/H, log10 s) grid.
-// R = H sigTot / tau, G = H sigUnres / tau (both exact: the class pdfs scale as 1/H), B = column fraction
-// above z. Regenerated every frame (pixel angle and LOD state change it); 16k texels.
-const LUT_NU = 256, LUT_NS = 64;
-const LUT_P = new Vector4(-2.5, 5 / (LUT_NU - 1), -2, 7 / (LUT_NS - 1));
+// Vertical-structure LUT: the shared sv_ringLod contract (ringLodChannels) evaluated on a (u = z/H, log10 s) grid, three
+// bands of LUT_NS rows: participating particles (H sigma_P / tau, H sigma_P,unres / tau, column fraction above z, aligned
+// unresolved part), all particles (the same) and the column fractions along the Sun (sv_ringLod; densities exact: the
+// class pdfs scale as 1/H). u is mapped by asinh (u = c sinh(t), t uniform): resolution near the mid-plane and room for
+// the packing ceiling's thickened slab. Regenerated every frame (pixel angle, camera height, LOD state, Sun); 98k texels.
+const LUT_NU = 512, LUT_NS = 64, LUT_C = 0.25;
+const LUT_P = new Vector4(LUT_C, Math.asinh(2.5 / LUT_C), -2, 7 / (LUT_NS - 1));
 const LUT_FRAG = /* glsl */ `
 ${SV_HEADER_ALL}
 uniform vec4 uP;
 layout(location = 0) out vec4 outColor;
 void main() {
   ivec2 p = ivec2(gl_FragCoord.xy);
-  float u = uP.x + float(p.x) * uP.y;
-  float s = pow(10.0, uP.z + float(p.y) * uP.w);
+  int band = p.y / ${LUT_NS};
+  float t = (float(p.x) / float(${LUT_NU - 1}) * 2.0 - 1.0) * uP.y;
+  float u = uP.x * sinh(t);
+  float s = pow(10.0, uP.z + float(p.y - band * ${LUT_NS}) * uP.w);
   float H = 10.0;
-  float st, su;
-  ringExtinction(s, u * H, 1.0, H, 1.0, st, su);
-  outColor = vec4(st * H, su * H, ringLayerTauBeyond(u * H, 1.0, H, 1.0), 0.0);
+  float zc = uRingCamLocal.z - uRsCam.y;
+  vec4 bp, bt, bs;
+  ringLodChannels(s, u * H, u * H - zc, H, lodAniso(uSunDir), bp, bt, bs);
+  outColor = band == 0 ? bp : (band == 1 ? bt : bs);
 }`;
 
 // Wake statistics probe: the shared wakeDensity on a STAT_N x STAT_N grid spanning one wake tile.
@@ -142,6 +147,8 @@ export class RingLayerPass implements RenderPass {
   private lowRT!: WebGLRenderTarget;
   private lutFs!: FullscreenPass;
   private lutRT!: WebGLRenderTarget;
+  /** LUT parameterization (c, tMax, log10 s0, dlog10 s): tMax covers the slab (RingLod.slabK) */
+  private readonly lutP = LUT_P.clone();
   private statFs!: FullscreenPass;
   private statRT!: WebGLRenderTarget;
   private statBuf = new Float32Array(STAT_N * STAT_N * 4);
@@ -196,11 +203,11 @@ export class RingLayerPass implements RenderPass {
     // shared with the near field (its statistical occlusion cull reads the wake density along lines of sight)
     const wk = this.wake;
     ctx.wakeClip = { texture: wk.rt.texture, levels: wk.levels, get levelCount() { return wk.levelCount; }, n: WAKE_CLIP_N, maxLevels: WAKE_CLIP_MAX_LEVELS };
-    this.lutRT = new WebGLRenderTarget(LUT_NU, LUT_NS, {
+    this.lutRT = new WebGLRenderTarget(LUT_NU, 3 * LUT_NS, {
       type: FloatType, format: RGBAFormat, minFilter: LinearFilter, magFilter: LinearFilter,
       wrapS: ClampToEdgeWrapping, wrapT: ClampToEdgeWrapping, depthBuffer: false, stencilBuffer: false, generateMipmaps: false,
     });
-    this.lutFs = new FullscreenPass({ fragmentShader: LUT_FRAG, uniforms: { ...ctx.shared.u, uP: { value: LUT_P } } });
+    this.lutFs = new FullscreenPass({ fragmentShader: LUT_FRAG, uniforms: { ...ctx.shared.u, uP: { value: this.lutP } } });
     this.statRT = new WebGLRenderTarget(STAT_N, STAT_N, {
       type: FloatType, format: RGBAFormat, minFilter: NearestFilter, magFilter: NearestFilter,
       depthBuffer: false, stencilBuffer: false, generateMipmaps: false,
@@ -223,6 +230,11 @@ export class RingLayerPass implements RenderPass {
       uRlP0: { value: this.pyr.texP0 },
       uRlP1: { value: this.pyr.texP1 },
       uRlP2: { value: this.pyr.texP2 },
+      // the pyramid's halves (TauPyramid): the medium's extinction tau_dyn (wakes on) or tau_iso, the two-stream tau_iso
+      uRlTauHalf: { value: 0 },
+      uRlIsoHalf: { value: this.pyr.halfOffset },
+      // column totals of the vertical structure's channels (QS, QSP, QP; rlMarch)
+      uRlColTot: { value: new Vector4(1, 1, 1, 0) },
       uRlPhaseLut: { value: pt.lut },
       uRlBetaM: { value: pt.betaMacro },
       uRlBetaD: { value: pt.betaDust },
@@ -275,7 +287,7 @@ export class RingLayerPass implements RenderPass {
       uRlLodRange: { value: 0 },
       uRlNearOn: { value: 1 },
       uRlExtLut: { value: this.lutRT.texture },
-      uRlExtLutP: { value: LUT_P },
+      uRlExtLutP: { value: this.lutP },
       uRlUseLow: { value: 0 },
     };
     this.lowRT = new WebGLRenderTarget(Math.max(1, Math.ceil(ctx.width / 2)), Math.max(1, Math.ceil(ctx.height / 2)), {
@@ -396,13 +408,34 @@ export class RingLayerPass implements RenderPass {
       this.statAnchor = f.ring.anchorId;
       this.measureWakeStats(ctx, wakeRef);
     }
-    // rms height of the layer's column in units of H (the sv_ringLod Gaussian mixture: sum w s^2 / sum w)
+    // rms height of the participating column in units of H (the particles that follow the wake field; the sv_ringLod
+    // Gaussian mixture weighted by the participation: sum w p s^2 / sum w p)
     {
       const lod = ctx.lod;
       let w2 = 0, wt = 0;
-      for (let k = 0; k < lod.tauFrac.length; k++) if (lod.tauFrac[k] > 0) { w2 += lod.tauFrac[k] * lod.sigZFrac[k] ** 2; wt += lod.tauFrac[k]; }
-      if (lod.tauSub > 0) { w2 += lod.tauSub * lod.sigZFracSub ** 2; wt += lod.tauSub; }
+      for (let k = 0; k < lod.tauFrac.length; k++) {
+        const w = lod.tauFrac[k] * lod.partP[k];
+        if (w > 0) { w2 += w * lod.sigZFrac[k] ** 2; wt += w; }
+      }
       u.uRlKerSig.value = wt > 0 ? Math.sqrt(w2 / wt) : 0.3;
+      // the medium's optical depth: the particle population's with wakes (tau_dyn), else without (tau_iso); the
+      // vertical-structure LUT's range (the slab, packing ceiling included) and the column totals along the Sun
+      u.uRlTauHalf.value = wakesOn ? 0 : this.pyr.halfOffset;
+      this.lutP.y = Math.asinh(Math.max(2.5, lod.slabK + 0.05) / LUT_C);
+      const er = f.ring.eR, ep = f.ring.ePhi;
+      const Gs = lod.anisoAt(sd.x * er.x + sd.y * er.y + sd.z * er.z, sd.x * ep.x + sd.y * ep.y + sd.z * ep.z, sd.z);
+      let qs = lod.tauSub, qsp = 0, qp = 0, ws = lod.tauSub;
+      for (let k = 0; k < lod.tauFrac.length; k++) {
+        const w = lod.tauFrac[k];
+        if (w <= 0) continue;
+        const g = 1 + lod.alignF[k] * Gs;
+        qs += w * g;
+        qsp += w * g * lod.partP[k];
+        qp += w * lod.partP[k];
+        ws += w;
+      }
+      if (ws > 0) (u.uRlColTot.value as Vector4).set(qs / ws, qsp / ws, qp / ws, 0);
+      else (u.uRlColTot.value as Vector4).set(1, 0, 0, 0);
     }
     const useClip = this.wake.configure(f, lambda, f.ring.omega, wakesOn && nearZ < 1e5);
     u.uRlWakeLevels.value = useClip ? this.wake.levelCount : 0;
@@ -414,7 +447,7 @@ export class RingLayerPass implements RenderPass {
     u.uRlLodRange.value = lodRange;
     u.uRlNearOn.value = nearZ < 2e5 ? 1 : 0;
     this.lastLevels = this.wake.levelCount;
-    const inside = nearZ < ringSlabHalf(u.uRlHSlab.value as number);
+    const inside = nearZ < ctx.lod.slabHalfFor(u.uRlHSlab.value as number);
     const marching = nearZ < 2e5 && (inside || useClip || lodRange > 0);
     // well above the layer the slab is crossed in a few steps -> full resolution keeps the wake detail;
     // close to / inside the layer (long, many-step rays) march at half resolution -- unless the frame itself
@@ -574,7 +607,4 @@ export class RingLayerPass implements RenderPass {
 function smooth(e0: number, e1: number, x: number): number {
   const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
   return t * t * (3 - 2 * t);
-}
-function ringSlabHalf(H: number): number {
-  return 1.6 * H + 0.5;
 }

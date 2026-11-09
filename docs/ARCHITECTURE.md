@@ -126,9 +126,16 @@ modulation cache `ModClipmap` (stale levels re-rendered), passes) → HUD.
   (|z| < `ringSlabHalfThickness(H)`, heights above the local mid-plane) an adaptive ray-march (half resolution inside
   the layer and below 1.5 km, depth-validated upsample; where relief is near, blocks whose transmissions differ by > 0.5
   — the layer's edge against the sky over a tilted mid-plane — are marched at full resolution) using a per-frame
-  256×64 LUT of the shared `ringExtinction`/`ringLayerTauBeyond`
-  (medium = σ_unres). Own τ pyramid storing ⟨e^{−τ/m}⟩ for path factors m = 1…0.008 (exact footprint-averaged
-  transmission at any angle), granola-bar wakes in the sheet, a 6-level wake-density clipmap near the camera.
+  vertical-structure LUT of the shared `ringLodChannels` (medium = σ_unres): 512 heights (asinh-spaced, u = z/H =
+  0.25 sinh t, out to the slab `uLodSlabK`) × 64 log distances × 3 bands — participating classes (density, unresolved,
+  column above, aligned share), all classes (the same), along the Sun (Sun-weighted columns) — so the march applies the
+  wake density and the packing ceiling to the participating band only (z/m) and the spin-aligned anisotropy to the
+  aligned channels. Own τ pyramid storing ⟨e^{−τ/m}⟩ for path factors m = 1…0.008 (exact footprint-averaged
+  transmission at any angle) in two halves: τ_dyn (the medium's extinction with wakes) and τ_iso (wakes off, and the
+  two-stream layer; `uRlTauHalf` / `uRlIsoHalf`); its wake channel is wake × p̄. Granola-bar wakes in the sheet, a
+  6-level wake-density clipmap near the camera. The multiply-scattered source is the two-stream (τ_iso) source per
+  unit of the medium's τ in the march, the sheet and for the particles; the sheet's Saturnshine beams take no
+  shadow-hiding surge (an extended source: ring-physics.md §10.12).
   **Wake representations** (must agree in the mean; `npm run test:seam -- --only handover` compares them with a
   reference explicit field): the march's explicit field (clipmap, ≥ 5 px per wake spacing at the slab crossing),
   its statistical branch and the sheet (two wake columns fB/Wb/Wg; ≤ 2.5 px), blended over 5 → 2.5 px. The sun
@@ -137,8 +144,10 @@ modulation cache `ModClipmap` (stale levels re-rendered), passes) → HUD.
   live field (path-statistics probe every 60 frames and on re-anchoring, `uRlKerT/F` vs χ = H|dir·n|/(|dir_z| λ); read
   back asynchronously through pixel-pack buffers + a fence, applied a frame or two later); the explicit transmission is
   corrected for the clipmap's density prefilter (χ_eff = √(χ² + (0.5 d/λσ̄)²), contrast fade); Saturnshine uses the
-  same two columns. Known residual: the clipmap prefilter makes the explicit field's *reflection* 3–20 % too bright
-  (the ~4 m wake cores' sub-texel anti-correlation of density and illumination is lost; scripts/test/README.md).
+  same two columns. `npm run test:seam -- --only base` checks the two representations' base radiative transfer with
+  the wakes off. Known residuals (scripts/test/README.md): the prefilter correction overshoots the B ring's
+  transmission (+17 % in T over the reference field at τ ≈ 4; `test:lod`); across the wakes at high phase the
+  sheet's reflection is up to 4 % above the march's statistics.
   Sandbox `sandbox/rings.html`: `debug=1–6` visual views, `debug=7–10` raw values, `phase=0` Lambert diagnostics,
   `half=0` full-resolution march, `near=1`/`far=real` to include the other passes; `window.__rl`.
 
@@ -289,12 +298,24 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   τ in particles below 1 mm (true dust: D ring, gaps,
   F/G/E rings, Roche Division) is a never-drawn layer (`uLodTauSub`, σ_z = `uLodSigZSub`) included in all of
   these, so the medium total always equals the local τ. The top class absorbs any aMax > 16.4 m.
+  **Size rules** (ring-physics.md §10.12; per-class constants from `RingLod.configure`, the same for both renderers):
+  `lodClassOf(a)`, `lodClassP(k)` (`uLodClassP`: the share of class k that follows the wakes — a mixture, so a class's
+  density is exactly 1 + p (D − 1)), `lodClassF(k)` (`uLodClassF`: the spin-aligned share), `lodAniso(dir)` (`uLodAniso`:
+  the aligned population's projected-area anisotropy G(μ) and the tidal term T(μ) cos 2ψ, CPU mirror
+  `RingLod.anisoAt`), `lodTauDyn(tau)` (`uLodTauDyn`: τ_dyn/τ_profile vs τ at the anchor; the particles' presence
+  and the medium follow τ_dyn), `lodPackM(tau, W)` (`uLodPack`: the packing ceiling's thickening of the participating
+  classes at density W), `uLodTidal` = (tidally locked share, p̄, f̄, 1/g1), `ringSlabHalfThickness(H)` = `uLodSlabK`·H
+  + 0.5 (the slab holds the layer thickened to the density cap), and `ringLodChannels(s, z, dz, H, Gs, out Bp, out Bt,
+  out Bs)` — the three bands of the ring layer's LUT. σ_z per class from the zone's `sigZLaw` (`zoneSigZ`).
 * `sv_wakes` (mirror of `src/rings/WakeField.ts`; Python port with a bit-exact `--verify`:
   `scripts/data/nbody/procedural.py`): `wakeDisplacement(q)` (particles, at their epicyclic position), `wakeDensity(x)`
   (local frame, m; the density of exactly those particles: mean 1, clamped to `uWakeBounds.xy` = [0.8 γ_gap^s,
-  4 γ_core^−s]), `wakeDensityFiltered(x, footprint)`, `wakeMinDensity()` (true lower bound, for culling); hooks for the
-  next work package, identities now: `wakeDisplacementP(q, p)` (participation p of a size class) and
-  `wakeDensityTau(x)` = 1 + p̄ (D − 1) (`uWakePartTau` = `WakeField.participationTau` = 1). Two transient sheared
+  4 γ_core^−s]), `wakeDensityFiltered(x, footprint)`, `wakeMinDensity()` (true lower bound, for culling),
+  `wakeDisplacementP(q, p)` (participation p of a size class), `wakeDensityTau(x)` = 1 + p̄ (D − 1) (`uWakePartTau` =
+  `WakeField.participationTau` = the column's p̄, set per anchor; 1 with wakes off) and `wakeDisplacementJ(q, out Df)`
+  (the displacement and the forward map's density at the particle: the packing ceiling). CPU mirror
+  `WakeField.densityAt` / `displacementAt` (float64; behind τ_dyn's `WAKE_D_BINS`), checked against the GPU
+  (`test:lod`) and the port (`--verify`). Two transient sheared
   generations half a lifetime apart (`uWakeGen[0..1]` = shear, offsets, texture layer); plateau handover within each
   half-cycle at the local phase φ − d·δ(x) (`uWakeClock`; δ an advected smooth random field re-drawn every cycle,
   `uWakeDelta` + layer 2 of `uWakeTex`: its 64² tile repeated 4 × 4, sampled at the tile coordinate / 4 — the same texels
@@ -324,10 +345,11 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   cosine-weighted (a near-isotropic field, as in the medium). Multiple scattering by the same two-stream solution
   as the medium with `phaseTables(1)` back-scatter fractions; shadow hiding exp(b·min(τ_sun, τ_view)) on the
   statistical part of the sun path; the sun path through the layer samples the wake density at the same stratified
-  nodes the medium uses (`ringSunNodeRise`), read from the ring layer's wake clipmap at the level the medium's march
-  reads at the particle (`nfWakeLevelFor`: texels ≥ the display-pixel footprint / 1.5; near the camera its finest,
-  0.25–0.5 m texels) — one fetch per node and the medium's own sun-path field at the handover — and from `wakeDensity`
-  outside the clipmap; a 2048×1024 sun-aligned shadow map resolves particle-on-particle shadows near the camera (the
+  nodes the medium uses (`ringSunNodeRise`, over the participating column, thickened by the packing ceiling; the
+  other classes are uniform), read from the ring layer's wake clipmap at the level the medium's march reads at the
+  particle (`nfWakeLevelFor`: texels ≥ the display-pixel footprint / 1.5; near the camera its finest, 0.25–0.5 m
+  texels) — one fetch per node and the medium's own sun-path field at the handover — and from `wakeDensity` outside
+  the clipmap; a 2048×1024 sun-aligned shadow map resolves particle-on-particle shadows near the camera (the
   statistical transmission keeps only what the map cannot resolve). `scripts/test/particles.mjs` checks the GLSL
   against the CPU mirrors and the LUT / relief contracts.
 * **Near-field frame and contact contract** (`NearFieldPass`, `near/NearContact.ts`). Steps: (1) the update pass
@@ -385,7 +407,9 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   (`RingProfile.deprojectSnapshot`); the live modes move them back (`sv_ringStructure`). ring-physics.md §9.
 * **Particles** (near field): power-law sizes dN/da ∝ a^-q in [aMin, aMax] with column density fixed by τ;
   14 octave classes from 1 mm (zones with aMin < 1 cm draw their mm particles where they are ≥ 1 px, i.e. within
-  a few metres). Vertical Gaussian, std = `sigZFrac(a)·H` (small particles ride higher).
+  a few metres). Vertical Gaussian, std = σ_z(a) of the zone's vertical law (`sigZLaw`; small particles ride
+  higher), × the packing ceiling's m for the participating particles in dense wakes. Counts follow τ_dyn (the
+  population's optical depth; the profile is photometric: ring-physics.md §10.12).
   Kinematics in the Hill frame (exact linear solution): guiding center x_g, y_g(t) = y_g0 − qΩx_g t;
   epicycle x = x_g + A cos(κt+φ), y = … − 2A(Ω/κ) sin(κt+φ); vertical z = B cos(νt+ψ);
   plus wake displacement `wakeDisplacement(guidingCenter)`. These orbits are independent, so neighbours would
@@ -403,13 +427,15 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   coverage, and the ring layer's march still stops at them). `particleQuality` (high/medium/low) only
   changes the rendering: relief-displaced ellipsoids + profiled shadow map / spheres + shadow map / spheres,
   statistical shadows (the regolith photometry is the same at every quality).
-* **Particle shapes and spin** (`nearCommon.glsl`): triaxial ellipsoids (`nearShape`, ⟨projected area⟩ = πa²) in
-  **principal-axis rotation** about their short axis (`nearOrientation`: spin axis near the orbit normal for large
-  particles, random for small ones; a commented hook marks where a tidal-alignment term would go — not active:
-  it makes the cross-section direction-dependent, an LOD-contract change). A body spinning about its short axis
-  shows more area along the spin axis than across it, so the asphericity of the spin-aligned (large) particles is
-  reduced (`NR_ISO` 0.8): their mean cross-section is 0.987–1.026 πa² from edge-on to face-on (1.14 face-on with
-  the full shape spread). At high quality the surface is r(u) = κ(1 + amp·h(u)) in the axis-scaled body frame:
+* **Particle shapes and spin** (`nearCommon.glsl`): triaxial ellipsoids (`nearShape`, full shape spread,
+  ⟨projected area⟩ = πa²) in **principal-axis rotation** about their short axis (`nearOrientation`). Spin axes: a
+  mixture per class — the share `lodClassF(k)` (`nearSpinAligned`, hash `NS_ALN`) spins about axes near the orbit
+  normal (`nearSpinAxis`, mix(random, normal, 0.85)), the rest randomly — so a class's mean projected area along a
+  direction is exactly πa² (1 + f_k G(μ)), the medium's (`lodAniso`; G = −0.075 edge-on … +0.138 face-on, measured
+  from the shape and axis distributions and checked against the GLSL by `test:particles`). Tidal locking (long axis
+  toward Saturn, synchronous) for the share `uLodTidal.x` of the aligned population (hash `NS_TID`); 0 in every
+  main-ring zone (r_h < 1.1). The former stopgap `NR_ISO` (aligned bodies kept nearly round) is gone. At high quality
+  the surface is r(u) = κ(1 + amp·h(u)) in the axis-scaled body frame:
   `nearRelief` = gradient-noise irregularity + two cellular "clast" layers (sub-aggregates, union-of-spheres domes;
   weight 0 below ~10 cm to 1 above ~0.7 m) + finer layers; ray-marched (sphere tracing on value-only R16F
   textures, exact depth, soft self-shadowing) above `NR_PX0`–`NR_PX1` = 12–22 render px radius (amp fades in),

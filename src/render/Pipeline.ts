@@ -266,11 +266,17 @@ export class Pipeline {
       c.structure.prepareNear(rKm * 1000, thCam);
       modKey = c.structure.nearBoundKey(c.lod.box);
     }
-    if (anchorChanged || movedFar || drifted || c.lod.needsRealloc(pa, camZ) || modKey !== this.lastModKey) {
+    const wakesOn = f.settings.wakes;
+    if (anchorChanged || movedFar || drifted || c.lod.needsRealloc(pa, camZ) || modKey !== this.lastModKey || wakesOn !== this.lastWakesOn) {
       c.structure.prepareNear(rKm * 1000, thCam);
-      // each size class is generated at the max tau over the radial span of its own box (+ the possible drift)
-      c.lod.configure(local, (halfWidth) => c.profile.maxTauKm(rKm, halfWidth / 1000 + driftKm) * c.structure.maxTauModNear(rKm * 1000, halfWidth + driftKm * 1000), camZ, { pixelAngle: pa, maxSlots: this.policy.maxSlots });
+      // each size class is generated at the max particle optical depth (tau_dyn with wakes: RingProfile.tauDyn) over the
+      // radial span of its own box (+ the possible drift)
+      const tauArr = wakesOn ? c.profile.tauDyn : c.profile.tauIso;
+      c.lod.configure(local, (halfWidth) => c.profile.maxTauKm(rKm, halfWidth / 1000 + driftKm, tauArr) * c.structure.maxTauModNear(rKm * 1000, halfWidth + driftKm * 1000), camZ, { pixelAngle: pa, maxSlots: this.policy.maxSlots, wakes: wakesOn });
       c.wakes.configure(local, f.ring);
+      // the medium's mean participation in the wakes (sv_wakes wakeDensityTau, the tau-weighted mean of the column)
+      c.wakes.participationTau = wakesOn ? c.lod.pbarTot : 1;
+      this.lastWakesOn = wakesOn;
       this.lastAnchorId = f.ring.anchorId;
       this.lastLocalRKm = rKmE;
       this.lastLocalRKmL = rKm;
@@ -285,7 +291,6 @@ export class Pipeline {
     const nearAllowed = f.settings.nearField && Math.abs(camZ) < c.lod.maxReach && c.lod.totalParticles > 0;
     c.lod.setActive(nearAllowed && (this.passes.near?.enabled ?? false));
     c.wakes.enabled = f.settings.wakes;
-    if (this.lastWakesOn !== f.settings.wakes) this.lastWakesOn = f.settings.wakes;
     c.wakes.update(f.t);
   }
 
@@ -303,7 +308,11 @@ export class Pipeline {
       const reach = c.lod.active ? 1.5 * c.lod.maxBox + 600 : 0;
       const rc = Math.hypot(f.camPos.x, f.camPos.y);
       const propNear = P.scale > 0 && rc > tf.y - reach && rc < tf.z + reach;
-      c.modClip.update(f, c.structure, reach, propNear);
+      // (the cache's presence channel holds tau0 tau_dyn / tau0 x M: a checksum of the anchor zone's tau_dyn table)
+      let dynKey = 0;
+      const dt = c.lod.dynTab;
+      for (let i = 0; i < dt.length; i++) dynKey += dt[i] * (i + 1);
+      c.modClip.update(f, c.structure, reach, propNear, dynKey);
       c.modClip.render(r);
       // per size class: the largest presence tau0 M over its box (+ the allocation's 500 m margin and the streamline
       // drift) the cache's lookups can return this frame -- the update pass skips the slots above it unevaluated

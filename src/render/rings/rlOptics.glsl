@@ -18,9 +18,11 @@
 //     is integrated analytically along the line of sight. Light scattered exactly once is NOT in the
 //     two-stream part, so nothing is double counted.
 
-uniform sampler2D uRlP0;        // tau_eff(m_k) for m_k = 0.3^k, k = 0..3
-uniform sampler2D uRlP1;        // (tau_eff(m_4), H, wake, D)
+uniform sampler2D uRlP0;        // tau_eff(m_k) for m_k = 0.3^k, k = 0..3      (two halves: tau_dyn, tau_iso)
+uniform sampler2D uRlP1;        // (tau_eff(m_4), H, wake x pbar, D)           (two halves)
 uniform sampler2D uRlP2;        // (albedo rgb, dust)
+uniform int uRlTauHalf;         // texel offset of the half the medium's extinction uses (tau_dyn with wakes, else tau_iso)
+uniform int uRlIsoHalf;         // texel offset of the tau_iso half (the two-stream layer)
 uniform sampler2D uRlPhaseLut;  // (beta0 macro, beta0 dust) at mu = i/63
 uniform float uRlBetaM;         // diffuse back-scatter fraction, macroscopic particles
 uniform float uRlBetaD;         // diffuse back-scatter fraction, dust
@@ -139,16 +141,17 @@ struct RlS {
   vec4 t0;      // tau_eff(m) at m = 1, .3, .09, .027
   float t4;     //   and m = .0081
   float H;      // full thickness (m)
-  float wake;   // self-gravity wake strength
+  float wake;   // self-gravity wake strength x the column's participation (pbar)
   float D;      // volume filling factor
   vec3 alb;     // single-scattering albedo
   float dust;   // dust fraction of tau
   float cover;  // coverage factor for footprints beyond the coarsest level (1 = none)
+  float tts;    // optical depth of the two-stream (multiple-scattering) layer: tau_iso at m = 0.5
 };
 
 RlS rlEmpty() {
   RlS s;
-  s.t0 = vec4(0.0); s.t4 = 0.0; s.H = 10.0; s.wake = 0.0; s.D = 0.0; s.alb = vec3(0.5); s.dust = 1.0; s.cover = 1.0;
+  s.t0 = vec4(0.0); s.t4 = 0.0; s.H = 10.0; s.wake = 0.0; s.D = 0.0; s.alb = vec3(0.5); s.dust = 1.0; s.cover = 1.0; s.tts = 0.0;
   return s;
 }
 
@@ -162,7 +165,12 @@ float rlTauM(RlS s, float m) {
 // mean transmission <exp(-tau/m)> over the footprint
 float rlTrans(RlS s, float m) { return exp(-rlTauM(s, m) / max(m, 1e-6)); }
 
-void rlFetchLevel(float fi0, int L, float sharpW, out vec4 a, out vec4 b, out vec4 c) {
+// the two-stream layer's optical depth at m = 0.5 from the tau_iso half (log-m interpolation of rlTauM: k = 0.5757)
+float rlIsoTS(int i0, int i1, float f) {
+  vec2 t = mix(texelFetch(uRlP0, ringTexel(i0 + uRlIsoHalf), 0).xy, texelFetch(uRlP0, ringTexel(i1 + uRlIsoHalf), 0).xy, f);
+  return mix(t.x, t.y, 0.5757);
+}
+void rlFetchLevel(float fi0, int L, float sharpW, out vec4 a, out vec4 b, out vec4 c, out float ts) {
   float sc = exp2(float(L));
   float fi = (fi0 - 0.5 * (sc - 1.0)) / sc;
   int n = uRingLevelN[L];
@@ -171,7 +179,7 @@ void rlFetchLevel(float fi0, int L, float sharpW, out vec4 a, out vec4 b, out ve
   int i1 = min(i0 + 1, n - 1);
   float f = cc - float(i0);
   int off = uRingLevelOff[L];
-  ivec2 q0 = ringTexel(off + i0), q1 = ringTexel(off + i1);
+  ivec2 q0 = ringTexel(off + i0 + uRlTauHalf), q1 = ringTexel(off + i1 + uRlTauHalf);
   vec4 a0 = texelFetch(uRlP0, q0, 0), a1 = texelFetch(uRlP0, q1, 0);
   if (sharpW < 0.5) {
     // sub-sample footprint at level 0: real edges are sharp (tens of m) while the data are a 250 m grid
@@ -181,7 +189,8 @@ void rlFetchLevel(float fi0, int L, float sharpW, out vec4 a, out vec4 b, out ve
   }
   a = mix(a0, a1, f);
   b = mix(texelFetch(uRlP1, q0, 0), texelFetch(uRlP1, q1, 0), f);
-  c = mix(texelFetch(uRlP2, q0, 0), texelFetch(uRlP2, q1, 0), f);
+  c = mix(texelFetch(uRlP2, ringTexel(off + i0), 0), texelFetch(uRlP2, ringTexel(off + i1), 0), f);
+  ts = rlIsoTS(off + i0, off + i1, f);
 }
 
 // fi0: level-0 fractional index; fp: radial footprint (m)
@@ -194,14 +203,16 @@ RlS rlSample(float fi0, float fp) {
   float lf = lev - float(L0);
   float sharpW = L0 == 0 && lf < 0.001 ? clamp(0.5 * max(fp, 15.0) / uRingDr0, 0.02, 0.5) : 1.0;
   vec4 a, b, c;
-  rlFetchLevel(fi0, L0, sharpW, a, b, c);
+  float ts;
+  rlFetchLevel(fi0, L0, sharpW, a, b, c, ts);
   if (lf > 0.001 && L1 != L0) {
     vec4 a1, b1, c1;
-    rlFetchLevel(fi0, L1, 1.0, a1, b1, c1);
-    a = mix(a, a1, lf); b = mix(b, b1, lf); c = mix(c, c1, lf);
+    float ts1;
+    rlFetchLevel(fi0, L1, 1.0, a1, b1, c1, ts1);
+    a = mix(a, a1, lf); b = mix(b, b1, lf); c = mix(c, c1, lf); ts = mix(ts, ts1, lf);
   }
   RlS s;
-  s.t0 = a; s.t4 = b.x; s.H = b.y; s.wake = b.z; s.D = b.w; s.alb = c.rgb; s.dust = c.a;
+  s.t0 = a; s.t4 = b.x; s.H = b.y; s.wake = b.z; s.D = b.w; s.alb = c.rgb; s.dust = c.a; s.tts = ts;
   s.cover = clamp(uRlCoarse / max(fp, 1.0), 0.0, 1.0);
   return s;
 }
@@ -209,7 +220,7 @@ RlS rlSample(float fi0, float fp) {
 // rlSample at the level-0 index I + sub (I integer-valued, e.g. uRlIdx0I; sub small, e.g. uRlIdx0F + dr / uRingDr0):
 // exact cell and weight at the finest level. I + sub as one float rounds to 0.03 cells (7.8 m) in the outer A ring,
 // which made displaced (sv_ringStructure) edges stair-stepped.
-void rlFetchLevel0P(float I, float sub, float sharpW, out vec4 a, out vec4 b, out vec4 c) {
+void rlFetchLevel0P(float I, float sub, float sharpW, out vec4 a, out vec4 b, out vec4 c, out float ts) {
   int n = uRingLevelN[0];
   float fl = floor(sub);
   float ii = I + fl, f = sub - fl;
@@ -218,7 +229,7 @@ void rlFetchLevel0P(float I, float sub, float sharpW, out vec4 a, out vec4 b, ou
   int i0 = int(ii);
   int i1 = min(i0 + 1, n - 1);
   int off = uRingLevelOff[0];
-  ivec2 q0 = ringTexel(off + i0), q1 = ringTexel(off + i1);
+  ivec2 q0 = ringTexel(off + i0 + uRlTauHalf), q1 = ringTexel(off + i1 + uRlTauHalf);
   vec4 a0 = texelFetch(uRlP0, q0, 0), a1 = texelFetch(uRlP0, q1, 0);
   if (sharpW < 0.5) {
     float lo = min(a0.y, a1.y), hi = max(a0.y, a1.y);
@@ -226,7 +237,8 @@ void rlFetchLevel0P(float I, float sub, float sharpW, out vec4 a, out vec4 b, ou
   }
   a = mix(a0, a1, f);
   b = mix(texelFetch(uRlP1, q0, 0), texelFetch(uRlP1, q1, 0), f);
-  c = mix(texelFetch(uRlP2, q0, 0), texelFetch(uRlP2, q1, 0), f);
+  c = mix(texelFetch(uRlP2, ringTexel(off + i0), 0), texelFetch(uRlP2, ringTexel(off + i1), 0), f);
+  ts = rlIsoTS(off + i0, off + i1, f);
 }
 RlS rlSampleP(float I, float sub, float fp) {
   float fi0 = I + sub;
@@ -236,19 +248,21 @@ RlS rlSampleP(float I, float sub, float fp) {
   if (lev >= 1.0) return rlSample(fi0, fp);
   float sharpW = lev < 0.001 ? clamp(0.5 * max(fp, 15.0) / uRingDr0, 0.02, 0.5) : 1.0;
   vec4 a, b, c;
-  rlFetchLevel0P(I, sub, sharpW, a, b, c);
+  float ts;
+  rlFetchLevel0P(I, sub, sharpW, a, b, c, ts);
   if (lev > 0.001 && uRingLevels > 1) {
     vec4 a1, b1, c1;
-    rlFetchLevel(fi0, 1, 1.0, a1, b1, c1);
-    a = mix(a, a1, lev); b = mix(b, b1, lev); c = mix(c, c1, lev);
+    float ts1;
+    rlFetchLevel(fi0, 1, 1.0, a1, b1, c1, ts1);
+    a = mix(a, a1, lev); b = mix(b, b1, lev); c = mix(c, c1, lev); ts = mix(ts, ts1, lev);
   }
   RlS s;
-  s.t0 = a; s.t4 = b.x; s.H = b.y; s.wake = b.z; s.D = b.w; s.alb = c.rgb; s.dust = c.a;
+  s.t0 = a; s.t4 = b.x; s.H = b.y; s.wake = b.z; s.D = b.w; s.alb = c.rgb; s.dust = c.a; s.tts = ts;
   s.cover = clamp(uRlCoarse / max(fp, 1.0), 0.0, 1.0);
   return s;
 }
 
-void rlScaleTau(inout RlS s, float f) { s.t0 *= f; s.t4 *= f; }
+void rlScaleTau(inout RlS s, float f) { s.t0 *= f; s.t4 *= f; s.tts *= f; }
 
 // ---------------------------------------------------------------- 2-D optical-depth modulation (sv_ringStructure)
 // The sub-km texture and the propellers (ringStructureTauModStat, RingStream .tauMod / .tauVar) give a mean factor m
@@ -274,6 +288,7 @@ void rlApplyTauMod(inout RlS s, float m, float v) {
   s.t0 = vec4(rlGaussTauEff(s.t0.x, 1.0, m, v, F), rlGaussTauEff(s.t0.y, 0.3, m, v, F), rlGaussTauEff(s.t0.z, 0.09, m, v, F),
               rlGaussTauEff(s.t0.w, 0.027, m, v, F));
   s.t4 = rlGaussTauEff(s.t4, 0.0081, m, v, F);
+  s.tts = rlGaussTauEff(s.tts, 0.5, m, v, F);
 }
 
 // ---------------------------------------------------------------- phase helpers
@@ -379,34 +394,55 @@ float rlTransW(RlS s, float m, float Wf) {
 // gaps over ~H, comparable to the wake width), emitted with density We and seen through Wv:
 //   ms = We int S(t) exp(-Wv t / mu) dt / mu = (We / Wv) Emerge(mu / Wv)
 // -- the same model the near-field march integrates step by step (both wake regimes), so the two agree.
-vec3 rlLayerIFW(RlS s, float mu, float muB, float cosA, bool refl, float We, float Ws, float Wv) {
+// Spin-aligned classes (docs/ring-physics.md 10.12): their cross-section depends on the direction, g = (beam, view) =
+// the medium's mean cross-section along the beam and the viewing direction relative to the isotropic one (1 + f G(mu)):
+// the beam's and the view's path densities scale by g.x / g.y, the single scattering by the intercepted light (g.x); the
+// diffuse field (multiple scattering) is intercepted isotropically (1).
+// The diffuse field is that of the homogeneous two-stream layer of optical depth tts (tau_iso: the occultation tau);
+// the medium the light is emitted by and seen through has the particle population's optical depth (tau_dyn with wakes,
+// rTS = tau_dyn / tau_iso). As in the march and for the near-field particles, the source per unit of the MEDIUM's
+// optical depth is the two-stream source at the same column fraction q, so along the view the emission and the
+// attenuation both scale by rTS: We int J(q tts) exp(-rTS Wv q tts / mu) rTS tts dq / mu = (We / wv) Emerge(mu / (wv rTS)).
+// hide: weight of the shadow-hiding correlation (1 for the Sun; 0 for the Saturnshine beams: the opposition peak,
+// tan(alpha/2) ~ h = 3D/8, i.e. a few degrees, is far narrower than Saturn's half-disk (tens of degrees), which a beam
+// from its centroid would light with the full point-source surge -- 10-15 % too bright at high solar phase, where
+// Saturnshine dominates; the march and the near-field particles carry none either).
+vec3 rlLayerIFWAH(RlS s, float mu, float muB, float cosA, bool refl, float We, float Ws, float Wv, vec2 g, float hide) {
   mu = max(mu, 1e-4);
   muB = max(muB, 1e-6);
   float P = rlPhase(cosA, s.dust);
   vec3 w = s.alb;
   float beta = rlBeta(s.dust);
   float b0 = rlBeta0(muB, s.dust);
-  RlTS ts = rlTwoStream(rlTauM(s, 0.5), w, beta, b0, muB);
+  RlTS ts = rlTwoStream(s.tts, w, beta, b0, muB);
   float bv = rlBeta0(mu, s.dust);            // emergent-direction source weight (see rlTSEmergeRefl)
-  float wv = max(Wv, 1e-3);
+  float wsg = Ws * g.x;
+  float wv = max(Wv * g.y, 1e-3);
   float kms = We / wv;
+  float wvMS = wv * (s.tts > 1e-9 ? max(rlTauM(s, 0.5) / s.tts, 1e-3) : 1.0);
   vec3 ss;
   vec3 ms;
   if (refl) {
-    float bsh = rlShadowHiding(cosA, s.D);
-    float as = Ws / muB, av = Wv / mu;
+    float bsh = hide * rlShadowHiding(cosA, s.D);
+    float as = wsg / muB, av = wv / mu;
     float k = as + av - bsh * min(as, av);
     float Tk = exp(-k * rlTauM(s, 1.0 / k));
-    ss = w * (0.25 * P * We) * (1.0 - Tk) / (k * mu);
-    ms = kms * rlTSEmergeRefl(ts, w, bv, mu / wv);
+    ss = w * (0.25 * P * We * g.x) * (1.0 - Tk) / (k * mu);
+    ms = kms * rlTSEmergeRefl(ts, w, bv, mu / wvMS);
   } else {
-    float Tb = rlTransW(s, muB, Ws), Tm = rlTransW(s, mu, Wv);
-    float d = Wv / mu - Ws / muB;
-    float f = abs(d) * mu < 0.02 * Wv ? rlTauM(s, muB / max(Ws, 1e-3)) * Tb / mu : (Tb - Tm) / (d * mu);
-    ss = w * (0.25 * P * We) * max(f, 0.0);
-    ms = kms * rlTSEmergeTrans(ts, w, bv, mu / wv);
+    float Tb = rlTransW(s, muB, wsg), Tm = rlTransW(s, mu, wv);
+    float d = wv / mu - wsg / muB;
+    float f = abs(d) * mu < 0.02 * wv ? rlTauM(s, muB / max(wsg, 1e-3)) * Tb / mu : (Tb - Tm) / (d * mu);
+    ss = w * (0.25 * P * We * g.x) * max(f, 0.0);
+    ms = kms * rlTSEmergeTrans(ts, w, bv, mu / wvMS);
   }
   return (ss * uRlSSScale + ms * uRlMSScale) * s.cover;
+}
+vec3 rlLayerIFWA(RlS s, float mu, float muB, float cosA, bool refl, float We, float Ws, float Wv, vec2 g) {
+  return rlLayerIFWAH(s, mu, muB, cosA, refl, We, Ws, Wv, g, 1.0);
+}
+vec3 rlLayerIFW(RlS s, float mu, float muB, float cosA, bool refl, float We, float Ws, float Wv) {
+  return rlLayerIFWA(s, mu, muB, cosA, refl, We, Ws, Wv, vec2(1.0));
 }
 vec3 rlLayerIF(RlS s, float mu, float muB, float cosA, bool refl) {
   return rlLayerIFW(s, mu, muB, cosA, refl, 1.0, 1.0, 1.0);

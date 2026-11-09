@@ -330,7 +330,8 @@ export class NearShadow {
     const s = f.sunDir;
     const sz = s.z;
     const cosE = Math.sqrt(Math.max(1 - sz * sz, 0));
-    const slab = 1.6 * lod.H + 0.5;
+    // (the layer at its mean density: the packing ceiling's thicker wake cores are left to the statistical shadows)
+    const slab = lod.layerHalf;
     // relief: the layer follows the local mid-plane z0; over the tube's footprint around the camera (the slab crossing
     // within ~slab / |sz| along the Sun) it rises or falls by ~|grad z0| times that distance (camera's slope)
     const g = Math.min(Math.hypot(this.reliefSlope[0], this.reliefSlope[1]), 2);

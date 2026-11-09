@@ -99,16 +99,20 @@ ${SV_HEADER_ALL}
 uniform vec4 uMcB;   // level being built: (centre aL, centre S, dr, -)
 layout(location = 0) out vec4 outMod;
 layout(location = 1) out vec4 outRel;
-// the largest tau0 (level-0 profile at the Lagrangian radius, as the presence test reads it) over [aL - dr, aL + dr]:
-// the profile is piecewise linear, so at the interval's ends or at an interior node
+// the largest particle optical depth tau0 tau_dyn(tau0) / tau0 (sv_ringLod lodTauDyn; tau0: the level-0 profile at the
+// Lagrangian radius, as the presence test reads it) over [aL - dr, aL + dr]: the profile is piecewise linear and tau
+// lodTauDyn(tau) increases with tau, so at the interval's ends or at an interior node
 float mcTauMaxSupport(float aL, float dr) {
-  float m = max(ringSampleLagrangian(aL - dr, 0.0).tau, ringSampleLagrangian(aL + dr, 0.0).tau);
+  float t = ringSampleLagrangian(aL - dr, 0.0).tau, m = t * lodTauDyn(t);
+  t = ringSampleLagrangian(aL + dr, 0.0).tau;
+  m = max(m, t * lodTauDyn(t));
   float i0 = uRsIdx0.y + (aL - dr) / uRingDr0, i1 = uRsIdx0.y + (aL + dr) / uRingDr0;
   float n0 = ceil(i0);
   for (int j = 0; j < 4; j++) {
     float n = n0 + float(j);
     if (n > i1) break;
-    m = max(m, ringSampleIdxPrecise(uRsIdx0.x, n, 0.0).tau);
+    t = ringSampleIdxPrecise(uRsIdx0.x, n, 0.0).tau;
+    m = max(m, t * lodTauDyn(t));
   }
   return m;
 }
@@ -238,7 +242,7 @@ export class ModClipmap {
    * Per frame, after RingStructure.update and the local LOD: the level layout around the camera's Lagrangian position
    * covering `reach` (m; the largest particle box + margins; 0 = no cache needed) and the levels to refresh.
    */
-  update(f: FrameState, structure: RingStructure, reach: number, propellersNear: boolean): void {
+  update(f: FrameState, structure: RingStructure, reach: number, propellersNear: boolean, tauDynKey = 0): void {
     this.todo.length = 0;
     const lev = this.uniforms.uMcLev.value;
     if (!this.enabled || !(reach > 0)) {
@@ -246,10 +250,10 @@ export class ModClipmap {
       this.uniforms.uMcInfo.value.x = 0;
       return;
     }
-    // the model's switches (tests toggle them) and the Sun's side of the rings (the propellers' relief rises toward it):
-    // any change invalidates the cache
+    // the model's switches (tests toggle them), the Sun's side of the rings (the propellers' relief rises toward it) and
+    // the tau_dyn table of the joint channel (tauDynKey: a checksum of uLodTauDyn): any change invalidates the cache
     const P = structure.propellers;
-    const key = `${structure.texture.amp}|${P.scale}|${P.reliefScale}|${structure.reliefScale}|${f.sunDir.z >= 0 ? 1 : -1}`;
+    const key = `${structure.texture.amp}|${P.scale}|${P.reliefScale}|${structure.reliefScale}|${f.sunDir.z >= 0 ? 1 : -1}|${tauDynKey}`;
     if (key !== this.modelKey) {
       this.modelKey = key;
       for (const s of this.st) s.valid = false;

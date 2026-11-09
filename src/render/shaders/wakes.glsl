@@ -10,11 +10,15 @@
 //   float wakeDensityFiltered(vec2 x, float footprint)   same, contrast faded out when the footprint (m)
 //                                   approaches the wake spacing (anti-aliasing for distant views)
 //   float wakeMinDensity()          lower bound of wakeDensity() for the current pattern (for culling)
-//   hooks for size-dependent participation (docs/ring-physics.md 10.9; not used yet, p = 1 everywhere):
-//   vec2  wakeDisplacementP(vec2 q, float p)  displacement of a particle class with participation p in [0, 1]
-//   float wakeDensityTau(vec2 x)    the medium's tau factor 1 + uWakePartTau (wakeDensity - 1), uWakePartTau = the
-//                                   tau-weighted mean participation (WakeField.participationTau, 1 now)
-// Cost: wakeDisplacement 2 texture fetches (+ 2 with asynchrony), wakeDensity 10 (+ 6).
+//   vec2  wakeDisplacementJ(vec2 q, out float Df)  wakeDisplacement and the forward map's density at the particle,
+//                                   1 / (J_old(q) J_young(q + d_old)) (the packing ceiling, nearUpdate.glsl)
+//   size-dependent participation (docs/ring-physics.md 10.12, src/rings/ringDynamics.ts: a mixture -- a share p of a
+//   class follows the map fully, the rest not at all, so its density is exactly 1 + p (D - 1)):
+//   vec2  wakeDisplacementP(vec2 q, float p)  p x wakeDisplacement (the near field calls it with p = 0 or 1 per particle)
+//   float wakeDensityTau(vec2 x)    1 + uWakePartTau (wakeDensity - 1): the density of the whole column, uWakePartTau =
+//                                   its tau-weighted participation pbar (WakeField.participationTau; 1 with wakes off).
+//                                   The medium itself takes the participation per height from its LUT channels.
+// Cost: wakeDisplacement 2 texture fetches (+ 2 with asynchrony), wakeDisplacementJ 6 (+ 4), wakeDensity 10 (+ 6).
 #ifndef SV_WAKES
 #define SV_WAKES
 
@@ -202,11 +206,39 @@ float wakeDensityFiltered(vec2 x, float footprint) {
 
 float wakeMinDensity() { return uWakeOn < 0.5 ? 1.0 : uWakeBounds.x; }
 
-// Hooks for size-dependent participation (next work package; unused now). A class that follows the wakes only partly
-// (N-body: p_rel(a) ~ min(1, (a / a_p)^0.5), docs/ring-physics.md 10.3, 10.9) is displaced by p times the full field;
-// for small contrast its density is then 1 + p (D - 1), and the medium (tau-weighted mean participation pbar) carries
-// D_tau = 1 + pbar (D - 1). Both are identities at p = 1.
+// Displacement of a particle following the wakes fully (wakeDisplacement) and the forward map's surface density at its
+// drawn position: 1 / (J_old(q) J_young(q + d_old)) -- the density wakeDensity inverts (equal up to the inverse's accuracy,
+// docs/ring-physics.md 10.8), clamped like it. Two extra fetches per generation (central differences along n).
+vec2 wakeDisplacementJ(vec2 q, out float Df) {
+  Df = 1.0;
+  if (uWakeOn < 0.5) return vec2(0.0);
+  vec2 d = vec2(0.0);
+  float J = 1.0;
+  for (int g = 0; g < 2; g++) {
+    // (a generation whose envelope is zero everywhere this frame contributes nothing: uWakeOpt, bit-exact)
+    if ((g == 0 ? uWakeOpt.y : uWakeOpt.z) < 0.5) continue;
+    vec2 p = q + d;
+    vec3 geo = wakeGeo(g);
+    vec3 dl = wakeDelta(p);
+    vec3 v0 = wakeGenEvalAt(g, p, geo, dl.x);
+    if (v0.y >= 1e-4) {
+      vec3 v, dv;
+      wakeGenEvalD(g, p, geo, dl, v, dv);
+      J *= max(abs(wakeJac(v, dv)), WAKE_J_MIN);
+      d += geo.xy * ((wakeCMap(v0.x, v0.y).x - v0.x) / v0.z);
+    }
+  }
+  Df = clamp(1.0 / J, uWakeBounds.x, uWakeBounds.y);
+  return d;
+}
+
+// Size-dependent participation (docs/ring-physics.md 10.12; N-body: p_rel(a) = min(1, (a / a_p)^0.5), 10.3 / 10.5). The
+// renderers use a mixture: a share p of a class follows the wakes fully, the rest is not displaced, so the class's density
+// is exactly 1 + p (D - 1) at any contrast (a displacement scaled by p would give 1 / (1 + p (1/D - 1)), much emptier gaps
+// than the medium's linear rule). The near field draws per particle (p = 0 or 1), the medium carries the participating
+// share of every class it holds in its vertical-structure channels (sv_ringLod ringLodChannels).
 vec2 wakeDisplacementP(vec2 q, float p) { return p * wakeDisplacement(q); }
+// The density factor of the whole column: 1 + pbar (D - 1), pbar = its tau-weighted participation.
 float wakeDensityTau(vec2 x) { return 1.0 + uWakePartTau * (wakeDensity(x) - 1.0); }
 
 #endif

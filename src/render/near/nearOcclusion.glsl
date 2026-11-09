@@ -11,15 +11,16 @@
 //     slab model of the layer (sv_ringLod's vertical profile, thickness H) between the camera (local horizontal
 //     position c, height zc) and the particle's near side (horizontal offset pxy from the camera, bounding radius rb:
 //     horizontal distance |pxy| - rb; height zt), with tauP = the caller's normal optical depth along the path (the
-//     lowest of a few samples x the 0.8 margin). Heights relative to the local mid-plane the caller chooses (the update
-//     pass: the particle's). Returns
-//       tSlab * wakeMinDensity()                 the emptiest-gap bound (tSlab = the path's slab optical depth at unit
+//     lowest of a few samples x the 0.8 margin; tau_dyn). Heights relative to the local mid-plane the caller chooses (the
+//     update pass: the particle's). The layer's density at wake density W is the participation mixture's 1 + p (W - 1)
+//     (sv_ringLod size rules), bounded below by low(W) = 1 + (W >= 1 ? pmin : pmax) (W - 1) (uNfPart). Returns
+//       tSlab * low(wakeMinDensity())            the emptiest-gap bound (tSlab = the path's slab optical depth at unit
 //                                                wake density), when it already exceeds tauCap, when no clipmap level
-//                                                covers the path, or when even a mean density NF_CULL_WMAX along the
-//                                                path would stay <= tauCap;
-//       max(that, tSlab * <W>_path)              otherwise: <W>_path = the line of sight's own self-gravity-wake
-//                                                density, averaged at NF_CULL_NODES >= n >= 4 nodes stratified in the
-//                                                slab's column between the two heights (equal optical-depth shares, at
+//                                                covers the path, or when even a mean density factor mix(1, NF_CULL_WMAX,
+//                                                pmin) along the path would stay <= tauCap;
+//       max(that, tSlab * <low(W)>_path)         otherwise: <low(W)>_path = the mean over the line of sight's own
+//                                                self-gravity-wake density, at NF_CULL_NODES >= n >= 4 nodes stratified in
+//                                                the slab's column between the two heights (equal optical-depth shares, at
 //                                                the slices' centroids; uniform in distance for a nearly horizontal path)
 //                                                spaced <= the wake spacing / 8, read from the clipmap level that covers
 //                                                the particle (box-filtered texels >= half the node spacing: the line
@@ -35,11 +36,17 @@ uniform vec4 uNfWcLev[NF_WC_LEVELS]; // per level: (centre x, centre y, texel (m
 uniform int uNfWcLevels;             // levels in use (0: none -- the emptiest-gap bound alone, wakeDensity itself)
 uniform vec4 uNfWcInfo;              // (N, node spacing along the line of sight: wake spacing / 8 (m), 1 = the cull's
                                      // path test is on, -)
+// wake participation (sv_ringLod size rules: a share p_k of class k follows the wakes, so the layer's density at wake
+// density W is 1 + p (W - 1) with p the local mixture's participation): (smallest, largest) p_k over the classes in the
+// column (0 for the never-drawn sub-class particles); the density at W is at least 1 + (W >= 1 ? pmin : pmax) (W - 1)
+uniform vec2 uNfPart;
 #define NF_CULL_NODES 24
-// the path test runs only where a mean wake density <= this along the line of sight could reach tauCap: a long line of
-// sight averages the wakes to ~1, and the particles that would need denser paths are rarely occluded but cost the whole
-// node loop to keep (skipping the test only ever keeps a particle)
+// the path test runs only where a mean density factor <= this along the line of sight could reach tauCap: a long line
+// of sight averages the wakes to ~1, and the particles that would need denser paths are rarely occluded but cost the
+// whole node loop to keep (skipping the test only ever keeps a particle)
 #define NF_CULL_WMAX 1.1
+// the mixture's lowest density factor at wake density W (any participation in [pmin, pmax])
+float nfPartLow(float W) { return 1.0 + (W >= 1.0 ? uNfPart.x : uNfPart.y) * (W - 1.0); }
 
 // The clipmap level for a line of sight ending at local horizontal position xy: the finest usable level covering xy
 // whose texel is at least half the node spacing sp (its box filter ~ the line average between nodes), else the coarsest
@@ -100,7 +107,8 @@ float nfPathWakeTau(vec2 c, vec2 dir, float d, float zc, float zt, float qc, flo
       }
     }
     f *= d;
-    acc += nfWakeClipAt(kw, c + dir * f.x) + nfWakeClipAt(kw, c + dir * f.y) + nfWakeClipAt(kw, c + dir * f.z) + nfWakeClipAt(kw, c + dir * f.w);
+    acc += nfPartLow(nfWakeClipAt(kw, c + dir * f.x)) + nfPartLow(nfWakeClipAt(kw, c + dir * f.y)) +
+           nfPartLow(nfWakeClipAt(kw, c + dir * f.z)) + nfPartLow(nfWakeClipAt(kw, c + dir * f.w));
     if (acc * wn > tauCap) break;
   }
   return acc * wn;
@@ -136,7 +144,9 @@ float nearLosTau(vec2 c, vec2 pxy, float rb, float zc, float zt, float tauP, flo
     qt = ringLayerTauBeyond(zt, 1.0, H, 1.0);
     tSlab = tauP * abs(qc - qt) * L / abs(dz);
   }
-  float tl = tSlab * wakeMinDensity();
-  if (tl > tauCap || uNfWcLevels <= 0 || uNfWcInfo.z < 0.5 || tSlab * NF_CULL_WMAX <= tauCap) return tl;
+  float tl = tSlab * nfPartLow(wakeMinDensity());
+  // (a crest counts at most 1 + pmin (W - 1): with non-participating particles in the column, the mean factor over the
+  // path is ~<= 1, so the test can only succeed beyond tSlab ~ tauCap)
+  if (tl > tauCap || uNfWcLevels <= 0 || uNfWcInfo.z < 0.5 || tSlab * mix(1.0, NF_CULL_WMAX, uNfPart.x) <= tauCap) return tl;
   return max(tl, nfPathWakeTau(c, lp > 1e-6 ? pxy / lp : vec2(1.0, 0.0), d, zc, zt, qc, qt, H, flatP, tSlab, tauCap));
 }

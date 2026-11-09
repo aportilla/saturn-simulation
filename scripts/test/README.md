@@ -7,13 +7,14 @@ follow [Adding a tool](#adding-a-tool) so the next session can run it too.
 
 | command | what it checks | runtime* |
 |---|---|---|
-| `npm test` | refs + smoke + physics + counts + seam (incl. handover) + exposure + edges + moonflux + particles + propellers + relief + contact + sources against one private dev server; summary table | ~12 min |
+| `npm test` | refs + smoke + physics + counts + lod + seam (incl. handover, base) + exposure + edges + moonflux + particles + propellers + relief + contact + sources against one private dev server; summary table | ~15 min |
 | `npm run check:refs` | bibliography ↔ docs sync, no browser: every author–year citation in README / ring-physics.md / data-sources.md / ARCHITECTURE.md has an entry in `src/app/references.ts`, every entry is cited; `-- --online` re-verifies DOIs / arXiv ids | ~1 s (online ~1 min) |
 | `npm run test:sources` | the Sources panel (key G) and every place's Sources line in the explainer: keys, focus, filtering, links | ~20 s |
 | `npm run test:smoke` | every place loads and renders cleanly (errors, fallbacks, NaN / negative pixels) | ~1.5 min |
 | `npm run test:physics` | Sun ephemeris, orbital frequencies, near-field particle kinematics | ~15 s |
-| `npm run test:counts` | drawn particle counts vs the analytic expectation, HUD count line, radius sampler, the occlusion cull removes only hidden particles | ~1 min |
-| `npm run test:seam` | near field + medium vs medium alone (seams/arcs), particle flux vs render scale, the medium's wake representations vs a reference field across the march → sheet handover | ~4.5 min |
+| `npm run test:counts` | drawn particle counts vs the analytic expectation, HUD count line, radius sampler, the occlusion cull removes only hidden particles, the presence skip changes no particle | ~1 min |
+| `npm run test:lod` | the LOD contract's size rules: CPU mirror of the wake functions vs the GPU, the wake statistics behind τ_dyn, the medium's transmission vs the occultation τ | ~2 min |
+| `npm run test:seam` | near field + medium vs medium alone (seams/arcs), particle flux vs render scale, the medium's wake representations vs a reference field across the march → sheet handover, their base radiative transfer without wakes | ~5 min |
 | `npm run test:fps` | uncapped fps table: places × particle quality (informational); `--compare DIR` another checkout interleaved | ~2.5 min |
 | `npm run test:framecost` | frame or stage cost (ms) of configurations in the same page, min / p20 over interleaved trials (informational) | ~1 min / view |
 | `npm run test:exposure` | the camera-pinned astronaut doesn't change the auto exposure (meter mask) | ~45 s |
@@ -95,14 +96,17 @@ run caught tiny negative radiances from the F-ring line profiles, since fixed).
    and ≥ 0.5 display px in radius, vs a Monte Carlo of n_k(a) τ_macro(r) over the class box, the Gaussian layer
    height, the class's power-law radii and the view frustum with the same ≥ 1 px condition (`--mc 400000`
    samples), with τ_macro × the 2-D modulation M of `sv_ringStructure` at each sample (sub-km texture, propellers:
-   CPU mirror `structure.tauModAt`; presence follows τ0 J M). Tolerance 1 ± max(4/√expected, 0.04) for the
-   `--classes 4` classes with the most expected particles (≥ 300). Measured ratios 0.997 … 1.031 (Poisson-consistent;
-   0.991 … 1.028 with presence read from the modulation cache, Nov 2026).
+   CPU mirror `structure.tauModAt`; presence follows τ0 J M). τ_macro = τ_dyn (1 − dust): the particle population
+   carries the dynamical optical depth (`RingLod.tauDynFactor`, ring-physics.md §10.12). Tolerance 1 ± max(4/√expected,
+   0.04) for the `--classes 4` classes with the most expected particles (≥ 300). Measured ratios 0.993 … 1.042
+   (Poisson-consistent; 0.997 … 1.031 before the size rules).
 2. **HUD count line** (`near.count`) starts with `complete` at those places; above the dense B ring
    (`--heights 100,1000,5000` m) it states the status explicitly — `complete…` or `DEFICIT: ~x% …` (measured: a
-   2.9 % deficit at 100 m with the 12M-slot cap binding, boxes clipped at 583 m — 0.3 % before the sub-km texture,
-   9.2 % with its global allocation bound 1.43 in the B-ring core, 2.9 % with the modulation cache's local maximum
-   there, ~1.26 — complete at 1 and 5 km).
+   38 % deficit at 100 m with the 12M-slot cap binding — 9.2 % before the size rules, which raise the B ring's particle
+   population to τ_dyn ≈ 2.2 τ_profile; 0.3 % before the sub-km texture raised the allocation bound by its maximum
+   factor 1.43 in the B-ring core — complete at 1 and 5 km). The allocation bound must hold for all times: the
+   texture's local maximum over a box varies by ±15 % within a day, and a bound that followed it re-fitted the
+   allocation, i.e. re-seeded every particle, at each rise (test:physics checks the allocation across time steps).
 3. **radius sampler**: the per-class radius/box sampler (`RingLod.pieceP/pieceB`, mirrored from `nearRadiusBox`
    in `nearCommon.glsl`) reproduces the target density τmax a⁻ᵠ/(π I₂) in every radius bin: |ratio − 1| ≤ 0.02
    when the slot cap does not bind (measured 2e-5).
@@ -116,7 +120,7 @@ run caught tiny negative radiances from the F-ring line profiles, since fixed).
    1.17 M → 0.10 M drawn, a-ring-inside 0.54 M → 0.10 M, a-ring-30m 0.49 M → 0.41 M; with the emptiest-gap bound alone,
    as before Nov 2026: 1.17 M, 0.35 M, 0.49 M.
 
-### seam — `scripts/test/seam.mjs` (`--only seam,flux,handover`, `--views id,…`)
+### seam — `scripts/test/seam.mjs` (`--only seam,flux,handover,base`, `--views id,…`)
 1. **seam**: per view, mean HDR radiance (`hdrRT`, after the ring layer and before glare / tone mapping, so
    exposure doesn't matter) in horizontal strips over the view's ring rows, averaged over `--realizations 6`
    particle / wake realizations (the frame anchor id is bumped to re-seed the particles, and the test-only
@@ -128,14 +132,18 @@ run caught tiny negative radiances from the F-ring line profiles, since fixed).
 
    | view | rows | measured ratios | max step (limit) | notes |
    |---|---|---|---|---|
-   | `arc-repro` | 0.42–1.0 | 0.998 … 1.010 | 0.005 (0.06) | the user-reported arc: 2 km above the unlit A ring, yaw 60, pitch −22 |
-   | `a-ring-1km` | 0.25–1.0 | 0.890 … 0.984 | 0.029 (0.06) | preset; particles 2–11 % darker than the medium (see below) |
-   | `a-ring-30m` | 0.35–0.78, 6 strips | 0.950 … 1.056 | 0.032 (0.11) | few large particles per strip → realization noise ±5 %; grazing far strip ~9 % particle deficit (below); contact brightening (below; the 0.11 limit was set for it with one wake pattern, step 0.107) |
-   | `lit-500m` | 0.0–0.55 | 0.891 … 0.944 | 0.023 (0.06) | 500 m below the lit A ring looking up; particles 6–11 % darker than the medium |
-   | `under-rings` | 0.0–0.45 | 0.971 … 1.023 | 0.017 (0.09) | unlit face from below (the former +5–8 % particle excess is gone, limit kept) |
+   | `arc-repro` | 0.42–1.0 | 1.002 … 1.014 | 0.005 (0.06) | the user-reported arc: 2 km above the unlit A ring, yaw 60, pitch −22 |
+   | `a-ring-1km` | 0.25–1.0 | 0.921 … 0.990 | 0.026 (0.06) | preset; particles 1–8 % darker than the medium (see below) |
+   | `a-ring-30m` | 0.35–0.78, 6 strips | 0.951 … 1.027 | 0.041 (0.08) | few large particles per strip → realization noise ±5 % (the 0.08 limit); contact brightening +1–3 % in the nearest strips (below) |
+   | `lit-500m` | 0.0–0.55 | 0.922 … 0.978 | 0.021 (0.06) | 500 m below the lit A ring looking up; particles 2–8 % darker than the medium |
+   | `under-rings` | 0.0–0.45 | 1.000 … 1.019 | 0.010 (0.06) | unlit face from below |
 
-   Measured 2026-11-08 with the re-calibrated wake field (docs/ring-physics.md §10.11) and 6 independent wake patterns
-   per view (with the previous field, one pattern: arc-repro 1.000 … 1.015 / 0.006, a-ring-1km 0.899 … 0.985 / 0.024,
+   Measured 2026-11-09 with the N-body size rules (docs/ring-physics.md §10.12: participation, τ_dyn, the vertical
+   laws, the packing ceiling, spin alignment; two runs agree within 0.003). Limits restored with them: a-ring-30m's step
+   0.11 → 0.08 (the grazing far strip's ~9 % particle deficit is gone: 0.982), under-rings 0.09 → 0.06 (the unlit-face
+   excess vanished with the sun-path fix). Before (2026-11-08, re-calibrated wake field of §10.11, 6 patterns): arc-repro
+   0.998 … 1.010 / 0.005, a-ring-1km 0.890 … 0.984 / 0.029, a-ring-30m 0.950 … 1.056 / 0.032, lit-500m 0.891 … 0.944 /
+   0.023, under-rings 0.971 … 1.023 / 0.017; with the previous field, one pattern: arc-repro 1.000 … 1.015 / 0.006, a-ring-1km 0.899 … 0.985 / 0.024,
    a-ring-30m 0.913 … 1.022 / 0.095, lit-500m 0.887 … 0.945 / 0.021, under-rings 0.959 … 1.011 / 0.016). Before the
    sun-path fix: arc-repro 0.972 … 1.005 / 0.012, a-ring-1km 0.928 … 1.035 /
    0.044, a-ring-30m 0.952 … 1.019 / 0.056, lit-500m 0.914 … 0.967 / 0.019, under-rings 0.974 … 1.080 / 0.075. The
@@ -151,7 +159,8 @@ run caught tiny negative radiances from the F-ring line profiles, since fixed).
    1.023, 1.036 (far → near strip); before it the view measured 0.920 … 1.027, step 0.093 (limit 0.10, now 0.11).
 2. **flux**: particle-only flux (ring layer pass disabled) in the near strips of `a-ring-30m` at render scale
    0.5 vs 1, 4 realizations: sub-pixel particles are rasterized differently at the two scales but the expected
-   flux must not change — ratio 1 ± 0.08 (measured 0.961; 0.970–0.983 with the previous wake field).
+   flux must not change — ratio 1 ± 0.08 (measured 0.961 with the size rules and before; 0.970–0.983 with the
+   previous wake field).
 3. **handover** (`--only handover`, `--hviews id,…`, `--hstrips 13`, `--hreal 3`): the medium's own wake
    representations, near field and far field off, each forced through the ring-layer pass's test hook
    (`uRlForce` in rlMarch.glsl, installed after the pass's update every frame): `explicit` (march, clipmap wake field
@@ -161,24 +170,28 @@ run caught tiny negative radiances from the F-ring line profiles, since fixed).
    column regions (left / right half: typically along / across the wakes): reflected radiance L (debug view 0,
    far pass off) and transmission T (debug view 2); the march weight wM (debug view 12) marks the **handover band**
    (0.02 < wM < 0.98), strips outside the clipmap's coverage (wake source from debug view 12) are excluded. Checks in
-   the band: sheet / reference within 1 ± 0.08 (L) and 0.06 (T); explicit / reference T within 0.06, L within 0.22
-   (known prefilter excess, below); stat / sheet within 0.03; production / reference step between neighbouring band
-   strips ≤ 0.04 (a seam where the representations meet). Per-view overrides (with their reason) in
-   `HANDOVER_VIEWS`. Strip means are averaged over `--hreal 3` independent wake patterns (`WakeField.realization`,
-   bumped with the anchor id): the statistics describe the ensemble, and one pattern's strips (a few wake tiles each)
-   scatter by ±5 % along the wakes with the re-calibrated field. ~2 min.
+   the band: sheet / reference within 1 ± 0.08 (L) and 0.06 (T); explicit / reference within 0.08 (L) and 0.06 (T);
+   stat / sheet within 0.03; production / reference step between neighbouring band strips ≤ 0.04 (a seam where the
+   representations meet). Per-view overrides (with their reason) in `HANDOVER_VIEWS` — since the size rules only
+   yaw120's stat / sheet (0.05, residual 2 below). Strip means are averaged over `--hreal 3` independent wake patterns
+   (`WakeField.realization`, bumped with the anchor id): the statistics describe the ensemble, and one pattern's strips
+   (a few wake tiles each) scatter by ±5 % along the wakes with the re-calibrated field. ~2 min.
 
    | view (region) | L sheet/ref | L expl/ref | L stat/sheet | L step | T sheet/ref | T expl/ref | T stat/sheet | T step |
    |---|---|---|---|---|---|---|---|---|
-   | `a-ring-1km` along | 1.019 … 1.032 | 1.040 … 1.079 | 1.001 … 1.002 | 0.013 | 0.971 … 0.994 | 1.005 … 1.035 (0.12) | 0.998 … 1.000 | 0.011 |
-   | `a-ring-1km` across | 1.027 … 1.046 | 1.016 … 1.021 | 1.002 … 1.003 | 0.005 | **0.980 … 1.116** (residual 4) | 0.962 … 1.005 (0.12) | 0.986 … 1.009 | **0.058** (4) |
-   | `a-1km-yaw120` left | **1.164 … 1.186** (0.18; residual 2) | 1.036 … 1.060 | 0.940 … 0.992 (0.07) | 0.042 (0.05) | 0.909 … 0.989 (0.15) | 0.966 … 1.004 (0.15) | 0.988 … 1.017 | 0.043 (0.05) |
-   | `a-1km-yaw120` right | 1.070 … 1.079 | 1.064 … 1.122 | 0.997 … 0.999 | 0.009 | 0.969 … 0.998 | 1.036 … 1.049 | 0.996 … 1.003 | 0.028 |
-   | `unlit-2km` left | 0.940 … 1.008 (0.12) | 1.080 … 1.110 | 1.006 … 1.007 | 0.039 | 0.989 … 1.052 | 0.992 … 1.035 | 1.000 … 1.001 | 0.036 |
-   | `unlit-2km` right | 0.959 … 1.004 | 1.026 … 1.066 | 1.004 … 1.008 | 0.026 | **1.021 … 1.081** (0.08; residual 4) | 0.986 … 1.048 | 0.999 … 1.001 | 0.030 |
+   | `a-ring-1km` along | 1.000 … 1.003 | 1.009 … 1.019 | 1.002 … 1.005 | 0.005 | 0.992 … 1.010 | 0.985 … 1.002 | 0.991 … 0.996 | 0.009 |
+   | `a-ring-1km` across | 1.005 … 1.011 | 0.998 … 1.001 | 0.994 … 1.000 | 0.004 | 0.995 … 1.005 | 0.968 … 0.994 | 0.994 … 1.005 | 0.010 |
+   | `a-1km-yaw120` left | 1.025 … 1.031 | 1.002 … 1.004 | 0.986 … 0.990 | 0.009 | 0.987 … 1.007 | 0.978 … 0.994 | 0.988 … 1.012 | 0.006 |
+   | `a-1km-yaw120` right | 1.011 … 1.040 | 1.009 … 1.015 | 0.971 … 0.993 (0.05) | 0.001 | 0.995 … 1.005 | 0.988 … 0.999 | 0.989 … 1.002 | 0.008 |
+   | `unlit-2km` left | 0.944 … 0.967 | 1.002 … 1.012 | 0.999 … 1.012 | 0.010 | 0.988 … 0.998 | 0.995 … 1.001 | 1.005 … 1.007 | 0.010 |
+   | `unlit-2km` right | 0.973 … 0.979 | 0.993 … 0.996 | 0.994 … 1.009 | 0.003 | 0.995 … 1.002 | 0.993 … 0.999 | 1.000 … 1.002 | 0.005 |
 
-   Measured 2026-11-08 with the re-calibrated wake field (§10.11; limits in parentheses where a view overrides the
-   default; bold: failing, 4 of 70 checks). With the previous field and one pattern: L sheet/ref 0.988 … 1.048 (lit),
+   Measured 2026-11-09 with the N-body size rules (ring-physics.md §10.12), the sheet's multiple scattering in the
+   medium's τ metric and Saturnshine without the point-source shadow-hiding surge (70 of 70 checks; limits restored to
+   the defaults: they were L 0.18 / T 0.15 / TE 0.15 / stat 0.07 / step 0.05 at yaw120, L 0.12 / T 0.08 on the unlit
+   face, TE 0.12 at 1 km, LE 0.22 everywhere). Before them (2026-11-08, re-calibrated wake field of §10.11, 4 of 70
+   failing): L sheet/ref 1.019 … 1.046 at 1 km, 1.164 … 1.186 at yaw120 left, 0.940 … 1.008 unlit; L expl/ref up to
+   1.110; T sheet/ref across the wakes 0.980 … 1.116 (1 km) and 1.021 … 1.081 (unlit). With the previous field and one pattern: L sheet/ref 0.988 … 1.048 (lit),
    1.144 … 1.170 (yaw120 left), T sheet/ref 0.983 … 1.049 across the wakes at 1 km, 1.039 … 1.068 (unlit-2km right).
    With the anchor's λ in the statistics (residual 4) and 4 patterns, every check of `a-ring-1km` and `unlit-2km`
    passes (T sheet/ref 0.96 … 1.00 at 1 km, 0.98 … 1.01 at 2 km; steps ≤ 0.026). Before the Nov 2026 fix (same
@@ -187,27 +200,56 @@ run caught tiny negative radiances from the F-ring line profiles, since fixed).
    transmission 0.60–0.87 of the explicit one across the wakes (the two-column means decorrelated far too fast),
    the clipmap's explicit transmission 0.57–0.97 of the unfiltered field (density prefilter), and `wakeDensity`
    carried only ~88 % of the particles' mass (folds of the forward map missed by the single-branch inverse).
-   **Known residuals**: (1) the clipmap's density prefilter makes the explicit field's *reflection* 3–20 % too bright
-   — the wake cores are ~4 m wide (0.1 λ), so even 2–4 m texels spread core material into well-lit gap edges (the
-   sub-texel anti-correlation of density and illumination is lost; with the density taken directly and the sun
-   path from the clipmap the excess disappears, 0.993–0.996): a fix needs resolved cores or a sub-texel model;
-   (2) the two-column *reflection* model (uRlWakeHeff) is within ~5 % at low phase but 10–19 % off at high phase
-   along the wakes (yaw120: 16–19 % with the re-calibrated field's deeper gaps, just over the view's 0.18) and on the
-   unlit face along them — the medium's photometric offsets, open; (3) at the band's grazing far end the homogeneous
-   march and sheet already differ by up to ~6 % at high phase (base radiative transfer); (4) the sheet
-   (`rlMainSheet`) and the march's statistical branch take the path parameter χ = H|V·n|/(μλ) with the local Toomre
-   λ ∝ Σ(r) (`rlToomre`), while the explicit field — and so the unit of χ in the probe's path-statistics table — has the
-   anchor's λ (`uRlWakeLamRef.x`): a few km from the anchor, where Σ differs, the statistical T across the wakes is
-   up to 14 % too high and production steps at the handover (a-ring-1km across: 0.058). The probe and the Gamma model
-   are not the cause: the Python port reproduces the probe's table to 3 decimals, and the Gamma transmission with it
-   matches explicit straight paths through the field within ±4 % for χ ≤ 1.25. Fix (ring-layer shaders): use
-   `uRlWakeLamRef.x` instead of `rlToomre(...)` for χ (and the decorrelation of the two-column reflection) within the
-   explicit field's reach, e.g. `mix(uRlWakeLamRef.x, rlToomre(r, S), smoothstep(R0, R1, |dr|))`; the local λ keeps
-   its meaning far from the anchor.
+   **Residuals** — fixed in Nov 2026: (1) the clipmap's density prefilter made the explicit field's *reflection* 3–20 %
+   too bright (the ~4 m wake cores' sub-texel anti-correlation of density and illumination); with participation (only
+   the large particles follow the cores), τ_dyn and the packing ceiling it is ≤ 2 %; (3) the homogeneous march and
+   sheet differed by up to 14 % in single scattering at high solar phase (yaw120, wakes off): the sheet lit its
+   Saturnshine beams with the point-source shadow-hiding surge, an opposition peak of a few degrees applied to Saturn's
+   half-disk of tens of degrees (now none, as in the march; `--only base` checks it); (4) the statistics took χ with the
+   local Toomre λ (now the anchor's within the explicit field's reach, `rlWakeLambda`). Also new: the sheet's multiple
+   scattering in the medium's τ metric (with τ_dyn ≠ τ_iso it was 3.5 % below the march's statistics on the unlit face).
+   Open: (2) across the wakes at high phase (yaw120 right, rows 0.25–0.45, where the two-column reflection's path
+   decorrelation sets in: the smoothstep of χ, uRlWakeHeff) the sheet is up to 4 % above the march's statistics, which
+   match the reference within 1.5 % → stat / sheet 0.05 for that view; on the unlit face along the wakes the sheet is
+   ~5 % below the reference (within the default limit).
+4. **base** (`--only base`): the base radiative transfer of the medium's two representations with the wakes off
+   (`wakes=0`): the march forced over the frame vs the sheet in the handover views' strips. Checks per view: L within
+   1 ± 0.03 in every strip the layer fills, and T's slant optical depth −ln T within 3 % (the ratio of T within 3 %
+   where T > 1/e). Measured L 0.994 … 1.027, T 0.986 … 1.035 (the 1.035 at T = 0.04: 1.1 % in τ). Before the
+   Saturnshine fix the sheet's L at yaw120 was up to 1.110 (single scattering 1.165). ~25 s.
 
-The near-field photometry offsets in the seam table (particles 2–11 % darker than the medium on the lit face, ~9 %
-in the grazing far strip of `a-ring-30m`) and the handover residuals are the current state, not targets: tighten
-the limits when they are fixed.
+The near-field photometry offsets in the seam table (particles 1–8 % darker than the medium on the lit face) and the
+handover residual 2 are the current state, not targets: tighten the limits when they are fixed.
+
+### lod — `scripts/test/lod.mjs` (`--only wakes,bins,transmission`, `--n 64`, `--cycle 12`, `--treal 3`, `--ref`)
+The size rules of the LOD contract where they rest on numbers measured from the app's own wake field
+(docs/ring-physics.md §10.12).
+1. **wakes**: the CPU mirror of the shared wake functions (`WakeField.densityAt` / `displacementAt`, float64 — behind
+   `WAKE_D_BINS` and so τ_dyn; also checked against the Python port by `procedural.py --verify`, to 1e-13) vs the GPU
+   (`wakeDensity` / `wakeDisplacement` in a fullscreen pass) on 64² points over 3 × 3 Toomre wavelengths around the
+   camera at a-ring-1km (A set) and b-ring-inside (B set): median |ln(GPU/CPU)| ≤ 0.01, 99th percentile ≤ 0.1 (the
+   cores are steep), mean ratio 1 ± 0.01, displacement rms ≤ 2e-3 λ. Measured: median 7e-5 / 7e-4, p99 0.0011 /
+   0.0077, mean 1.0000 / 1.0001, displacement 1e-5 / 4e-5 λ.
+2. **bins**: the pasted `WAKE_D_BINS` (`src/rings/WakeStats.ts`) vs a re-measurement with the current `WakeField`
+   (`measureDensityBins`, ~0.1–0.2 s): the τ_dyn factor x(τ, c) from both within 1 ± 0.002 at τ 0.3 / 0.6 / 1.2 (A,
+   c = 0.63) and 1.5 / 4 / 8 (B, c = 0.79), every bin within 1 % + 0.002. Fails when the wake model changes; the new
+   bins are then written to `<out>/wake_d_bins.json` (paste them). Measured x = 1.072 / 1.134 / 1.239 (A), 1.651 /
+   2.268 / 2.731 (B), bins identical. (The bin means are exact for the solve: the full sample gives the same x to 1e-4.)
+3. **transmission**: the medium's transmission at normal incidence (6 km above the layer looking straight down, 10°
+   field, near field and far pass off, texture and propellers off, debug view 2) vs exp(−τ_profile/μ) per pixel (the
+   occultation τ at the pixel's radius), averaged over `--cycle 12` times through one generation cycle × `--treal 3`
+   wake patterns, at 128,000 km (A) and 105,000 km (B). Checks: the effective τ −ln⟨T⟩ within 2 % (A) / 5 % (B) of the
+   profile's; at A every frame within 0.02 τ + 0.01 of the CPU prediction from the live field
+   (exp(−τ_dyn g (1 − p̄ + p̄ D)/μ) at each pixel's ground point); without wakes (control: the homogeneous τ_iso layer)
+   within 0.005 τ + 0.005. Measured: A 1.000 (frames 0.990 … 1.009 of the live prediction), B 1.157 × exp(−τ) (−3.5 %
+   in τ; frames 0.55 … 1.39: the B set's two generations hand over globally, ~+12 % effective τ for ~20 % of the
+   cycle); wakes off 1.002 / 1.009. Before the size rules (photometric τ as the medium's mean): 1.15 (A) and 14.7 (B:
+   effective τ 1.5 instead of 4.2). B-ring residual (`--ref`: the march with the reference field, `wakeDensity` per
+   step): the clipmap prefilter correction overshoots where T is set by the emptiest gaps (production / reference
+   +17 % in T), and the reference is ~8 % below the 2-D column prediction (the thickened wakes catch slightly oblique
+   rays); the 36 frames over ~2 wake tiles scatter the B mean by ~±7 % in T.
+
+~2 min.
 
 ### fps — `scripts/test/fps.mjs` (informational unless `--min-fps N`)
 `--presets` (overview, a-ring-1km, a-ring-30m, a-ring-inside, b-ring-inside, c-ring-inside) × `--qualities
@@ -279,7 +321,7 @@ debug views 7 and 9 give (r, τ, θ) per pixel, compared with the CPU mirror (`_
 | check | tolerance | measured (2026-11-08) |
 |---|---|---|
 | τ inside the gap, a' > 1.5 km from the unperturbed edges | ≤ 0.05, and ≤ 0.01 above the profile's own τ0(a') J there (gap floor ≤ 0.015, dusty Encke-gap ringlets ≤ 0.025; the old Eulerian lookup: ~0.5 slivers) | max 0.008–0.025, excess ≤ 0.0085 |
-| median τ_rendered / (τ0(a') J) in the ring (> 1.5 km from the edges) | 0.95 … 1.05 | 0.9999–1.004 |
+| median τ_rendered / (τ0(a') J) in the ring (> 1.5 km from the edges; τ0 the medium's, `RingProfile.mediumTauAtKm`: τ_iso with the wakes off, ring-physics.md §10.12) | 0.95 … 1.05 | 0.9999–1.004 |
 | edge RMS(rendered − model ξ(a'_edge, θ)) per azimuth bin | ≤ max(0.25 km, 1.5 footprints) | Keeler 0.05–0.08 km (fp 0.13), Encke 0.16 / 0.39 km (fp 0.39) |
 | edge max \|rendered − model\| | ≤ 0.75 km + 2 footprints | Keeler ≤ 0.17 km, Encke ≤ 0.45 km |
 | displacement range rendered / model (where the model range ≥ 1 km) | 0.85 … 1.15 | 0.93–1.01 |
@@ -326,9 +368,13 @@ code.
    `RELIEF_PHOT` (NearRelief.ts) equals the measurement within 2% for α ≤ 120° (deterministic, so it fails exactly
    when the relief or the shader logic changed — paste the printed table then). Measured corrections: ≤ 4% for the
    analytic path up to 100°, ray-marched clumpy boulders 1.06 / 1.12 / 1.24 / 1.44 at 60 / 80 / 100 / 120°.
-4. **anisotropy** (informational): mean cross-section / πa² of the principal-axis rotators vs view elevation (spin
-   axes near the orbit normal for large particles): 0.987 edge-on … 1.026 from above for a ≥ 0.6 m (NR_ISO 0.8;
-   0.92 … 1.14 with the full shape spread).
+4. **anisotropy**: the direction-dependent LOD contract of the spin-aligned population (ring-physics.md §10.12): the
+   GLSL shapes and orientations (`nearShape`, `nearSpinAxis`, `nearOrientation`) of the aligned population, mean
+   projected area / isotropic mean − 1 along elevations μ = 0, 0.5, 0.866, 1, vs the CPU table G(μ) that the medium
+   uses (`ringDynamics.anisotropyTables`, `lodAniso`): |diff| ≤ 0.006 (measured ≤ 0.002; G = −0.075 edge-on …
+   +0.138 face-on); random spin axes isotropic (≤ 0.006); the tidally locked population's cos 2ψ amplitude edge-on,
+   GLSL vs CPU T(0) (≤ 0.006). Prints the per-size table 1 + f(a) G at elevations 0–90° (f(a) = the aligned share).
+   (Before: `NR_ISO` 0.8 kept aligned bodies nearly round, 0.987 … 1.026, since the medium was isotropic.)
 
 ### sources — `scripts/test/sources.mjs` (`--place a-ring-inside`)
 The in-app bibliography (`src/ui/SourcesPanel.ts`, data `src/app/references.ts`, per-place lists
@@ -364,7 +410,7 @@ the GLSL through ring-layer and near-field read-backs; t = 2026-11-08T12:00Z.
 | prefilter | mean over random footprint centres of the prefiltered transmission (`rlApplyTauMod`) / the ensemble ⟨e^{−Mτ/μ}⟩ (120,000 points): B ring (A 0.62, τ 1.2 and 3), A ring (A 0.32, τ 0.65), μ = 1, 0.3, 0.09, footprints 2 km / 300 m | ± 2 % (T > 1e-3), ± 6 % (1e-4 … 1e-3) | 0.997 … 1.002; 1.031 / 1.043 at T ≈ 1.3e-4 |
 | | mean preserved: E[m(x)], ensemble ⟨M⟩ | 1 ± 0.005 | 0.9988 … 1.0000; 0.9987 |
 | | variance split (var m + E[v]) / var M | 1 ± 0.05 | 1.007 |
-| structure | looking straight down (debug views 7 / 9: r, τ, θ) at a belt-3 propeller (12 km up, footprint 15.5 m) and at Blériot (60 km, 77.6 m), texture off: median τ_GPU / (τ0(a') J M_CPU) | 0.97 … 1.03 | 1.000 / 1.000 |
+| structure | looking straight down (debug views 7 / 9: r, τ, θ) at a belt-3 propeller (12 km up, footprint 15.5 m) and at Blériot (60 km, 77.6 m), texture off: median τ_GPU / (τ0(a') J M_CPU) (τ0 the medium's: `RingProfile.mediumTauAtKm`, τ_iso with the wakes off) | 0.97 … 1.03 | 1.000 / 1.000 |
 | | share of pixels within ± 8 % | ≥ 0.95 | 0.998 / 1.000 |
 | | deepest gap τ / τ0 (gaps present) | ≤ 0.65 | 0.433 / 0.502 |
 | | the belt view with the texture on: median τ_GPU / (τ0 J M_CPU); share within ± 8 %; rms of the modulation GPU / CPU | 0.97 … 1.03; ≥ 0.9; 0.9 … 1.1 | 1.000; 0.998; 0.998 (rms 0.110) |
