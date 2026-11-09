@@ -61,7 +61,7 @@ const PROPELLER_RELIEF_MARGIN = 40e3;
  * The propellers' relief in z0 (mirror of RS_PROPELLER_RELIEF in sv_ringStructure): prefiltered to the footprint, part
  * of the relief bounds (reliefBoundCam / uRrCamN, uRpTF.w) and the relief shadows.
  */
-const PROPELLER_RELIEF = true;
+const PROPELLER_RELIEF = false;
 
 function emptyPoint(): StreamPoint {
   return { da: 0, J: 1, drda: 1, tauMod: 1, tauVar: 0, wakeMod: 1, zeta: 0, slopeR: 0, slopeT: 0 };
@@ -114,6 +114,8 @@ export class RingStructure {
   private profile: RingProfile | null = null;
   /** vertical relief sources (bending waves, corrugation, sites): src/rings/relief.ts */
   readonly relief: RingRelief;
+  /** the propellers' relief is part of z0 (PROPELLER_RELIEF; tests skip its checks when off) */
+  readonly propellerRelief = PROPELLER_RELIEF;
   /** true when a relief source lies within the near field's reach of the camera (march / particles evaluate z0) */
   reliefNear = false;
   /** bound of |z0| (m) within RELIEF_NEAR_MARGIN of the camera (the march's slab is widened by it) */

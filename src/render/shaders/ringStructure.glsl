@@ -105,7 +105,7 @@ vec3 rsReliefSites(float aL, float dth, float fp) { return rrSites(aL, dth, fp);
 // field's particle heights. RS_PROPELLER_RELIEF (mirror: PROPELLER_RELIEF in src/rings/RingStructure.ts) switches it.
 // gRsPropRelief = false leaves it out of a lookup (nearUpdate.glsl: a slot's first, culling height; the draw where no
 // propeller can reach the size class: uRpNearMask).
-#define RS_PROPELLER_RELIEF
+// #define RS_PROPELLER_RELIEF
 bool gRsPropRelief = true;
 vec3 ringStructureRelief(float aL, float dth, float fp) {
   vec3 h = rsReliefWaves(aL, dth, fp) + rsReliefSites(aL, dth, fp);
