@@ -48,6 +48,7 @@ import { LOD_CLASSES, LOD_PIECES, type RingLod } from '../../rings/RingLod';
 import { SATURN } from '../../core/constants';
 import nearCommon from '../near/nearCommon.glsl?raw';
 import nearUpdate from '../near/nearUpdate.glsl?raw';
+import nearOcclusion from '../near/nearOcclusion.glsl?raw';
 import nearState from '../near/nearState.glsl?raw';
 import nearDrawVert from '../near/nearDraw.vert.glsl?raw';
 import nearDrawFrag from '../near/nearDraw.frag.glsl?raw';
@@ -67,6 +68,8 @@ import {
 
 const TEX_W = 2048;
 const TWO_PI = Math.PI * 2;
+/** levels of the ring layer's wake clipmap (WAKE_CLIP_MAX_LEVELS; NF_WC_LEVELS in nearUpdate.glsl) */
+const NF_WC_LEVELS = 6;
 /** largest sprite radius (px) handled by the point pass (GL max point size is 511 here) */
 const PT_MAX_PX = 180;
 /** quads are only needed for the few particles within a few radii of the camera */
@@ -188,6 +191,22 @@ export class NearFieldPass implements RenderPass {
    * (visibility e^-5 = 0.7%); tighter than the shared uLodCullTau because it bounds the overdraw
    */
   cullTau = 5;
+  /**
+   * where the emptiest-gap bound cannot decide, the cull integrates the actual self-gravity-wake density along the line
+   * of sight (the ring layer's wake clipmap, ctx.wakeClip; nearUpdate.glsl nfPathWake); false: the bound alone
+   */
+  cullPathWakes = true;
+  /**
+   * uniforms of the statistical-occlusion bound (nearOcclusion.glsl nearLosTau: the ring layer's wake clipmap), one
+   * shared object set updated in render() before the update pass -- spread into any material that includes
+   * nearOcclusion.glsl (the update pass; the contact step's contact set)
+   */
+  readonly occlusionUniforms = {
+    uNfWc: { value: null as unknown },
+    uNfWcLev: { value: Array.from({ length: NF_WC_LEVELS }, () => new Vector4(0, 0, 1, 0)) },
+    uNfWcLevels: { value: 0 },
+    uNfWcInfo: { value: new Vector2(1024, 5) },
+  };
   /** near-field sun shadow map (crisp shadows from nearby particles) */
   shadowsEnabled = true;
   /** debugging / profiling: skip sub-passes */
@@ -291,7 +310,7 @@ export class NearFieldPass implements RenderPass {
     this.updMat = new RawShaderMaterial({
       glslVersion: GLSL3,
       vertexShader: FS_VERT,
-      fragmentShader: common + nearUpdate,
+      fragmentShader: common + nearOcclusion + nearUpdate,
       uniforms: {
         ...sh,
         tState: { value: null },
@@ -309,6 +328,8 @@ export class NearFieldPass implements RenderPass {
         uTauBoxMax: { value: 1 },
         uTauCam: { value: 0 },
         uCull: { value: 1 },
+        // the occlusion bound's line-of-sight wake density (nearOcclusion.glsl; set in render() from ctx.wakeClip)
+        ...this.occlusionUniforms,
       },
       depthTest: false,
       depthWrite: false,
@@ -565,6 +586,22 @@ export class NearFieldPass implements RenderPass {
     // cam.x + st.da (st.da = a' - r = -xi_cam), and the optical depth at the camera is tau0(a') J
     const st = ctx.structure.cam;
     u.uTauCam.value = ctx.profile.tauAtKm((ring.r0 + cam.x + st.da) / 1000) * st.J;
+    // line-of-sight wake density for the cull: the ring layer's wake clipmap as rendered so far (its level states
+    // describe the texture's content until the ring layer refreshes levels later in this frame)
+    const wc = ctx.wakeClip, ou = this.occlusionUniforms;
+    const lam = ctx.wakes.lambda;
+    const nWc = wc && this.cullEnabled && this.cullPathWakes && (ctx.wakes.uniforms.uWakeOn.value as number) > 0.5 && Number.isFinite(lam) && lam > 0
+      ? Math.min(wc.levelCount, NF_WC_LEVELS) : 0;
+    ou.uNfWcLevels.value = nWc;
+    if (wc && nWc > 0) {
+      ou.uNfWc.value = wc.texture;
+      for (let k = 0; k < NF_WC_LEVELS; k++) {
+        const s = wc.levels[k];
+        if (s) ou.uNfWcLev.value[k].set(s.x, s.y, s.z, s.w); else ou.uNfWcLev.value[k].set(0, 0, 1, 0);
+      }
+      // node spacing along the line of sight: an eighth of the wake spacing (resolves the wake profile)
+      ou.uNfWcInfo.value.set(wc.n, Math.max(lam, 20) / 8);
+    }
     this.fsMesh.material = this.updMat;
     for (const c of this.classes) {
       if (!c.active || this.skip.update) continue;

@@ -175,6 +175,9 @@ export class WakeField {
     uWakeOn: { value: 0 },
     // hook (next work package): tau-weighted mean participation of the medium in the wakes (wakeDensityTau); 1 now
     uWakePartTau: { value: 1 },
+    // work the current cycle phase makes redundant (update(); exact: the results do not change): (1 = the asynchrony
+    // phase delta can change an envelope, generation 0 can be non-zero, generation 1 can be non-zero, 0)
+    uWakeOpt: { value: new Vector4(1, 1, 1, 0) },
   };
 
   constructor(seed = 12345) {
@@ -400,6 +403,16 @@ export class WakeField {
     }
     this.uniforms.uWakeClock.value.set(phi, sh.asyncD, 2 * sh.envW, on ? this.strength : 0);
     this.uniforms.uWakeDelta.value.set(hashFloat(ny + rz, 3), hashFloat(ny + rz, 4), this.qShear * (tau - ny * P), this.dscale / this.tile);
+    // Plateau handover (smoothstep over 2 envW, wakes.glsl wakeEnvYoung): once phi - asyncD delta >= 2 envW for every
+    // delta in [0, 1] the young generation's envelope is exactly 1 and the old one's exactly 0 everywhere (55 % of each
+    // cycle with the A set, 60 % with B), and at phi = 0 the young one is exactly 0: then delta cannot change a result
+    // (its fetches are skipped) nor can the zero generation (skipped: its early-out would return the same). The margin
+    // keeps the float32 comparison in the shader on the same side.
+    let deltaOn = sh.asyncD > 0 ? 1 : 0, g0 = 1, g1 = 1;
+    if (2 * sh.envW > 0) {
+      if (phi - sh.asyncD >= 2 * sh.envW + 1e-5) { deltaOn = 0; g0 = 0; } else if (phi <= 0) { deltaOn = 0; g1 = 0; }
+    }
+    this.uniforms.uWakeOpt.value.set(deltaOn, g0, g1, 0);
     this._tau = tau;
   }
   private _tau = 0;

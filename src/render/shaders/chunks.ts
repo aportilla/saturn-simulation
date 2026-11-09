@@ -7,7 +7,8 @@
 // sources it sums into the mid-plane height) and is the lookup every main-ring tau goes through; sv_ringReliefShade
 // (normal, solar incidence, relief shadows, ray-surface intersection) needs sv_ringStructure).
 // sv_ringStructure itself includes its source chunks at its hooks, in this order: sv_ringTexture (sub-km texture),
-// sv_ringPropellers (propeller moonlets) -- never include those two directly (three.js resolves nested includes).
+// sv_ringPropellers (propeller moonlets) -- never include those two directly (three.js resolves nested includes) --
+// and at its end sv_ringModClip (the cache of the 2-D modulation around the camera, src/render/rings/ModClipmap.ts).
 import { ShaderChunk } from 'three';
 import common from './common.glsl?raw';
 import saturn from './saturn.glsl?raw';
@@ -16,6 +17,7 @@ import ringRelief from './ringRelief.glsl?raw';
 import ringStructure from './ringStructure.glsl?raw';
 import ringTexture from './ringTexture.glsl?raw';
 import ringPropellers from './ringPropellers.glsl?raw';
+import ringModClip from './ringModClip.glsl?raw';
 import ringReliefShade from './ringReliefShade.glsl?raw';
 import lighting from './lighting.glsl?raw';
 import ringLod from './ringLod.glsl?raw';
@@ -30,6 +32,7 @@ export function registerShaderChunks(): void {
   sc['sv_ringProfile'] = ringProfile;
   sc['sv_ringTexture'] = ringTexture;
   sc['sv_ringPropellers'] = ringPropellers;
+  sc['sv_ringModClip'] = ringModClip;
   sc['sv_ringRelief'] = ringRelief;
   sc['sv_ringStructure'] = ringStructure;
   sc['sv_ringReliefShade'] = ringReliefShade;

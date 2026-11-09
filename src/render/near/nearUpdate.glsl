@@ -42,6 +42,7 @@ uniform vec4 uShear;        // (q Omega (t - t_e), q Omega c0x (t - t_e) (m), F 
 uniform float uTauBoxMax;
 uniform float uTauCam;      // macroscopic tau at the camera's radius
 uniform float uCull;        // > 0: statistical occlusion culling beyond this line-of-sight optical depth
+// (the occlusion bound nearLosTau and its uniforms: nearOcclusion.glsl, included before this file)
 
 layout(location = 0) out vec4 o;
 
@@ -113,12 +114,20 @@ void main() {
   // --- presence: thin by the macroscopic optical depth at the guiding-center (Lagrangian) radius (empty gaps) times the
   // 2-D modulation there (sv_ringStructure: sub-km texture, propellers -- the medium carries the same tau0 J M)
   RingSample rs = ringSampleLagrangian(aL, 0.0);
-  // (tau factor, -, self-gravity-wake strength factor). The propellers' hash-grid enumeration is costly: it runs for
-  // particles that may be drawn, in the classes a propeller can reach this frame (CPU mask uRpNearMask; elsewhere
-  // their factor is exactly 1). Shadow casters outside the view take the texture only: a shadow-fidelity reduction
-  // (their density inside a propeller's gaps / lobes is the undisturbed one), the drawn particles are exact.
-  bool rpEval = cand && (uRpNearMask & (1 << uClass)) != 0;
-  vec3 smod = rpEval ? ringStructureMod(aL, dthP, 0.0) : ringStructureModNoPropellers(aL, dthP, 0.0);
+  // (tau factor, -, self-gravity-wake strength factor) from the cache around the camera (sv_ringModClip: one bilinear
+  // lookup; exact to its texels, which resolve every texture octave and propeller lobe within ~1 km of the camera and
+  // prefilter the sub-texel structure mean-preservingly beyond). Where no valid level covers the guiding centre (the
+  // frames after re-anchoring, beyond the coverage) it is evaluated directly: the propellers' hash-grid enumeration
+  // only for particles that may be drawn, in the classes a propeller can reach this frame (CPU mask uRpNearMask;
+  // elsewhere their factor is exactly 1); shadow casters outside the view take the texture only (a shadow-fidelity
+  // reduction: their density inside a propeller's gaps / lobes is the undisturbed one), the drawn particles are exact.
+  vec3 smod;
+  vec2 mcw;
+  if (rsModCached(aL, uRingR0 * dthP, mcw)) smod = vec3(mcw.x, 0.0, mcw.y);
+  else {
+    bool rpEval = cand && (uRpNearMask & (1 << uClass)) != 0;
+    smod = rpEval ? ringStructureMod(aL, dthP, 0.0) : ringStructureModNoPropellers(aL, dthP, 0.0);
+  }
   float tauM = rs.tau * (1.0 - rs.dust) * smod.x;
   if (nearU(idx, seed, NS_PRES) * uTauBoxMax >= tauM) { o = vec4(0.0); return; }
 
@@ -143,16 +152,14 @@ void main() {
     if (w < -rb || abs(v.x) > w * tx + rb * sqrt(1.0 + tx * tx) || abs(v.y) > w * ty + rb * sqrt(1.0 + ty * ty)) drawn = false;
   }
   if (drawn && uCull > 0.0) {
-    // statistical occlusion: optical depth of the slab between the camera and the near side of the particle,
-    // using the lowest tau along the path and the emptiest wake-gap density (conservative)
-    float d = max(length(pl.xy) - rb, 0.0);
-    // heights relative to the particle's local mid-plane
+    // statistical occlusion: line-of-sight optical depth of the slab between the camera and the near side of the
+    // particle (nearOcclusion.glsl nearLosTau: the emptiest-gap bound, then the line of sight's own wake density), with
+    // the lowest tau of three samples along the path x the 0.8 margin; heights relative to the particle's local mid-plane
     float zc = uRingCamLocal.z - z0p;
     float zt = z + clamp(zc - z, -rb, rb);
     RingSample rm = ringSampleLocal(vec3(uRingCamLocal.x + 0.5 * pl.x, uRingCamLocal.y + 0.5 * pl.y, 0.0), 0.0);
-    float tauPath = min(min(uTauCam, tauM * Jp), rm.tau * (1.0 - rm.dust)) * wakeMinDensity() * 0.8;
-    float tl = ringLayerSegmentTau(zc, zt, d, tauPath, rs.H);
-    if (tl > uCull) drawn = false;
+    float tauP = min(min(uTauCam, tauM * Jp), rm.tau * (1.0 - rm.dust)) * 0.8;
+    if (nearLosTau(uRingCamLocal.xy, pl.xy, rb, zc, zt, tauP, rs.H, uCull) > uCull) drawn = false;
   }
   o = vec4(p, drawn ? a : -a);
 }

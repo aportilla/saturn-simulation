@@ -5,6 +5,7 @@
 // usage: node scripts/test/fps.mjs [--base URL] [--out DIR] [--presets a,b] [--qualities high,medium,low]
 //                                  [--secs 4] [--warmup 2500] [--w 1920 --h 1080] [--params "k=v&..."] [--min-fps N]
 //                                  [--ab-off "<js>" --ab-on "<js>" [--rounds 6] [--ab-settle 400]]
+//                                  [--compare DIR|URL [--rounds 3] [--label-a this] [--label-b other]]
 //
 // Each cell: new page with ?preset=<id>&quality=<q>&fps=0&t=...&paused=1&hud=0&labels=0 in a browser without vsync /
 // frame-rate limit, warm-up, then requestAnimationFrame callbacks counted for --secs (several navigations in one
@@ -22,9 +23,16 @@
 //   --ab-on "s=__sv.pipeline.ctx.structure;s.texture.amp=1;s.propellers.scale=1"
 // append ";__sv.pipeline.lastModKey='force'" to both and use --ab-settle 3000 to include the near-field allocation
 // bound (the local LOD re-fits within 60 frames).
-import { T_STD, measureFps, openApp, problems, sleep, table, withHarness } from './lib.mjs';
+//
+// Compare mode (--compare DIR|URL): this checkout (A) against another one (B): a directory holding another revision
+// of the app (e.g. `git archive <rev> -o x.tar`, untar, symlink node_modules; a private Vite server is started for it)
+// or the URL of a running server. Per cell --rounds rounds of one FRESH page per tree in ABBA order (both trees are
+// measured under the same, slowly drifting GPU load); reports the mean ms per frame of A and B, B - A with its standard
+// error over the rounds and the fps ratio. Presets missing in B (older revisions) are reported as such.
+import { resolve } from 'node:path';
+import { T_STD, measureFps, openApp, problems, sleep, startServer, table, withHarness } from './lib.mjs';
 
-await withHarness('fps', { w: 1920, h: 1080, uncapped: true, usage: 'node scripts/test/fps.mjs [--base URL] [--out DIR] [--presets a,b] [--qualities high,medium,low] [--secs 4] [--min-fps N] [--ab-off JS --ab-on JS --rounds 6 --ab-settle 400]' }, async ({ args, rep, base, browser }) => {
+await withHarness('fps', { w: 1920, h: 1080, uncapped: true, usage: 'node scripts/test/fps.mjs [--base URL] [--out DIR] [--presets a,b] [--qualities high,medium,low] [--secs 4] [--min-fps N] [--ab-off JS --ab-on JS --rounds 6 --ab-settle 400] [--compare DIR|URL --rounds 3 --label-a A --label-b B]' }, async ({ args, rep, base, browser }) => {
   const presets = args.list('presets', ['overview', 'a-ring-1km', 'a-ring-30m', 'a-ring-inside', 'b-ring-inside', 'c-ring-inside']);
   const quals = args.list('qualities', ['high', 'medium', 'low']);
   const secs = args.num('secs', 4), warmup = args.num('warmup', 2500), minFps = args.num('min-fps', 0);
@@ -32,6 +40,56 @@ await withHarness('fps', { w: 1920, h: 1080, uncapped: true, usage: 'node script
   const abOff = args.str('ab-off', ''), abOn = args.str('ab-on', '');
   const rows = [];
   const cells = [];
+  const compare = args.str('compare', '');
+  if (compare) {
+    const rounds = args.num('rounds', 3);
+    const la = args.str('label-a', 'A (this checkout)'), lb = args.str('label-b', `B (${compare})`);
+    const srvB = /^https?:\/\//.test(compare) ? await startServer({ base: compare }) : await startServer({ root: resolve(compare) });
+    try {
+      // presets the other tree knows (an older revision may lack some)
+      const known = async (b) => {
+        const { page } = await openApp(browser, b, { preset: 'overview', paused: 1, hud: 0, labels: 0 });
+        try { return await page.evaluate(() => window.__sv.presets.map((p) => (typeof p === 'string' ? p : p.id))); } finally { await page.close(); }
+      };
+      const idsB = new Set(await known(srvB.base));
+      const mean = (v) => v.reduce((s, x) => s + x, 0) / v.length;
+      for (const p of presets) {
+        for (const q of quals) {
+          const params = { preset: p, quality: q, t: T_STD, paused: 1, hud: 0, labels: 0, ...extra };
+          const msA = [], msB = [];
+          let stA = null, stB = null;
+          for (let i = 0; i < rounds; i++) {
+            const order = i % 2 === 0 ? ['A', 'B'] : ['B', 'A'];
+            for (const which of order) {
+              if (which === 'B' && !idsB.has(p)) continue;
+              const r = await measureFps(browser, which === 'A' ? base : srvB.base, params, { secs, warmup });
+              if (r.problems.length) rep.check(`${p} / ${q} (${which}): clean`, false, r.problems.join(' | '));
+              (which === 'A' ? msA : msB).push(1000 / r.fps);
+              if (which === 'A') stA = r.stats; else stB = r.stats;
+            }
+          }
+          const mA = mean(msA), mB = msB.length ? mean(msB) : NaN;
+          let dm = NaN, se = NaN;
+          if (msB.length === msA.length) {
+            const d = msB.map((b, i) => b - msA[i]);
+            dm = mean(d);
+            se = Math.sqrt(d.reduce((s, x) => s + (x - dm) ** 2, 0) / Math.max(d.length - 1, 1) / d.length);
+          }
+          cells.push({ preset: p, quality: q, msA, msB, diffMs: dm, seMs: se, statsA: stA, statsB: stB });
+          const f = (x, d = 2) => (Number.isFinite(x) ? x.toFixed(d) : 'n/a');
+          rows.push([p, q, f(mA), f(1000 / mA, 1), f(mB), f(1000 / mB, 1), Number.isFinite(dm) ? `${dm >= 0 ? '+' : ''}${dm.toFixed(2)} ± ${se.toFixed(2)}` : 'n/a', f(mB / mA, 2), `${stA?.['near.drawn'] ?? '-'}`.split(' ')[0], `${stB?.['near.drawn'] ?? '-'}`.split(' ')[0]]);
+          console.log(`  ${p} / ${q}: A ${f(mA)} ms, B ${f(mB)} ms, B - A ${f(dm)} +- ${f(se)} ms`);
+        }
+      }
+    } finally {
+      await srvB.close();
+    }
+    console.log(`\nA = ${la}, B = ${lb}\n${table(['preset', 'quality', 'A ms', 'A fps', 'B ms', 'B fps', 'B - A ms', 'B / A ms', 'A drawn', 'B drawn'], rows)}`);
+    rep.data.compare = { a: la, b: lb, target: compare, rounds, secs, cells };
+    rep.data.size = `${args.num('w', 1920)}x${args.num('h', 1080)}`;
+    rep.check('compare table measured', cells.length === presets.length * quals.length, `${cells.length} cells`);
+    return;
+  }
   if (abOff || abOn) {
     const rounds = args.num('rounds', 6), settle = args.num('ab-settle', 400);
     for (const p of presets) {
