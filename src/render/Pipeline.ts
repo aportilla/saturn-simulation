@@ -294,6 +294,44 @@ export class Pipeline {
     c.wakes.update(f.t);
   }
 
+  /**
+   * The slab that holds the particle layer (sv_ringLod ringSlabHalfThickness: 4 sigma of the thickest class, the
+   * participating classes thickened by the packing ceiling) from this frame's local packing: RingLod.configure sizes it
+   * at the worst case near the camera (the texture's 3-sigma maximum of tau x M over +-5 km at the density cap) -- the
+   * modulation cache's current maximum of the particle optical depth tau0 tau_dyn / tau0 x M over the same +-5 km (the
+   * presence channel, ModClipmap.maxNear) is the exact one now, so the packing and the slab are no thicker than the
+   * layer is. A camera tens of metres above the A ring was "inside" the worst-case slab, and every ray marched from it.
+   * Falls back to the worst case while the cache cannot bound the region (localSlab = false: always).
+   */
+  private updateSlab(f: FrameState): void {
+    const L = this.ctx.lod;
+    if (L.version !== this.slabLodVersion) {
+      this.slabLodVersion = L.version;
+      this.slabWorst = L.slabK;
+    }
+    let k = this.slabWorst;
+    const p = this.localSlab && L.active
+      ? this.ctx.modClip.maxNear(this.presCam[0], this.presCam[1], 5000 + this.presCam[2], f.ring.anchorId, 1, f.t)
+      : null;
+    if (p !== null && L.pack[3] > 0.5) {
+      // (mirror of RingLod.configure's slabK: 4 sigma of the thickest class, the participating ones x the packing)
+      let sigAll = L.tauSub > 0 ? L.sigZFracSub : 0, sigP = 0;
+      for (let j = 0; j < L.tauFrac.length; j++) {
+        if (!(L.tauFrac[j] > 0)) continue;
+        sigAll = Math.max(sigAll, L.sigZFrac[j]);
+        if (L.partP[j] > 0) sigP = Math.max(sigP, L.sigZFrac[j]);
+      }
+      const tauNear = Math.max(L.tau, p * MOD_BOUND_MARGIN);
+      k = Math.min(k, Math.max(1.6, 4 * Math.max(sigAll, sigP * L.packM(tauNear, L.pack[2]))));
+    }
+    L.slabK = k;
+    L.uniforms.uLodSlabK.value = k;
+  }
+  /** the slab from the local packing (updateSlab); false: RingLod's worst case near the camera */
+  localSlab = true;
+  private slabLodVersion = -1;
+  private slabWorst = 1.6;
+
   render(f: FrameState): void {
     if (!this.ready) return;
     const c = this.ctx;
@@ -323,6 +361,7 @@ export class Pipeline {
         const p = c.modClip.maxNear(this.presCam[0], this.presCam[1], L.box[k] + 500 + this.presCam[2], f.ring.anchorId, 1, f.t);
         if (p !== null) pb[k] = Math.min(L.tauMax[k], Math.max(p * MOD_BOUND_MARGIN, L.tau));
       }
+      this.updateSlab(f);
     }
     for (const p of this.ordered()) {
       if (p && p.enabled) p.update?.(f, c);

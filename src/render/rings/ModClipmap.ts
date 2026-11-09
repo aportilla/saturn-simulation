@@ -1,40 +1,33 @@
-// Camera-centred clipmap of the parts of sv_ringStructure that cost a propeller enumeration per lookup: the 2-D
-// optical-depth modulation (sub-km texture x propellers), (M, self-gravity-wake strength factor) = ringStructureMod(aL,
-// dth, fp).xz, and the propellers' relief (rsReliefPropellers: height, d/da', d/dS) with the sun's visibility after
-// their relief shadows on the local mid-plane (rpReliefSunVis at z0 there), on a Lagrangian polar grid (aL = a' - r0,
-// S = r0 dth). Read by sv_ringModClip's rsModCached / rsReliefPropCached (GLSL; documentation of the layout and the
-// prefilter there): the near field's presence test and particle heights (nearUpdate.glsl) and the march's modulation,
-// relief and relief shadows near the camera (rlMarch.glsl). Owned by the Pipeline: updated and rendered every frame
-// after the 2-D structure and the local LOD, before any pass renders.
+// Camera-centred clipmap of the 2-D optical-depth modulation of sv_ringStructure (sub-km texture x propellers):
+// (M, self-gravity-wake strength factor) = ringStructureMod(aL, dth, fp).xz on a Lagrangian polar grid (aL = a' - r0,
+// S = r0 dth). Read by sv_ringModClip's rsModCached (GLSL; documentation of the layout and the prefilter there): the
+// near field's presence test (nearUpdate.glsl) and the march's modulation near the camera (rlMarch.glsl). Owned by the
+// Pipeline: updated and rendered every frame after the 2-D structure and the local LOD, before any pass renders.
 //
 // Level k: MC_NR x MC_NS texels of dr_k x MC_ASPECT dr_k, dr_k = d0 2^k (d0 = 1 m), centred on the camera's Lagrangian
 // position (snapped to the level's texels, so texel centres are fixed in the ring frame), coverage +-MC_NR/2 dr_k;
 // levels are added until they cover the largest near-field particle box (RingLod.maxBox) or MC_LEVELS. Stacked
-// vertically in one RGBA32F atlas (LINEAR: bilinear lookups; one sampler for its readers -- the ring layer's program is
-// at 15 of the 16 texture units): rows [k MC_NS, (k + 1) MC_NS) = (M, wake factor, tau0 x M for maxNear, -), rows
-// [(MC_LEVELS + k) MC_NS, ...) = (relief height, d/da', d/dS, sun visibility). A level is rendered with two outputs into
-// a one-level scratch target (the propellers enumerated once per texel, for M and their relief together:
-// sv_ringPropellers mode 3) and copied into both halves.
+// vertically in one RGBA32F atlas (LINEAR: bilinear lookups): (M, wake factor, tau0 tau_dyn / tau0 x M for maxNear, -).
 //
 // Refresh (incremental, like the wake clipmap): a level is re-rendered when it is invalid, the ring frame was
 // re-anchored, the camera moved by > 1/16 of its coverage, or the pattern drifted by > 1/8 of an azimuthal texel since
 // it was rendered -- material at radius offset x moves along the ring frame at 1.5 Omega x (the texture is carried by
 // the material: up to the level's edge; a propeller's structure moves with its moonlet, up to MC_PROP_REACH beyond
-// it) -- or, where the propellers' relief casts shadows, the Sun's direction turned in the ring frame (Omega) by a
-// quarter of a radial texel at the longest shadow's end -- at most `maxPerFrame` levels per frame (invalid /
-// anchor-changed first, then finest first). Until a level is valid its points are evaluated directly (exact). Each level
-// keeps its own centre, so a level not refreshed this frame stays self-consistent. The model's switches (texture,
-// propellers, relief scale, the Sun's side of the rings) invalidate every level.
+// it) -- at most `maxPerFrame` levels per frame (invalid / anchor-changed first, then finest first). Until a level is
+// valid its points are evaluated directly (exact). Each level keeps its own centre, so a level not refreshed this frame
+// stays self-consistent. The model's switches (texture, propellers, the tau_dyn table) invalidate every level.
 //
 // Presence bound (maxNear): after any refresh, a reduction pass writes the maximum of M over every block of
 // MC_BLOCK x MC_BLOCK texels of every level, dilated by one texel (a bilinear lookup inside a block reaches one texel
 // beyond it), and reads it back asynchronously (pixel-pack buffer + fence). The CPU bounds M over a square around the
 // camera's Lagrangian position by the blocks overlapping it, in every level valid at the read-back -- the values the
 // near field's presence test actually uses (texture x propellers jointly, at each level's prefilter) -- and likewise
-// tau0 x M jointly (a third channel: the largest tau0 over each texel's support x its M). The near field's slots are
-// allocated at max tau0 x the modulation's bound for all times (the texture's 3-sigma clamp: 1.43 in the B-ring core;
-// the local maximum varies by +-15 % within a day and a re-fit would re-seed the particles), and the update pass skips
-// the slots whose presence threshold lies above this frame's local maximum unevaluated (Pipeline: ctx.presenceBound).
+// the presence test's whole optical depth (a third channel: the largest particle optical depth tau0 tau_dyn / tau0 over
+// each texel's support x its M). The near field's slots are allocated at max tau_dyn x the modulation's bound for all
+// times (the texture's 3-sigma clamp: 1.43 in the B-ring core; the local maximum varies by +-15 % within a day and a
+// re-fit would re-seed the particles); the update pass skips the slots whose presence threshold lies above this frame's
+// local maximum unevaluated (Pipeline: ctx.presenceBound), and the march's slab follows the local packing (Pipeline
+// updateSlab).
 import {
   ClampToEdgeWrapping, FloatType, LinearFilter, NearestFilter, RGBAFormat, Vector4, WebGLRenderTarget, type WebGLRenderer,
 } from 'three';
@@ -57,14 +50,9 @@ export const MC_D0 = 1;
 const MC_PROP_REACH = 4700;
 /** texels per side of a block of the maximum map (maxNear) */
 export const MC_BLOCK = 16;
-/**
- * longest relief shadow (m) the refresh follows as the Sun turns in the ring frame (near equinox the giants' shadows
- * reach ~100 km: the levels would refresh every frame; beyond this the shadow's far end lags by up to a few texels)
- */
-const MC_SHADOW_MAX = 20e3;
 const MC_BR = MC_NR / MC_BLOCK, MC_BS = MC_NS / MC_BLOCK;
 
-// maxima of M and of P = tau0 x M over each block (+ a one-texel ring) of each level; one fragment per block
+// maxima of M and of P = tau0 tau_dyn / tau0 x M over each block (+ a one-texel ring) of each level; one fragment per block
 const MAX_FRAG = /* glsl */ `
 precision highp float;
 precision highp int;
@@ -84,21 +72,10 @@ void main() {
   outColor = vec4(m, 0.0, 1.0);
 }`;
 
-// copy of one level's rows of the scratch target into the atlas (rows uRow0 ..: the viewport)
-const COPY_FRAG = /* glsl */ `
-precision highp float;
-precision highp int;
-precision highp sampler2D;
-uniform sampler2D tSrc;
-uniform int uRow0;
-layout(location = 0) out vec4 outColor;
-void main() { outColor = texelFetch(tSrc, ivec2(gl_FragCoord.x, int(gl_FragCoord.y) - uRow0), 0); }`;
-
 const FRAG = /* glsl */ `
 ${SV_HEADER_ALL}
-uniform vec4 uMcB;   // level being built: (centre aL, centre S, dr, -)
-layout(location = 0) out vec4 outMod;
-layout(location = 1) out vec4 outRel;
+uniform vec4 uMcB;   // level being built: (centre aL, centre S, dr, first atlas row)
+layout(location = 0) out vec4 outColor;
 // the largest particle optical depth tau0 tau_dyn(tau0) / tau0 (sv_ringLod lodTauDyn; tau0: the level-0 profile at the
 // Lagrangian radius, as the presence test reads it) over [aL - dr, aL + dr]: the profile is piecewise linear and tau
 // lodTauDyn(tau) increases with tau, so at the interval's ends or at an interior node
@@ -116,41 +93,14 @@ float mcTauMaxSupport(float aL, float dr) {
   }
   return m;
 }
-// Sun visibility after the propellers' relief shadows at the local mid-plane (aL, dth) at footprint fp: the geometry of
-// sv_ringReliefShade ringReliefSunVis (its propeller term, rpReliefSunVis, at the point's own height z0 -- the moonlets'
-// zeta + every relief source, the propellers' from the enumeration this texel already did: rsEval reads it back)
-float mcPropSunVis(float aL, float dth, float fp) {
-  if (uRrOn < 0.5 && uRsOn < 0.5) return 1.0;
-  float sz = uSunDir.z;
-  float sg = sz >= 0.0 ? 1.0 : -1.0;
-  vec2 sh = vec2(dot(uSunDir, uRingER), dot(uSunDir, uRingEPhi));
-  float shl = length(sh);
-  if (shl < 1e-6) return 1.0;
-  float tanB = abs(sz) / shl;
-  float c = cos(dth), s = sin(dth);
-  float cr = (sh.x * c + sh.y * s) / shl, ct = (-sh.x * s + sh.y * c) / shl;
-  vec3 r, z;
-  rsEval(aL, dth, fp, true, r, z);
-  return rpReliefSunVis(aL, dth, sg * z.x, cr, ct, tanB, uSunAngRadius, sg, fp);
-}
 void main() {
   float dr = uMcB.z;
   float aL = uMcB.x + (gl_FragCoord.x - 0.5 * ${MC_NR}.0) * dr;
-  float S = uMcB.y + (gl_FragCoord.y - 0.5 * ${MC_NS}.0) * dr * ${MC_ASPECT}.0;
-  float dth = S / uRingR0;
-  // (M, -, wake factor) prefiltered at the level's radial texel, with the propellers' relief from the same enumeration
-  // (sv_ringPropellers mode 3); P = the largest tau0 this texel's lookups can meet x M (the presence bound's joint
-  // maximum, maxNear)
-  gRpAlsoRelief = true;
-  vec3 m = ringStructureMod(aL, dth, dr);
-  gRpAlsoRelief = false;
-  outMod = vec4(m.x, m.z, mcTauMaxSupport(aL, dr) * m.x, 1.0);
-  vec4 rel = vec4(0.0, 0.0, 0.0, 1.0);
-  if (rpReliefOn()) {
-    rel.xyz = rsReliefPropellers(aL, dth, dr);
-    rel.w = mcPropSunVis(aL, dth, dr);
-  }
-  outRel = rel;
+  float S = uMcB.y + (gl_FragCoord.y - uMcB.w - 0.5 * ${MC_NS}.0) * dr * ${MC_ASPECT}.0;
+  // (M, -, wake factor) prefiltered at the level's radial texel; P = the largest particle optical depth this texel's
+  // lookups can meet x M (the presence bound's joint maximum, maxNear)
+  vec3 m = ringStructureMod(aL, S / uRingR0, dr);
+  outColor = vec4(m.x, m.z, mcTauMaxSupport(aL, dr) * m.x, 1.0);
 }`;
 
 interface LevelState {
@@ -163,13 +113,9 @@ interface LevelState {
 }
 
 export class ModClipmap {
-  /** the atlas: MC_NR x (2 MC_LEVELS MC_NS), the modulation's levels then the relief's (header) */
   readonly rt: WebGLRenderTarget;
-  /** one level, two outputs (modulation, relief): the build's target, copied into the atlas */
-  private readonly buildRT: WebGLRenderTarget;
-  private readonly copyFs: FullscreenPass;
   /** sv_ringModClip uniforms (shared objects: spread into the shared set before the passes' materials are made) */
-  readonly uniforms: { uMcTex: { value: unknown }; uMcLev: { value: Vector4[] }; uMcInfo: { value: Vector4 }; uMcRelOn: { value: number } };
+  readonly uniforms: { uMcTex: { value: unknown }; uMcLev: { value: Vector4[] }; uMcInfo: { value: Vector4 } };
   /** false: no cache (every lookup evaluates the modulation directly, no presence bound: maxNear returns null) */
   enabled = true;
   /**
@@ -177,8 +123,6 @@ export class ModClipmap {
    * presence bound then: the direct values at the particles' footprint 0 exceed a coarse level's prefiltered maxima)
    */
   useInShaders = true;
-  /** false: the shaders evaluate the propellers' relief and its shadows directly (A/B tests; the modulation stays cached) */
-  reliefInShaders = true;
   maxPerFrame = 3;
   levelCount = 0;
   /** levels re-rendered in the last frame (stats) */
@@ -207,7 +151,7 @@ export class ModClipmap {
       type: FloatType, format: RGBAFormat, minFilter: NearestFilter, magFilter: NearestFilter,
       depthBuffer: false, stencilBuffer: false, generateMipmaps: false,
     });
-    this.rt = new WebGLRenderTarget(MC_NR, 2 * MC_NS * MC_LEVELS, {
+    this.rt = new WebGLRenderTarget(MC_NR, MC_NS * MC_LEVELS, {
       type: FloatType,
       format: RGBAFormat,
       minFilter: LinearFilter,
@@ -218,11 +162,6 @@ export class ModClipmap {
       stencilBuffer: false,
       generateMipmaps: false,
     });
-    // [0] the modulation, [1] the propellers' relief and its shadows
-    this.buildRT = new WebGLRenderTarget(MC_NR, MC_NS, {
-      count: 2, type: FloatType, format: RGBAFormat, minFilter: NearestFilter, magFilter: NearestFilter,
-      depthBuffer: false, stencilBuffer: false, generateMipmaps: false,
-    });
     for (let k = 0; k < MC_LEVELS; k++) {
       this.st.push({ cr: 0, cs: 0, d: 0, t: -1e30, anchorId: -1, valid: false });
       this.want.push({ cr: 0, cs: 0, d: 1 });
@@ -231,16 +170,15 @@ export class ModClipmap {
       uMcTex: { value: this.rt.texture },
       uMcLev: { value: Array.from({ length: MC_LEVELS }, () => new Vector4(0, 0, 1, 0)) },
       uMcInfo: { value: new Vector4(0, MC_NR, MC_NS, MC_ASPECT) },
-      uMcRelOn: { value: 1 },
     };
     this.fs = new FullscreenPass({ fragmentShader: FRAG, uniforms: { ...shared, uMcB: { value: new Vector4() } } });
-    this.copyFs = new FullscreenPass({ fragmentShader: COPY_FRAG, uniforms: { tSrc: { value: null }, uRow0: { value: 0 } } });
     this.maxFs = new FullscreenPass({ fragmentShader: MAX_FRAG, uniforms: { tMc: { value: this.rt.texture } } });
   }
 
   /**
    * Per frame, after RingStructure.update and the local LOD: the level layout around the camera's Lagrangian position
-   * covering `reach` (m; the largest particle box + margins; 0 = no cache needed) and the levels to refresh.
+   * covering `reach` (m; the largest particle box + margins; 0 = no cache needed) and the levels to refresh. tauDynKey:
+   * a checksum of the anchor zone's tau_dyn table (sv_ringLod uLodTauDyn), which the joint channel holds.
    */
   update(f: FrameState, structure: RingStructure, reach: number, propellersNear: boolean, tauDynKey = 0): void {
     this.todo.length = 0;
@@ -250,10 +188,8 @@ export class ModClipmap {
       this.uniforms.uMcInfo.value.x = 0;
       return;
     }
-    // the model's switches (tests toggle them), the Sun's side of the rings (the propellers' relief rises toward it) and
-    // the tau_dyn table of the joint channel (tauDynKey: a checksum of uLodTauDyn): any change invalidates the cache
-    const P = structure.propellers;
-    const key = `${structure.texture.amp}|${P.scale}|${P.reliefScale}|${structure.reliefScale}|${f.sunDir.z >= 0 ? 1 : -1}|${tauDynKey}`;
+    // the model's switches (tests toggle them) and the tau_dyn table: any change invalidates the cache
+    const key = `${structure.texture.amp}|${structure.propellers.scale}|${tauDynKey}`;
     if (key !== this.modelKey) {
       this.modelKey = key;
       for (const s of this.st) s.valid = false;
@@ -280,20 +216,13 @@ export class ModClipmap {
     this.wantT = f.t;
     this.wantAnchor = f.ring.anchorId;
     const om = Math.max(f.ring.omega, 1e-9);
-    // the propellers' relief shadows near the camera: the longest one (their largest height there / the Sun's elevation
-    // tangent, <= MC_SHADOW_MAX) turns with the Sun's direction in the ring frame (at Omega)
-    const sh = Math.hypot(f.sunDir.x, f.sunDir.y), tanB = Math.abs(f.sunDir.z) / Math.max(sh, 1e-9);
-    const zRel = propellersNear && P.scale > 0 && P.reliefScale !== 0 ? Math.abs(P.uniforms.uRpTF.value.w) : 0;
-    const lShadow = zRel > 0 ? Math.min(zRel / Math.max(tanB, 1e-6), MC_SHADOW_MAX) : 0;
     for (let k = 0; k < n; k++) {
       const s = this.st[k], w = this.want[k];
       const cover = 0.5 * MC_NR * w.d;
       // pattern drift along the orbit at the level's farthest point (texture: the material's shear; propellers: their
-      // moonlets' rate, up to MC_PROP_REACH beyond the level) -> stale after 1/8 of an azimuthal texel; the shadows'
-      // ends after a quarter of a radial texel
+      // moonlets' rate, up to MC_PROP_REACH beyond the level) -> stale after 1/8 of an azimuthal texel
       const rate = 1.5 * om * (Math.abs(aLc) + cover + (propellersNear ? MC_PROP_REACH : 0));
-      const tDrift = (this.tDrift[k] = (0.125 * w.d * MC_ASPECT) / rate);
-      const tStale = lShadow > 0 ? Math.min(tDrift, (0.25 * w.d) / (lShadow * om)) : tDrift;
+      const tStale = (this.tDrift[k] = (0.125 * w.d * MC_ASPECT) / rate);
       const dirty = !s.valid || s.anchorId !== this.wantAnchor || s.d !== w.d ||
         Math.abs(s.cr - w.cr) > cover / 16 || Math.abs(s.cs - w.cs) > cover / 16 || Math.abs(f.t - s.t) > tStale;
       if (dirty) this.todo.push(k);
@@ -312,7 +241,6 @@ export class ModClipmap {
       lev[k].set(s.cr, s.cs, 1 / (s.d || 1), usable ? 1 : 0);
     }
     this.uniforms.uMcInfo.value.x = this.useInShaders ? n : 0;
-    this.uniforms.uMcRelOn.value = this.reliefInShaders ? 1 : 0;
   }
 
   /** Re-render the levels chosen by update() (before any pass renders); block maxima of what changed. */
@@ -325,29 +253,22 @@ export class ModClipmap {
   }
 
   private renderLevels(renderer: WebGLRenderer): void {
-    const u = this.fs.material.uniforms, cu = this.copyFs.material.uniforms;
+    const u = this.fs.material.uniforms;
     const lev = this.uniforms.uMcLev.value;
-    this.rt.scissorTest = true;
     for (const k of this.todo) {
       const w = this.want[k];
-      (u.uMcB.value as Vector4).set(w.cr, w.cs, w.d, 0);
-      this.fs.render(renderer, this.buildRT);
-      // the two outputs into the atlas: the modulation's level k, the relief's level k
-      for (let h = 0; h < 2; h++) {
-        const row0 = (h * MC_LEVELS + k) * MC_NS;
-        cu.tSrc.value = this.buildRT.textures[h];
-        cu.uRow0.value = row0;
-        this.rt.viewport.set(0, row0, MC_NR, MC_NS);
-        this.rt.scissor.set(0, row0, MC_NR, MC_NS);
-        this.copyFs.render(renderer, this.rt);
-      }
+      (u.uMcB.value as Vector4).set(w.cr, w.cs, w.d, k * MC_NS);
+      this.rt.viewport.set(0, k * MC_NS, MC_NR, MC_NS);
+      this.rt.scissor.set(0, k * MC_NS, MC_NR, MC_NS);
+      this.rt.scissorTest = true;
+      this.fs.render(renderer, this.rt);
       const s = this.st[k];
       s.cr = w.cr; s.cs = w.cs; s.d = w.d; s.t = this.wantT; s.anchorId = this.wantAnchor; s.valid = true;
       lev[k].set(s.cr, s.cs, 1 / s.d, 1);
       this.rendered++;
     }
     this.rt.scissorTest = false;
-    this.rt.viewport.set(0, 0, MC_NR, 2 * MC_NS * MC_LEVELS);
+    this.rt.viewport.set(0, 0, MC_NR, MC_NS * MC_LEVELS);
     this.maxDirty = true;
   }
 
@@ -387,14 +308,15 @@ export class ModClipmap {
   /**
    * Upper bound over the square |aL - aLc| <= hw, |S - sc| <= hw (Lagrangian polar offsets, m) of the cached M (which
    * = 0: the values rsModCached returns -- bilinear lookups and level blends never exceed the texels they combine) or
-   * of tau0 x M, the presence test's tau (which = 1: each texel holds the largest tau0 over its +-dr support x its M;
-   * at any point tau0 is at most every surrounding texel's support maximum and M at most the largest surrounding M, so
-   * the product is at most that texel's value), from the last read-back of the block maxima; null when nothing usable
-   * was read back yet, the ring frame was re-anchored since, or no valid level covered the whole square then (points
-   * outside every level are evaluated directly: unbounded here). With the current time t (after render(): the levels
-   * the shaders read this frame) also null unless the read-back describes them: the same usable levels at the same
-   * centres, re-rendered since only for the pattern's drift, by at most half an azimuthal texel (the blocks' one-texel
-   * dilation) -- so not while the camera moves across a level's recentring step, or at high time warp.
+   * of the presence test's whole optical depth (which = 1: each texel holds the largest tau0 tau_dyn / tau0 over its +-dr
+   * support x its M; at any point that is at most every surrounding texel's support maximum and M at most the largest
+   * surrounding M, so the product is at most that texel's value), from the last read-back of the block maxima; null
+   * when nothing usable was read back yet, the ring frame was re-anchored since, or no valid level covered the whole
+   * square then (points outside every level are evaluated directly: unbounded here). With the current time t (after
+   * render(): the levels the shaders read this frame) also null unless the read-back describes them: the same usable
+   * levels at the same centres, re-rendered since only for the pattern's drift, by at most half an azimuthal texel (the
+   * blocks' one-texel dilation) -- so not while the camera moves across a level's recentring step, or at high time warp
+   * -- and while the shaders evaluate the modulation directly (useInShaders off).
    */
   maxNear(aLc: number, sc: number, hw: number, anchorId: number, which: 0 | 1 = 0, t?: number): number | null {
     const S = this.maxState;
@@ -437,9 +359,7 @@ export class ModClipmap {
   dispose(): void {
     this.maxPending = null;
     this.rt.dispose();
-    this.buildRT.dispose();
     this.fs.dispose();
-    this.copyFs.dispose();
     this.maxRT.dispose();
     this.maxFs.dispose();
   }

@@ -351,13 +351,7 @@ void rlMarch(vec3 rd, float sA, float sB, float jitter, out vec3 Lout, out float
     float dCache = max(RL_RELIEF_CACHE, 0.5 * (abs(zr0) - 3.0 * S.H));
     if (relOn && dot(l.xy - pe, l.xy - pe) > dCache * dCache) {
       vec3 rr, zz;
-      // the propellers' relief and its shadows from the cache around the camera where the step's footprint and the cache's
-      // texels are both <= RL_MC_FP (sv_ringModClip: their enumeration done once per texel), the other sources here
-      vec4 zp;
-      bool pc = fpR * Jst <= RL_MC_FP && rsReliefPropCached(drL, uRingR0 * dthL, RL_MC_FP, zp);
-      gRsPropRelief = !pc;
       rsEval(drL, dthL, fpR, true, rr, zz);
-      if (pc) zz += zp.xyz;
       z0e = zz.x;
       g0e = vec2(zz.y * Jst, zz.z);
       pe = l.xy;
@@ -373,10 +367,9 @@ void rlMarch(vec3 rd, float sA, float sB, float jitter, out vec3 Lout, out float
       zr0 = l0.z - (z0e + dot(g0e, l0.xy - pe));
       // the relief's shadows where there is material to shadow (within 4 H of the local mid-plane)
       if (length(l.xy - pVis) > 30.0 && abs(l.z - z0e) < 4.0 * S.H) {
-        relVis = ringReliefSunVis(drL, dthL, z0e, tau0 * Jst, fpR) * (pc ? zp.w : 1.0);
+        relVis = ringReliefSunVis(drL, dthL, z0e, tau0 * Jst, fpR);
         pVis = l.xy;
       }
-      gRsPropRelief = true;
     }
     float zrE = relOn ? l0.z + d.z * ds - (z0e + dot(g0e, l0.xy + d.xy * ds - pe)) : l0.z + d.z * ds;
     float zrM = relOn ? l.z - (z0e + dot(g0e, l.xy - pe)) : l.z;

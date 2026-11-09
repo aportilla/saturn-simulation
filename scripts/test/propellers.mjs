@@ -506,7 +506,7 @@ await withHarness('propellers', { usage: 'node scripts/test/propellers.mjs [--ba
           if (!near || !mc) return { error: 'near field / modClip not found' };
           const frames = (n) => new Promise((r) => { let k = 0; const f = () => (++k >= n ? r() : requestAnimationFrame(f)); requestAnimationFrame(f); });
           const NR = 512, NS = 128, AS = 4, L = 9;
-          const atlas = new Float32Array(NR * NS * L * 4);   // (M, wake factor, tau0 x M, -)
+          const atlas = new Float32Array(NR * NS * L * 4);   // (M, wake factor, tau0 tau_dyn / tau0 x M, -)
           sv.renderer.readRenderTargetPixels(mc.rt, 0, 0, NR, NS * L, atlas);
           const lev = mc.uniforms.uMcLev.value, n = mc.uniforms.uMcInfo.value.x, r0 = sv.frame.ring.r0;
           const levels = [];
@@ -520,8 +520,9 @@ await withHarness('propellers', { usage: 'node scripts/test/propellers.mjs [--ba
               const i = Math.floor(rnd() * NR), j = Math.floor(rnd() * NS);
               const aL = lev[k].x + (i + 0.5 - NR / 2) * d, S = lev[k].y + (j + 0.5 - NS / 2) * d * AS;
               const g = atlas[((k * NS + j) * NR + i) * 4], gp = atlas[((k * NS + j) * NR + i) * 4 + 2];
-              // the joint channel: (largest tau0 over the texel's support) x M >= tau0 at the centre x M
-              const t0 = sv.pipeline.ctx.profile.tauAtKm((r0 + aL) / 1000);
+              // the joint channel: (largest particle optical depth tau0 tau_dyn(tau0) / tau0 over the texel's support) x M
+              // >= the same at the centre x M (the presence test's tau)
+              const tp = sv.pipeline.ctx.profile.tauAtKm((r0 + aL) / 1000), t0 = tp * sv.pipeline.ctx.lod.tauDynFactor(tp);
               if (gp < t0 * g * (1 - 1e-4) - 1e-6) pLow++;
               const c1 = st.tauModAt(aL, S / r0, d)[0], c0 = st.tauModAt(aL, S / r0, 0)[0];
               e1 += (g - c1) ** 2; m1 = Math.max(m1, Math.abs(g - c1)); e0 += (g - c0) ** 2; m0 = Math.max(m0, Math.abs(g - c0)); cnt++;
@@ -562,7 +563,7 @@ await withHarness('propellers', { usage: 'node scripts/test/propellers.mjs [--ba
         rep.range(`cache ${preset}: max |M cache - M CPU (at the level's prefilter)| over the levels`, max1, 0, 4e-3);
         rep.range(`cache ${preset}: rms of the same (worst level)`, rms1, 0, 1e-3);
         rep.range(`cache ${preset}: levels with texels <= 4 m: max |M cache - M CPU (fp = 0)|`, max0, 0, 4e-3);
-        rep.check(`cache ${preset}: the joint channel (allocation bound) >= tau0 x M at every sampled texel`, res.levels.every((l) => l.pLow === 0), res.levels.map((l) => l.pLow).join(","));
+        rep.check(`cache ${preset}: the joint channel (presence bound) >= tau_dyn x M at every sampled texel`, res.levels.every((l) => l.pLow === 0), res.levels.map((l) => l.pLow).join(","));
         rep.range(`cache ${preset}: drawn particles whose presence differs from the direct evaluation`, res.flipD / Math.max(res.drawn, 1), 0, 0.02);
         for (const l of res.levels) rows.push([preset, l.k, l.d, l.rms1.toExponential(2), l.max1.toExponential(2), l.rms0.toExponential(2), l.max0.toExponential(2)]);
         console.log(`  cache ${preset}: ${res.stats}; presence flips (cache vs direct): ${res.flip} of ${res.present} present, ${res.flipD} of ${res.drawn} drawn`);

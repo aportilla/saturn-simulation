@@ -161,12 +161,9 @@ void main() {
   }
   float tauM = rs.tau * lodTauDyn(rs.tau) * (1.0 - rs.dust) * smod.x;
   if (uPr * uTauBoxMax >= tauM) { o = vec4(0.0); return; }
-  // the propellers' relief at the guiding centre (present particles only): from the cache where it covers the point (the
-  // level the presence test read: exact to its texels, like M), else its own enumeration (or the one above: mode 3)
-  if (rpZ) {
-    vec4 zr;
-    z0p += rsReliefPropCached(aL, uRingR0 * dthP, 1e30, zr) ? zr.x : rsReliefPropellers(aL, dthP, 0.0).x;
-  }
+  // the propellers' relief at the guiding centre (present particles only; shadow casters outside the view: its own
+  // enumeration -- their heights stay exact)
+  if (rpZ) z0p += rsReliefPropellers(aL, dthP, 0.0).x;
 
   // --- self-gravity wakes (Eulerian field) for the participating particles, faded out at the particle's (Lagrangian)
   // box edge, where it is too small to be drawn, and absent in a propeller's stirred material (sv_ringStructure wake
