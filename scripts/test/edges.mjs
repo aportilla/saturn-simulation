@@ -8,7 +8,8 @@
 //      floor <= 0.015, dusty Encke-gap ringlets <= 0.025; the old Eulerian lookup put tau ~ 0.5 A-ring slivers along
 //      the moonlet's orbit);
 //   2. ring material: tau_rendered / (tau0(a') J) away from the edges, median 1 +- 0.05 (+- 0.15 for km footprints,
-//      which prefilter the structured B ring);
+//      which prefilter the structured B ring); tau0 here is the medium's (RingProfile.mediumTauAtKm: tau_iso with the
+//      wakes off = the photometric tau / g1, the spin-aligned classes' normal cross-section; ring-physics.md 10.12);
 //   3. edge displacement: per azimuth bin the rendered edge (half-level crossing) minus the unperturbed edge radius
 //      vs the model xi(a'_edge, theta): RMS <= max(0.25 km, 1.5 footprints), max <= 0.75 km + 2 footprints, and the
 //      range (peak-to-peak) of the rendered displacement within 0.85..1.15 of the model's where that is >=
@@ -146,7 +147,9 @@ await withHarness('edges', { usage: 'node scripts/test/edges.mjs [--base URL] [-
               gapExcess = Math.max(gapExcess, tau - tauKm(aL / 1e3) * sp.J);
             }
             if (!inGap && dEdge > dEdgeMin) {
-              const exp = tauKm(aL / 1e3) * sp.J;
+              // the rendered tau is the medium's (tau_iso without wakes: tau / g1, the spin-aligned classes' normal
+              // cross-section; RingProfile.mediumTauAtKm), the edge model's level the photometric profile's
+              const exp = (prof.mediumTauAtKm ? prof.mediumTauAtKm(aL / 1e3, sv.frame.settings.wakes) : tauKm(aL / 1e3)) * sp.J;
               if (exp > 0.1) ratios.push(tau / exp);
             }
             samples.push([r, th, tau]);

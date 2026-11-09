@@ -57,8 +57,31 @@
 // Kinematics (exact linear Hill-frame solution, see NearFieldPass): guiding centers shear at
 // v_y = -q Omega x; epicycles with Rayleigh amplitude of scale sigX[k] = EPI_RATIO * sigZ[k] (radial
 // velocity dispersion c_r = kappa*sigX, c_r/c_z = EPI_RATIO), vertical oscillation of Rayleigh amplitude
-// scale sigZ[k] = sigZFrac[k]*H (so z is Gaussian with std sigZ, matching ringExtinction()).
+// scale sigZ[k] = sigZFrac[k]*H (so z is Gaussian with std sigZ, matching the medium's vertical structure).
+// sigZFrac follows the zone's vertical law (ringRegions.ts sigZLaw, N-body calibrated: docs/ring-physics.md 10.12).
+//
+// SIZE RULES (src/rings/ringDynamics.ts, docs/ring-physics.md 10.12), per class k, shared with the GLSL:
+//   partP[k]   participation in the self-gravity wakes: a particle of class k follows the wake map with probability
+//              partP[k] (mixture), so the class's density is 1 + partP[k] (D - 1) and the medium's unresolved density
+//              1 + pbar_unres (D - 1) is exact (channels of the ring layer's vertical-structure LUT)
+//   alignF[k]  share in the spin-aligned population: the class's mean projected area along a direction d is
+//              pi a^2 (1 + alignF[k] G(mu_d) [+ tidal share T(mu_d) cos 2psi]), G / T from the CPU mirror of the shapes
+//   packing    the participating particles are thickened by m = max(1, tauDyn ffP min(D, Dcap) / (0.65 - tauDyn ffNP))
+//              (mid-plane filling <= 0.65), the same in the near field (vertical amplitude) and the medium (profile)
+//   tauDyn     the particle population's optical depth (tau_dyn / tau_profile from the wake statistics, WakeStats.ts):
+//              presence and the medium follow it; tauDynFactor(tau) is the anchor zone's table (uLodTauDyn)
 import type { RingLocal } from './RingProfile';
+import {
+  anisotropyTables, ANISO_N, crossSectionMean, hillParameter, midplaneFilling, PACKING_MAX, participation, spinAlignedShare,
+  tidalShare,
+} from './ringDynamics';
+import { densityQuantileHigh } from './WakeStats';
+import { sigZFracLegacy } from './ringRegions';
+
+/** tau nodes of the anchor's tau_dyn / tau_profile table (uLodTauDyn): log-spaced over [LOD_DYN_LO, LOD_DYN_HI] */
+export const LOD_DYN_N = 32;
+export const LOD_DYN_LO = 0.005;
+export const LOD_DYN_HI = 20;
 
 export const LOD_CLASSES = 14;
 export const LOD_A0 = 0.001; // m
@@ -76,6 +99,8 @@ export const EPI_RATIO = 1.5;
 export const LOD_PIECES = 6;
 
 export interface LodOptions {
+  /** self-gravity wakes on (settings.wakes): the particle population's optical depth is tauDyn, else tauIso */
+  wakes: boolean;
   /** display (canvas) radians per pixel */
   pixelAngle: number;
   /** cap on the particle slots over all classes (memory / per-frame update cost); a binding cap is reported */
@@ -89,6 +114,7 @@ export interface LodOptions {
 }
 
 export const DEFAULT_LOD_OPTIONS: LodOptions = {
+  wakes: true,
   pixelAngle: 1e-3,
   maxSlots: 12_000_000,
   rMax: 60_000,
@@ -210,10 +236,30 @@ export class RingLod {
   /** share of tau in particles below the smallest class (never drawn) and its vertical std-dev / H */
   tauSub = 0;
   sigZFracSub = 0.4;
-  /** column-centroid table of the total vertical profile (uLodColC; see columnCentroidTable) */
+  /** per class (vec4-packed, k = 4i + c): participation in the wakes and share in the spin-aligned population */
+  readonly partP = new Float32Array(16);
+  readonly alignF = new Float32Array(16);
+  /** tau-weighted participation / aligned share of the whole column (sub-class particles: 0) */
+  pbarTot = 1;
+  fAlignTot = 0;
+  /** anisotropy of the aligned population (vec4-packed): G at mu = i / (ANISO_N - 1), then T at the same nodes */
+  readonly aniso = new Float32Array(20);
+  /** tidally locked share of the aligned population (Hill-parameter criterion; 0 in every main-ring zone) */
+  tidal = 0;
+  /** packing ceiling: (participating / other particles' mid-plane filling per unit tau_dyn, density cap, 1 = can bind) */
+  readonly pack = new Float32Array(4);
+  /** slab half-thickness in units of H (4 sigma of the thickest class, x the packing ceiling's largest thickening) */
+  slabK = 1.6;
+  /** tau_dyn / tau_profile of the anchor's zone at LOD_DYN_N log-spaced tau nodes (uLodTauDyn) */
+  readonly dynTab = new Float32Array(LOD_DYN_N);
+  wakesOn = true;
+  /** column-centroid table of the PARTICIPATING column (the wake density averaged along paths; uLodColC) */
   readonly colC = new Float32Array(LOD_COLQ_N + 1);
   private colComps: number[] = [];
+  /** the particle population's optical depth at the anchor (tauDyn with wakes, tauIso without) */
   tau = 0;
+  /** photometric (profile) optical depth at the anchor */
+  tauPhot = 0;
   tauBoxMax = 0;
   H = 10;
   q = 3;
@@ -245,14 +291,24 @@ export class RingLod {
     uLodARange: { value: new Float32Array(LOD_CLASSES * 2) },
     uLodQ: { value: 3 },
     uLodColC: { value: this.colC },
+    uLodClassP: { value: this.partP },
+    uLodClassF: { value: this.alignF },
+    uLodAniso: { value: this.aniso },
+    // (tidal share, tau-weighted participation of the column, aligned share of the column, 0)
+    uLodTidal: { value: new Float32Array(4) },
+    uLodPack: { value: this.pack },
+    uLodSlabK: { value: 1.6 },
+    uLodTauDyn: { value: this.dynTab },
   };
 
-  /** Rebuild colC when the vertical profile changed (same mixture as ringLayerTauBeyond, in units of H). */
+  /** Rebuild colC when the participating column's vertical profile changed (in units of H). */
   private updateColumnTable(): void {
     const H = Math.max(this.H, 1e-3);
     const c: number[] = [];
-    for (let k = 0; k < LOD_CLASSES; k++) if (this.tauFrac[k] > 0) c.push(this.tauFrac[k], Math.max(this.sigZFrac[k] * H, 0.02) / H);
-    if (this.tauSub > 0) c.push(this.tauSub, Math.max(this.sigZFracSub * H, 0.02) / H);
+    for (let k = 0; k < LOD_CLASSES; k++) {
+      const w = this.tauFrac[k] * this.partP[k];
+      if (w > 0) c.push(w, Math.max(this.sigZFrac[k] * H, 0.02) / H);
+    }
     if (c.length === 0) c.push(1, Math.max(0.3 * H, 0.02) / H);
     const p = this.colComps;
     if (p.length === c.length && c.every((x, i) => Math.abs(x - p[i]) < 1e-6)) return;
@@ -260,10 +316,25 @@ export class RingLod {
     columnCentroidTable(c, this.colC);
   }
 
-  /** Vertical std-dev of class k as a fraction of the full layer thickness H (small particles ride higher). */
+  /** The former universal vertical law (zones without an N-body calibration keep it: ringRegions.ts sigZFracLegacy). */
   static sigZFracForRadius(a: number): number {
-    const t = Math.min(1, Math.max(0, Math.log2(a / 0.01) / 9));
-    return 0.4 * (1 - t) + 0.15 * t;
+    return sigZFracLegacy(a);
+  }
+
+  /** tau_dyn / tau_profile of the anchor's zone at photometric tau (CPU mirror of lodTauDyn: the near field's presence) */
+  tauDynFactor(tau: number): number {
+    const t = this.dynTab;
+    if (!(tau > LOD_DYN_LO)) return t[0];
+    const x = (Math.log(Math.min(tau, LOD_DYN_HI) / LOD_DYN_LO) / Math.log(LOD_DYN_HI / LOD_DYN_LO)) * (LOD_DYN_N - 1);
+    const i = Math.min(LOD_DYN_N - 2, Math.floor(x)), f = x - i;
+    return t[i] + (t[i + 1] - t[i]) * f;
+  }
+  /** packing-ceiling thickening of the participating particles at particle optical depth tauDyn and wake density D
+   *  (CPU mirror of lodPackM) */
+  packM(tauDyn: number, D: number): number {
+    const p = this.pack;
+    if (p[3] < 0.5) return 1;
+    return Math.max(1, (tauDyn * p[0] * Math.min(D, p[2])) / Math.max(PACKING_MAX - tauDyn * p[1], 0.1 * PACKING_MAX));
   }
 
   /** Vertical / radial displacement dispersion (m) of class k at the configured layer thickness. */
@@ -301,12 +372,23 @@ export class RingLod {
 
   /** Half-thickness (m) of the slab containing essentially all particles (as ringSlabHalfThickness). */
   get slabHalf(): number {
-    return 1.6 * this.H + 0.5;
+    return this.slabHalfFor(this.H);
+  }
+  /** The same for a layer thickness H (m) other than the anchor's (ringSlabHalfThickness(H)). */
+  slabHalfFor(H: number): number {
+    return this.slabK * H + 0.5;
+  }
+  /** Half-thickness (m) of the layer at its mean density (4 sigma of the thickest class with the packing ceiling's
+   *  thickening at D = 1): the near-field shadow map's tube (the thicker wake cores are shadowed statistically). */
+  get layerHalf(): number {
+    let s = this.tauSub > 0 ? this.sigZFracSub : 0;
+    for (let k = 0; k < LOD_CLASSES; k++) if (this.tauFrac[k] > 0) s = Math.max(s, this.sigZFrac[k]);
+    return Math.max(1.6, 4 * s * this.packM(this.tau, 1)) * this.H + 0.5;
   }
 
   /** Allocation height for a camera at height camZ (m) above the mid-plane. */
   heightFor(camZ: number): number {
-    return Math.max(Math.abs(camZ), this.slabHalf);
+    return Math.max(Math.abs(camZ), this.layerHalf);
   }
 
   /** Camera heights (m, [lo, hi]) a height-fitted allocation serves; null if it does not depend on the height. */
@@ -435,13 +517,17 @@ export class RingLod {
     const o = (this.options = { ...this.options, ...opts });
     const prevLo = Float64Array.from(this.aLo);
     const prevHi = Float64Array.from(this.aHi);
-    this.tau = local.tau;
+    this.wakesOn = o.wakes;
+    this.tauPhot = local.tau;
+    this.tau = o.wakes ? local.tauDyn : local.tauIso;
     this.H = local.H;
     this.q = local.q;
     this.aMin = local.aMin;
     this.aMax = local.aMax;
     const q = local.q;
+    const H = Math.max(local.H, 1e-3);
     const I2all = (this.I2all = powInt(local.aMin, local.aMax, 2 - q));
+    const ap = local.partAp;
     for (let k = 0; k < LOD_CLASSES; k++) {
       const lo = Math.max(LOD_A0 * 2 ** k, local.aMin);
       const hi = k === LOD_CLASSES - 1 ? local.aMax : Math.min(LOD_A0 * 2 ** (k + 1), local.aMax);
@@ -451,7 +537,9 @@ export class RingLod {
         this.tauFrac[k] = 0;
         this.nPerTau[k] = 0;
         this.aEff[k] = LOD_A0 * 2 ** (k + 0.5);
-        this.sigZFrac[k] = RingLod.sigZFracForRadius(this.aEff[k]);
+        this.sigZFrac[k] = local.sigZ(this.aEff[k]) / H;
+        this.partP[k] = 1;
+        this.alignF[k] = 0;
         continue;
       }
       const I0 = powInt(lo, hi, -q);
@@ -460,21 +548,64 @@ export class RingLod {
       this.tauFrac[k] = I2 / I2all;
       this.nPerTau[k] = I0 / (Math.PI * I2all);
       this.aEff[k] = Math.sqrt(I4 / I2);
-      this.sigZFrac[k] = RingLod.sigZFracForRadius(this.aEff[k]);
+      // the zone's vertical law at the class's cross-section-weighted rms radius (one sigma per class: particles and
+      // medium share it exactly)
+      this.sigZFrac[k] = local.sigZ(this.aEff[k]) / H;
+      // size rules: the class's cross-section-weighted participation and aligned share (ringDynamics.ts)
+      this.partP[k] = crossSectionMean(lo, hi, q, (a) => participation(a, ap), [ap]);
+      this.alignF[k] = crossSectionMean(lo, hi, q, spinAlignedShare, [0.05, 1]);
     }
-    // sub-class residual (particles with a < A0 = 1 mm): never drawn, carried by the medium
+    for (let k = LOD_CLASSES; k < 16; k++) { this.partP[k] = 0; this.alignF[k] = 0; }
+    // sub-class residual (particles with a < A0 = 1 mm): never drawn, carried by the medium (no participation, random)
     let fsum = 0;
     for (let k = 0; k < LOD_CLASSES; k++) fsum += this.tauFrac[k];
     if (local.macroscopic && I2all > 0 && local.aMin < LOD_A0) {
       this.tauSub = Math.max(0, 1 - fsum);
       const hiS = Math.min(LOD_A0, local.aMax);
       const I2s = powInt(local.aMin, hiS, 2 - q), I4s = powInt(local.aMin, hiS, 4 - q);
-      this.sigZFracSub = RingLod.sigZFracForRadius(I2s > 0 ? Math.sqrt(I4s / I2s) : LOD_A0);
+      this.sigZFracSub = local.sigZ(I2s > 0 ? Math.sqrt(I4s / I2s) : LOD_A0) / H;
     } else {
       this.tauSub = 0;
-      this.sigZFracSub = RingLod.sigZFracForRadius(LOD_A0);
+      this.sigZFracSub = local.sigZ(LOD_A0) / H;
+    }
+    // column totals of the size rules
+    let pT = 0, fT = 0, wT = this.tauSub;
+    for (let k = 0; k < LOD_CLASSES; k++) { pT += this.tauFrac[k] * this.partP[k]; fT += this.tauFrac[k] * this.alignF[k]; wT += this.tauFrac[k]; }
+    this.pbarTot = wT > 0 ? pT / wT : 1;
+    this.fAlignTot = wT > 0 ? fT / wT : 0;
+    // anisotropy of the aligned population (CPU mirror of the shapes / orientations) and the tidally locked share
+    const at = anisotropyTables();
+    for (let i = 0; i < ANISO_N; i++) { this.aniso[i] = at.G[i]; this.aniso[ANISO_N + i] = at.T[i]; }
+    this.tidal = local.macroscopic ? tidalShare(hillParameter(local.rhoBulk, local.rKm * 1000)) : 0;
+    // tau_dyn / tau_profile of the anchor's zone (presence of the particles; the medium has the profile's per-radius
+    // values, RingProfile.tauDyn, from the same function)
+    for (let i = 0; i < LOD_DYN_N; i++) {
+      const t = LOD_DYN_LO * Math.pow(LOD_DYN_HI / LOD_DYN_LO, i / (LOD_DYN_N - 1));
+      this.dynTab[i] = local.dynFactor(t, o.wakes);
     }
     this.updateColumnTable();
+    // packing ceiling (ringDynamics.ts): mid-plane filling per unit tau_dyn of the participating / other particles with
+    // the classes' sigma (as rendered), the density cap (densest 0.4 % of the field), and the slab that holds the layer
+    // thickened up to the cap at the highest tau near the camera
+    let ffP = 0, ffNP = 0, sigP = 0, sigAll = this.tauSub > 0 ? this.sigZFracSub : 0;
+    for (let k = 0; k < LOD_CLASSES; k++) {
+      if (this.tauFrac[k] <= 0) continue;
+      const sk = Math.max(this.sigZFrac[k] * H, 0.02), pk = this.partP[k];
+      const ff = midplaneFilling(this.aLo[k], this.aHi[k], q, I2all, () => sk);
+      ffP += pk * ff;
+      ffNP += (1 - pk) * ff;
+      sigAll = Math.max(sigAll, this.sigZFrac[k]);
+      if (pk > 0) sigP = Math.max(sigP, this.sigZFrac[k]);
+    }
+    const dCap = o.wakes && local.wakeStrength > 1e-3 ? densityQuantileHigh(local.wakeB >= 0.5 ? 'B' : 'A', local.wakeStrength) : 1;
+    this.pack[0] = ffP;
+    this.pack[1] = ffNP;
+    this.pack[2] = dCap;
+    this.pack[3] = 1;
+    const tauNear = Math.max(this.tau, tauMaxAt(5000));
+    const mSlab = this.packM(tauNear, dCap);
+    this.pack[3] = mSlab > 1.0001 ? 1 : 0;
+    this.slabK = Math.max(1.6, 4 * Math.max(sigAll, sigP * mSlab));
 
     // keep the allocation (same particles) unless the size bins, the max tau over a class's box or the display
     // pixel angle (beyond the zoom headroom) changed
@@ -483,11 +614,11 @@ export class RingLod {
       for (let k = 0; k < LOD_CLASSES; k++) {
         if (Math.abs(this.aLo[k] - prevLo[k]) > 1e-6 * prevLo[k] || Math.abs(this.aHi[k] - prevHi[k]) > 1e-6 * prevHi[k]) { keep = false; break; }
         if (this.slots[k] <= 0) continue;
-        const tm = Math.max(local.tau, tauMaxAt(this.box[k] + 500));
+        const tm = Math.max(this.tau, tauMaxAt(this.box[k] + 500));
         if (tm > this.tauMax[k] * 1.0001 || tm < this.tauMax[k] * 0.7) { keep = false; break; }
       }
     }
-    if (!keep) this.allocate(local.tau, tauMaxAt, o.pixelAngle, camZ);
+    if (!keep) this.allocate(this.tau, tauMaxAt, o.pixelAngle, camZ);
     this.version++;
     this.uniforms.uLodCullTau.value = this.cullTau;
     this.uniforms.uLodH.value = this.H;
@@ -497,6 +628,22 @@ export class RingLod {
     const ar = this.uniforms.uLodARange.value;
     for (let k = 0; k < LOD_CLASSES; k++) { ar[2 * k] = this.aLo[k]; ar[2 * k + 1] = this.aHi[k]; }
     this.uniforms.uLodQ.value = this.q;
+    this.uniforms.uLodSlabK.value = this.slabK;
+    // (tidal share, pbar, aligned share, tau_iso / tau_profile = 1 / (1 + fAlign G(1)): the two-stream layer)
+    const td = this.uniforms.uLodTidal.value;
+    td[0] = this.tidal; td[1] = this.pbarTot; td[2] = this.fAlignTot; td[3] = 1 / (1 + this.fAlignTot * this.aniso[ANISO_N - 1]);
+  }
+
+  /** Spin-aligned anisotropy g - 1 of the aligned population along a unit direction (ring-frame components: x radial,
+   *  y azimuthal, z normal) -- CPU mirror of lodAniso */
+  anisoAt(dx: number, dy: number, dz: number): number {
+    const x = Math.min(1, Math.abs(dz)) * (ANISO_N - 1);
+    const i = Math.min(ANISO_N - 2, Math.floor(x)), f = x - i;
+    const G = this.aniso[i] + (this.aniso[i + 1] - this.aniso[i]) * f;
+    if (this.tidal <= 0) return G;
+    const T = this.aniso[ANISO_N + i] + (this.aniso[ANISO_N + i + 1] - this.aniso[ANISO_N + i]) * f;
+    const hh = dx * dx + dy * dy;
+    return G + this.tidal * T * (hh > 1e-12 ? (dx * dx - dy * dy) / hh : 0);
   }
 
   private allocate(tau: number, tauMaxAt: (halfWidth: number) => number, pa: number, camZ: number): void {
@@ -513,13 +660,13 @@ export class RingLod {
       const at = (lam: number, Rc: number): number => {
         margin = Math.pow(o.margin, lam);
         hyst = Math.pow(HEIGHT_HYST, lam);
-        dz = Math.max(0, h / hyst - this.slabHalf);
+        dz = Math.max(0, h / hyst - this.layerHalf);
         return this.plan(tau, tauMaxAt, pa, margin, dz, Rc, false);
       };
       let lam = 1;
       total = at(lam, R);
       // above the layer: give up headroom (zoom-in margin, height band - no particle drawn now) before clipping
-      if (total > o.maxSlots && h > HEADROOM_MIN_HEIGHT * this.slabHalf) {
+      if (total > o.maxSlots && h > HEADROOM_MIN_HEIGHT * this.layerHalf) {
         if (at(HEADROOM_MIN, R) > o.maxSlots) lam = HEADROOM_MIN;
         else {
           let lo = HEADROOM_MIN, hi = 1;
@@ -552,7 +699,7 @@ export class RingLod {
     this.tauBoxMax = tauBoxMax;
     // count deficit: of the particles >= 1 px (rho >= LOD_RHO_FULL at this pixel angle, seen from the allocation
     // height), the share beyond 0.9 box[k] (where the window starts) that the slot cap / rMax leave out
-    const dzC = Math.max(0, this.allocHeight - this.slabHalf);
+    const dzC = Math.max(0, this.allocHeight - this.layerHalf);
     let need = 0, have = 0;
     for (let k = 0; k < LOD_CLASSES; k++) {
       if (this.nPerTau[k] <= 0) continue;

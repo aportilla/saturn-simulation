@@ -86,7 +86,9 @@ void main() {
   RingSample rs;
   if (relP) rs = ringSampleLocalRelief(lp, 0.0, rel);
   else rs = ringSampleLocal(lp, 0.0);
-  float tau = rs.tau, H = max(rs.H, 0.5);
+  // the particle population's optical depth (tau_dyn: the photometric profile x lodTauDyn) for the extinction of the
+  // columns, the homogeneous two-stream layer at tau_iso (as the medium: rlMarch / rlLayerIFW)
+  float tau = rs.tau * lodTauDyn(rs.tau), tauMS = rs.tau * uLodTidal.w, H = max(rs.H, 0.5);
   vec3 alb = clamp(rs.albedo * nearAlbedoFactor(idx, seed), 0.0, 0.95);
 
   // --- lighting environment at the center, relative to the local layer (vertical relief: its mid-plane z0 and
@@ -100,56 +102,74 @@ void main() {
   if (relP) vis *= ringReliefSunVis(rel.w, atan(lp.y, uRingR0 + lp.x), rel.x, tau, 0.0);
   float mu0 = max(ringReliefSunMuExt(abs(sunNp), uSunAngRadius), 1e-5);
   float sg = sunNp >= 0.0 ? 1.0 : -1.0;
-  // layer columns in one pass over the size classes: above z (tUp), sunward beyond the class boxes (part),
-  // and the vertical density at z (for the view path)
+  // layer columns in one pass over the size classes (the size rules of sv_ringLod: participating particles -- the
+  // share p_k that follows the wakes -- thickened by the packing ceiling mP here; the spin-aligned classes' cross-section
+  // along the Sun 1 + f_k Gs): above z (fUp: isotropic, all; fUpP: participating), on the Sun's side (whole column,
+  // non-participating / participating) and beyond the class boxes on it (the part the shadow map cannot resolve), and
+  // the vertical density at z (for the view path)
   vec2 pl2 = vec2(dot(c, uRingER), dot(c, uRingEPhi));
   vec2 sh = vec2(dot(uSunDir, uRingER), dot(uSunDir, uRingEPhi));
   float shl = max(length(sh), 1e-6);
   vec2 sdir = sh / shl;
   float dzdl = sunNp / shl;
-  float fUp = 0.0, fPart = 0.0, gz = 0.0, wsum = 0.0;
+  float Gs = lodAniso(uSunDir);
+  float mP = uLodPack.w > 0.5 && uWakeOn > 0.5 ? lodPackM(tau, wakeDensity(lp.xy)) : 1.0;
+  float fUp = 0.0, fUpP = 0.0, gz = 0.0, wsum = 0.0, wP = 0.0;
+  vec2 cSun = vec2(0.0), cPart = vec2(0.0);   // (non-participating, participating), Sun-weighted
   for (int kk = 0; kk < LOD_CLASSES; kk++) {
     float wk = uLodTauFrac[kk];
     if (wk <= 0.0) continue;
-    float sig = max(uLodSigZ[kk] * H, 0.02);
-    float qu = lodGaussQ(zl, sig);
-    fUp += wk * qu;
-    gz += wk * lodGaussPdf(zl, sig);
+    float sig = max(uLodSigZ[kk] * H, 0.02), sigP = sig * mP;
+    float p = lodClassP(kk), gk = wk * (1.0 + lodClassF(kk) * Gs);
+    float quN = lodGaussQ(zl, sig), quP = lodGaussQ(zl, sigP);
+    fUp += wk * mix(quN, quP, p);
+    fUpP += wk * p * quP;
+    gz += wk * mix(lodGaussPdf(zl, sig), lodGaussPdf(zl, sigP), p);
     wsum += wk;
-    float qs = sg > 0.0 ? qu : 1.0 - qu;
+    wP += wk * p;
+    vec2 qs = sg > 0.0 ? vec2(quN, quP) : 1.0 - vec2(quN, quP);
+    cSun += gk * vec2(1.0 - p, p) * qs;
     if (uShInfo.y > 0.5 && float(kk) >= uShInfo.z) {
       // the map holds every present particle of this class out to the edge of its allocated box (not just
       // the LOD window): only the column beyond that edge is statistical
       float D = uNearAllocD[kk];
       float tx = abs(sdir.x) > 1e-6 ? (sign(sdir.x) * D - pl2.x) / sdir.x : 1e9;
       float ty = abs(sdir.y) > 1e-6 ? (sign(sdir.y) * D - pl2.y) / sdir.y : 1e9;
-      qs = lodGaussQ(sg * (zl + max(min(tx, ty), 0.0) * dzdl), sig);
+      float hx = sg * (zl + max(min(tx, ty), 0.0) * dzdl);
+      qs = vec2(lodGaussQ(hx, sig), lodGaussQ(hx, sigP));
     }
-    fPart += wk * qs;
+    cPart += gk * vec2(1.0 - p, p) * qs;
   }
   if (uLodTauSub > 0.0) {
     float sig = max(uLodSigZSub * H, 0.02);
     float qu = lodGaussQ(zl, sig);
     fUp += uLodTauSub * qu;
     gz += uLodTauSub * lodGaussPdf(zl, sig);
-    fPart += uLodTauSub * (sg > 0.0 ? qu : 1.0 - qu);
+    float qs = uLodTauSub * (sg > 0.0 ? qu : 1.0 - qu);
+    cSun.x += qs;
+    cPart.x += qs;
     wsum += uLodTauSub;
   }
-  if (wsum <= 0.0) { float sig = max(0.3 * H, 0.02); fUp = lodGaussQ(zl, sig); gz = lodGaussPdf(zl, sig); fPart = sg > 0.0 ? fUp : 1.0 - fUp; wsum = 1.0; }
-  float tUp = tau * fUp, tDn = tau * (wsum - fUp);
+  if (wsum <= 0.0) {
+    float sig = max(0.3 * H, 0.02);
+    fUp = lodGaussQ(zl, sig); gz = lodGaussPdf(zl, sig); cSun = vec2(sg > 0.0 ? fUp : 1.0 - fUp, 0.0); cPart = cSun; wsum = 1.0;
+  }
+  // the two-stream layer (tau_iso) above / below the particle
+  float tUp = tauMS * fUp, tDn = tauMS * (wsum - fUp);
   // statistical sun path scaled by the self-gravity-wake density along the slanted path (sampled where it
-  // crosses the bulk of the column, as the ring-layer medium does): wake gaps let sunlight through, which
-  // dominates the brightness of the unlit face
+  // crosses the bulk of the participating column, as the ring-layer medium does): wake gaps let sunlight through,
+  // which dominates the brightness of the unlit face
   // (the stratified nodes of sv_ringLod ringSunNodeRise, exactly as the medium: a noisier estimate has more
   // variance and, through the convexity of exp(-tau W / mu0), would make the particles systematically brighter)
   float Ws = 1.0;
-  if (uWakeOn > 0.5) {
+  if (uWakeOn > 0.5 && wP > 0.0) {
     vec2 sh2 = sh / max(abs(sunNp), 0.02);
-    float qsun = (sg > 0.0 ? fUp : wsum - fUp) / wsum, acc = 0.0;
-    for (int j = 0; j < LOD_SUN_NODES; j++) acc += wakeDensity(lp.xy + sh2 * (ringSunNodeRise(j, qsun, sg * zl / H) * H));
+    float qsun = (sg > 0.0 ? fUpP : wP - fUpP) / wP, acc = 0.0;
+    for (int j = 0; j < LOD_SUN_NODES; j++) acc += wakeDensity(lp.xy + sh2 * (mP * ringSunNodeRise(j, qsun, sg * zl / (H * mP)) * H));
     Ws = acc / float(LOD_SUN_NODES);
   }
-  vec2 tauSun = vec2(sg > 0.0 ? tUp : tDn, tau * fPart) * (Ws / mu0);  // slant: (whole column, part the map can't resolve)
+  // slant: (whole column, part the map can't resolve)
+  vec2 tauSun = tau * vec2(cSun.x + Ws * cSun.y, cPart.x + Ws * cPart.y) / mu0;
   float mapW = nearShadowCoverage(c);
   vec3 vdir = -c / s;                                  // particle -> camera
   float cosA = dot(uSunDir, vdir);
@@ -159,7 +179,7 @@ void main() {
   // resolves this correlation geometrically for the mapped particles).
   float dzv = uRingCamLocal.z - rel.x - zl;
   float Lv = sqrt(dot(c.xy, c.xy) + dzv * dzv);
-  float tauView = abs(dzv) > 0.04 * H + 1e-3 ? abs(tUp - tau * uNearEnv2.x) * Lv / abs(dzv) : tau * gz * Lv;
+  float tauView = abs(dzv) > 0.04 * H + 1e-3 ? tau * abs(fUp - uNearEnv2.x) * Lv / abs(dzv) : tau * gz * Lv;
   float hFill = 0.375 * clamp(rs.sigma / (450.0 * H), 1e-4, 0.6);
   float bSh = 1.0 / (1.0 + tan(0.5 * acos(clamp(cosA, -1.0, 1.0))) / hFill);
   vT = exp(-tauSun + bSh * min(tauSun, vec2(tauView)));
@@ -179,7 +199,7 @@ void main() {
   // multiply-scattered ring light: two-stream diffuse fluxes at the particle's depth below the lit face, with
   // the back-scatter fractions of the particle phase function (src/render/rings/phase.ts, as the medium)
   vec3 Fl, Fd;
-  nearTwoStream(sg > 0.0 ? tUp : tDn, tau, rs.albedo, uNearBeta.x, uNearBeta.y, mu0, Fl, Fd);
+  nearTwoStream(sg > 0.0 ? tUp : tDn, tauMS, rs.albedo, uNearBeta.x, uNearBeta.y, mu0, Fl, Fd);
   float Ediff = uSunE * vis;
   vFl = Fl * Ediff;
   vFd = Fd * Ediff;

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // "What it is like inside the rings": derived numbers for docs/ring-physics.md, computed from the zone table
 // (src/rings/ringRegions.ts), the real tau profile (public/data/rings/tau_main), the J2..J6 orbital frequencies
-// (src/core/constants.ts) and the vertical-structure law of src/rings/RingLod.ts (sigma_z(a) = sigZFrac(a) * H).
+// (src/core/constants.ts) and the zone's vertical law (src/rings/ringRegions.ts zoneSigZ: sigma_z(a), the N-body size
+// rules of docs/ring-physics.md 10.12, as RingLod uses it; the mean layer, without the packing ceiling in the wakes).
 //
 //   node scripts/data/rings/inside_numbers.mjs
 import { readFileSync } from 'node:fs';
@@ -9,7 +10,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-const { zoneParamsAtKm } = await import(resolve(ROOT, 'src/rings/ringRegions.ts'));
+const { zoneParamsAtKm, zoneSigZ } = await import(resolve(ROOT, 'src/rings/ringRegions.ts'));
 const { orbitalFrequencies, shearParameter, G } = await import(resolve(ROOT, 'src/core/constants.ts'));
 const meta = JSON.parse(readFileSync(resolve(ROOT, 'public/data/rings/tau_main.json'), 'utf8'));
 const buf = readFileSync(resolve(ROOT, 'public/data/rings/tau_main.f32'));
@@ -17,8 +18,6 @@ const TAU = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
 
 const smooth = (e0, e1, x) => { const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
 const pint = (lo, hi, p) => (hi <= lo ? 0 : Math.abs(p + 1) < 1e-9 ? Math.log(hi / lo) : (hi ** (p + 1) - lo ** (p + 1)) / (p + 1));
-// RingLod.sigZFracForRadius
-const sigZFrac = (a) => { const t = Math.min(1, Math.max(0, Math.log2(a / 0.01) / 9)); return 0.4 * (1 - t) + 0.15 * t; };
 const tauMean = (rKm, halfKm) => {
   let s = 0, c = 0;
   for (let i = Math.round((rKm - halfKm - meta.r0_km) / meta.dr_km); i <= Math.round((rKm + halfKm - meta.r0_km) / meta.dr_km); i++) if (Number.isFinite(TAU[i])) { s += TAU[i]; c++; }
@@ -42,6 +41,8 @@ for (const [name, rKm] of SITES) {
   const tau = tauMean(rKm, half);
   const z = zoneParamsAtKm(rKm);
   const { q, aMin, aMax, H } = z;
+  // the zone's vertical law: rms height (m) of particles of radius a
+  const sigZ = (a) => Math.max(zoneSigZ(z, a), 0.02);
   const sigmaAff = z.sigma0 * smooth(0.002, 0.02, tau) + z.sigmaSlope * tau;
   const sigmaProp = z.sigmaPerTau * tau;
   const r = rKm * 1e3;
@@ -56,7 +57,7 @@ for (const [name, rKm] of SITES) {
     if (lo >= aMax) return 0;
     for (let k = 0; k < K; k++) {
       const a1 = lo * (aMax / lo) ** (k / K), a2 = lo * (aMax / lo) ** ((k + 1) / K), a = Math.sqrt(a1 * a2);
-      s += (C * pint(a1, a2, -q)) / (Math.sqrt(2 * Math.PI) * sigZFrac(a) * H);
+      s += (C * pint(a1, a2, -q)) / (Math.sqrt(2 * Math.PI) * sigZ(a));
     }
     return s;
   };
@@ -69,7 +70,7 @@ for (const [name, rKm] of SITES) {
     for (let k = 0; k < K; k++) {
       const a1 = aMin * (aMax / aMin) ** (k / K), a2 = aMin * (aMax / aMin) ** ((k + 1) / K), a = Math.sqrt(a1 * a2);
       const nb = C * pint(a1, a2, -q); // column number density in the bin (m^-2)
-      const sz = sigZFrac(a) * H;
+      const sz = sigZ(a);
       let chord = 0, area = 0;
       for (let m = 0; m < M; m++) {
         const z = -a + ((m + 0.5) * 2 * a) / M, dz = (2 * a) / M;
@@ -91,7 +92,7 @@ for (const [name, rKm] of SITES) {
     const cls = [];
     for (let k = 0; k < K; k++) {
       const a1 = aMin * (aMax / aMin) ** (k / K), a2 = aMin * (aMax / aMin) ** ((k + 1) / K), a = Math.sqrt(a1 * a2);
-      cls.push({ t: Math.PI * C * pint(a1, a2, 2 - q), s: sigZFrac(a) * H });
+      cls.push({ t: Math.PI * C * pint(a1, a2, 2 - q), s: sigZ(a) });
     }
     const erf = (x) => { const t = 1 / (1 + 0.3275911 * Math.abs(x)); const y = 1 - ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x); return Math.sign(x) * y; };
     const cum = (z) => cls.reduce((s, c) => s + 0.5 * c.t * erf(z / (Math.SQRT2 * c.s)), 0);
@@ -102,7 +103,7 @@ for (const [name, rKm] of SITES) {
   const MU0 = Math.sin(8.24 * Math.PI / 180); // solar elevation above the ring plane on 2026-11-07
   const sunMid = Math.exp(-tau / 2 / MU0);
   // velocity dispersion: vertical rms velocity ~ nu * sigma_z (harmonic vertical oscillation)
-  const cSmall = f.nu * sigZFrac(0.01) * H, cLarge = f.nu * sigZFrac(Math.min(aMax, 5.12)) * H;
+  const cSmall = f.nu * sigZ(0.01), cLarge = f.nu * sigZ(Math.min(aMax, 5.12));
   const P = (2 * Math.PI) / f.omega;
   const lambda = (4 * Math.PI * Math.PI * G * sigmaAff) / (f.kappa * f.kappa);
   const lambdaProp = (4 * Math.PI * Math.PI * G * sigmaProp) / (f.kappa * f.kappa);

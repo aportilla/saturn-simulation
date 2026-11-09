@@ -435,7 +435,9 @@ async function online(only) {
       if (cr.ok) {
         const m = (await cr.json()).message;
         const years = ['issued', 'published-print', 'published-online', 'published'].map((k) => m[k]?.['date-parts']?.[0]?.[0]).filter(Boolean);
-        if (!years.some((y) => Math.abs(y - r.year) <= 1)) issues.push(`year ${r.year} vs registry ${[...new Set(years)].join('/')}`);
+        // (some book-chapter records carry no date at all: nothing to compare)
+        if (!years.length) notes.push('the registry record has no date');
+        else if (!years.some((y) => Math.abs(y - r.year) <= 1)) issues.push(`year ${r.year} vs registry ${[...new Set(years)].join('/')}`);
         else if (!years.includes(r.year)) notes.push(`year ±1 (${[...new Set(years)].join('/')})`);
         const fam = m.author?.[0]?.family ?? m.author?.[0]?.name;
         if (fam && !sameName(fam, surnameOf(r.authors[0]))) issues.push(`first author ${surnameOf(r.authors[0])} vs ${fam}`);

@@ -27,6 +27,12 @@ export interface RingZone {
   aMax: number;
   /** characteristic FULL vertical thickness of the particle layer (m) */
   H: number;
+  /**
+   * vertical law of the zone (docs/ring-physics.md 10.9, as implemented): the vertical std-dev of a particle of radius
+   * a is sigma_z = H min(cap, c (a / 1 m)^-beta) (N-body calibration, sections 10.3 / 10.5); absent: the former
+   * universal law (RingLod.sigZFracLegacy, ~a^-0.2 from 0.4 H at 1 cm to 0.15 H at 5 m)
+   */
+  sigZLaw?: VerticalLaw;
   /** surface mass density per unit normal optical depth (kg m^-2) — Sigma ~ sigmaPerTau * tau */
   sigmaPerTau: number;
   /** particle single-scattering albedo, linear RGB (visible) */
@@ -49,6 +55,26 @@ export interface RingZone {
   /** short source note (full references in docs/ring-physics.md) */
   ref?: string;
 }
+
+/** sigma_z(a) / H = min(cap, c (a / 1 m)^-beta) */
+export interface VerticalLaw {
+  c: number;
+  beta: number;
+  cap: number;
+}
+
+/**
+ * Vertical laws from the N-body calibration (docs/ring-physics.md 10.3, 10.5, 10.9):
+ * - mid-A ring (A128-sd, H = 10 m): rms height ~4.5 m (a / 1 m)^-0.5 for 0.3-5 m, capped near 0.8 H below ~0.3 m until the
+ *   cm grains are constrained (the smallest simulated sizes are upper limits, uncertain x2); mass-weighted rms height
+ *   ~3.9 m, within the density-wave limits of section 3. Used for the whole A ring (the outer-A runs had no wakes to
+ *   calibrate against, section 10.6).
+ * - B ring (B105-sd, Sigma 600): rms height ~1.8 m (a / 1 m)^-0.35 for 0.2-2 m (mass-weighted 1.96 m), as sigma_z in
+ *   metres for every B zone (c = 1.8 m / H): B1-B5 share the run's Sigma range (400-700 kg/m^2) and strength-1 wakes. The
+ *   packing ceiling (RingLod, 0.65 mid-plane filling) thickens it where the zone's particles do not fit.
+ */
+const LAW_A: VerticalLaw = { c: 0.45, beta: 0.5, cap: 0.8 };
+const lawB = (H: number): VerticalLaw => ({ c: 1.8 / H, beta: 0.35, cap: 0.8 });
 
 export type FeatureType = 'gap' | 'ringlet' | 'edge' | 'densityWave' | 'bendingWave' | 'plateau' | 'region';
 export interface RingFeature {
@@ -128,28 +154,28 @@ export const RING_ZONES: RingZone[] = [
     // wakes (all B zones): strength 1 with the B-ring wake set (N-body at Sigma 600: Q 1.7, wakes as strong and coherent
     // as in the A ring; docs/ring-physics.md 10.5, 10.11)
     key: 'B1', name: 'B ring (B1)', rInnerKm: 91_975, rOuterKm: 99_000,
-    q: 2.9, aMin: 0.05, aMax: 3.0, H: 10, sigmaPerTau: 303, sigma0: 400, sigmaSlope: 0,
+    q: 2.9, aMin: 0.05, aMax: 3.0, H: 10, sigZLaw: lawB(10), sigmaPerTau: 303, sigma0: 400, sigmaSlope: 0,
     albedo: B1_ALB, wake: 1.0, wakeB: 1, dust: 0, tauTypical: 1.25, macroscopic: true, rhoBulk: 280,
     ref: 'Hedman & Nicholson 2016; Tiscareno & Harris 2018; French & Nicholson 2000',
   },
   {
     // B2: Mimas 5:2 wave 39-42 g/cm^2 (H&N 2016), 43 g/cm^2 at 100,500 km (Tiscareno & Harris 2018)
     key: 'B2', name: 'B ring (B2)', rInnerKm: 99_000, rOuterKm: 104_000,
-    q: 3.2, aMin: 0.05, aMax: 2.0, H: 15, sigmaPerTau: 99, sigma0: 420, sigmaSlope: 0,
+    q: 3.2, aMin: 0.05, aMax: 2.0, H: 15, sigZLaw: lawB(15), sigmaPerTau: 99, sigma0: 420, sigmaSlope: 0,
     albedo: B_ALB, wake: 1.0, wakeB: 1, dust: 0, tauTypical: 3.66, macroscopic: true, rhoBulk: 170,
     ref: 'Hedman & Nicholson 2016; Tiscareno & Harris 2018',
   },
   {
     // B3 (core): Pandora 3:2 wave 65-72 g/cm^2 at tau 3.4-4.7 (H&N 2016)
     key: 'B3', name: 'B ring (B3, core)', rInnerKm: 104_000, rOuterKm: 110_000,
-    q: 3.2, aMin: 0.05, aMax: 2.0, H: 15, sigmaPerTau: 123, sigma0: 680, sigmaSlope: 0,
+    q: 3.2, aMin: 0.05, aMax: 2.0, H: 15, sigZLaw: lawB(15), sigmaPerTau: 123, sigma0: 680, sigmaSlope: 0,
     albedo: B_ALB, wake: 1.0, wakeB: 1, dust: 0, tauTypical: 5.49, macroscopic: true, rhoBulk: 210,
     ref: 'Hedman & Nicholson 2016',
   },
   {
     // B4: Enceladus 3:1 wave 65-71 g/cm^2; Janus 3:2 (116,070-116,185 km) 120-141 g/cm^2 (H&N 2016)
     key: 'B4', name: 'B ring (B4)', rInnerKm: 110_000, rOuterKm: 116_500,
-    q: 3.1, aMin: 0.05, aMax: 2.5, H: 12, sigmaPerTau: 224, sigma0: 700, sigmaSlope: 0,
+    q: 3.1, aMin: 0.05, aMax: 2.5, H: 12, sigZLaw: lawB(12), sigmaPerTau: 224, sigma0: 700, sigmaSlope: 0,
     albedo: B_ALB, wake: 1.0, wakeB: 1, dust: 0, tauTypical: 3.02, macroscopic: true, rhoBulk: 300,
     ref: 'Hedman & Nicholson 2016',
   },
@@ -158,7 +184,7 @@ export const RING_ZONES: RingZone[] = [
     // just outside the B-ring edge of the tau profile (117,650 km at the 2005-123 RSS longitude; mean edge
     // 117,570 km, m = 2 Mimas 2:1 distortion +-~75 km) so B-ring parameters cover all B-ring material.
     key: 'B5', name: 'B ring (B5, outer)', rInnerKm: 116_500, rOuterKm: 117_700,
-    q: 2.9, aMin: 0.05, aMax: 3.0, H: 10, sigmaPerTau: 370, sigma0: 540, sigmaSlope: 0,
+    q: 2.9, aMin: 0.05, aMax: 3.0, H: 10, sigZLaw: lawB(10), sigmaPerTau: 370, sigma0: 540, sigmaSlope: 0,
     albedo: B_ALB, wake: 1.0, wakeB: 1, dust: 0, tauTypical: 1.41, macroscopic: true, rhoBulk: 340,
     ref: 'Hedman & Nicholson 2016; Nicholson et al. 2014 (B-ring edge)',
   },
@@ -185,7 +211,7 @@ export const RING_ZONES: RingZone[] = [
     // (Zebker et al. 1985 inner A ring: 5.4 m; 5 m adopted for packing at tau ~1-1.4 in the inner A ring);
     // thickness <= 10-15 m (Tiscareno et al. 2007); wakes strongest here (Colwell et al. 2006; Hedman et al. 2007).
     key: 'A_in', name: 'A ring (inner)', rInnerKm: 122_050, rOuterKm: 133_423,
-    q: 2.9, aMin: 0.02, aMax: 5.0, H: 10, sigmaPerTau: 433,
+    q: 2.9, aMin: 0.02, aMax: 5.0, H: 10, sigZLaw: LAW_A, sigmaPerTau: 433,
     albedo: A_ALB, wake: 1.0, dust: 0.001, tauTypical: 0.67, macroscopic: true, rhoBulk: 300,
     ref: 'Tiscareno & Harris 2018; Tiscareno et al. 2007, 2013; Becker et al. 2016; Miller et al. 2024',
   },
@@ -198,7 +224,7 @@ export const RING_ZONES: RingZone[] = [
     // outer A ring: Sigma 25 g/cm^2 at the Encke outer edge falling to 16 at the A-ring edge (Tiscareno & Harris
     // 2018); q ~3.05, aMin 4-9 mm (Becker et al. 2016; Miller et al. 2024)
     key: 'A_out', name: 'A ring (outer)', rInnerKm: 133_745, rOuterKm: 136_770,
-    q: 3.05, aMin: 0.005, aMax: 7.0, H: 10, sigmaPerTau: 310,
+    q: 3.05, aMin: 0.005, aMax: 7.0, H: 10, sigZLaw: LAW_A, sigmaPerTau: 310,
     albedo: A_ALB, wake: 0.6, dust: 0.003, tauTypical: 0.6, macroscopic: true, rhoBulk: 280,
     ref: 'Tiscareno & Harris 2018; Becker et al. 2016',
   },
@@ -331,7 +357,24 @@ export type ZoneParams = Omit<RingZone, 'key' | 'name' | 'rInnerKm' | 'rOuterKm'
   sigmaSlope: number;
   /** wake parameter set, blended (0 = A-ring set, 1 = B-ring set) */
   wakeB: number;
+  /** the vertical laws being blended: the zone's (weight 1 - w) and its neighbour's (weight w), each with its own H */
+  vlaw: { a?: VerticalLaw; Ha: number; b?: VerticalLaw; Hb: number; w: number };
 };
+
+/** The former universal vertical law (sigma_z / H), still used by the zones without an N-body calibration. */
+export function sigZFracLegacy(a: number): number {
+  const t = Math.min(1, Math.max(0, Math.log2(a / 0.01) / 9));
+  return 0.4 * (1 - t) + 0.15 * t;
+}
+/** sigma_z / H of a zone's vertical law (legacy law if none). */
+export function sigZFracLaw(law: VerticalLaw | undefined, a: number): number {
+  return law ? Math.min(law.cap, law.c * Math.pow(Math.max(a, 1e-6), -law.beta)) : sigZFracLegacy(a);
+}
+/** Vertical std-dev (m) of a particle of radius a (m) at a radius with zone parameters zp (blended across boundaries). */
+export function zoneSigZ(zp: ZoneParams, a: number): number {
+  const v = zp.vlaw;
+  return (1 - v.w) * v.Ha * sigZFracLaw(v.a, a) + v.w * v.Hb * sigZFracLaw(v.b, a);
+}
 
 /**
  * Smoothly-blended zone parameters at radius rKm (blend half-width `blendKm` across zone boundaries,
@@ -347,6 +390,7 @@ export function zoneParamsAtKm(rKm: number, blendKm = 40): ZoneParams {
     sigma0: base.sigma0 ?? 0, sigmaSlope: base.sigmaSlope ?? base.sigmaPerTau,
     albedo: [...base.albedo] as [number, number, number], wake: base.wake, wakeB: base.wakeB ?? 0, dust: base.dust,
     tauTypical: base.tauTypical, macroscopic: base.macroscopic, rhoBulk: base.rhoBulk, ref: base.ref,
+    sigZLaw: base.sigZLaw, vlaw: { a: base.sigZLaw, Ha: base.H, b: base.sigZLaw, Hb: base.H, w: 0 },
   };
   if (!z) return out;
   const idx = RING_ZONES.indexOf(z);
@@ -357,6 +401,9 @@ export function zoneParamsAtKm(rKm: number, blendKm = 40): ZoneParams {
     out.aMin = Math.exp(Math.log(out.aMin) * (1 - w) + Math.log(other.aMin) * w);
     out.aMax = Math.exp(Math.log(out.aMax) * (1 - w) + Math.log(other.aMax) * w);
     out.H = out.H * (1 - w) + other.H * w;
+    out.vlaw = { a: z.sigZLaw, Ha: z.H, b: other.sigZLaw, Hb: other.H, w };
+    out.tauTypical = out.tauTypical * (1 - w) + other.tauTypical * w;
+    if (out.rhoBulk !== undefined && other.rhoBulk !== undefined) out.rhoBulk = out.rhoBulk * (1 - w) + other.rhoBulk * w;
     out.sigmaPerTau = out.sigmaPerTau * (1 - w) + other.sigmaPerTau * w;
     out.sigma0 = out.sigma0 * (1 - w) + (other.sigma0 ?? 0) * w;
     out.sigmaSlope = out.sigmaSlope * (1 - w) + (other.sigmaSlope ?? other.sigmaPerTau) * w;

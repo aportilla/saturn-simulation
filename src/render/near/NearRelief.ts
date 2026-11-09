@@ -11,8 +11,8 @@
 //    measureReliefArea() averages A over random bodies (the nearShape / nearReliefParams distributions) and
 //    random directions (common random numbers for every (amp, wc) pair) and returns G = <A> / <A_ellipsoid> at
 //    kappa = 1; nearKappa() = G^-1/2 is fitted as kappa^-2 = 1 + amp (K0 + K1 wc) + amp^2 (K2 + K3 wc).
-// 2. Cross-section anisotropy of the principal-axis rotation (crossSectionVsElevation): bodies spinning about
-//    their short axis with near-vertical spin axes (large particles) present more area from above than edge-on.
+// (The cross-section anisotropy of the spin-aligned population -- bodies spinning about their short axis near the
+// orbit normal present more area from above than edge-on -- is part of the LOD contract: src/rings/ringDynamics.ts.)
 // Used by scripts/test/particles.mjs (in the page, through the Vite dev server).
 import nearCommonSrc from './nearCommon.glsl?raw';
 import { CLAST_N, CLAST_P, NOISE_N, NOISE_P, nearClastData, nearNoiseData, sampleTex3, valueRange } from './NearNoise';
@@ -59,14 +59,11 @@ export interface ReliefBody {
   so: [number, number, number];
 }
 
-/** nearSpinAlign */
-export const spinAlign = (a: number) => 0.85 * smoothstep(0.05, 1, a);
-
-/** A random body of radius a (m) from the nearShape / nearReliefParams distributions (high quality). */
-export function randomBody(rnd: () => number, a = 1.5, K = reliefConstants()): ReliefBody {
-  const sp = 1 - (K.NR_ISO ?? 0) * spinAlign(a) / 0.85;
-  const b = 1 - 0.3 * sp * rnd();
-  const c = b * (1 - 0.25 * sp * rnd());
+/** A random body (radius a, m: unused -- every size has the full shape spread) from the nearShape / nearReliefParams
+ *  distributions (high quality). */
+export function randomBody(rnd: () => number, _a = 1.5, _K = reliefConstants()): ReliefBody {
+  const b = 1 - 0.3 * rnd();
+  const c = b * (1 - 0.25 * rnd());
   const P = 1.6075, bp = Math.pow(b, P), cp = Math.pow(c, P);
   const m = Math.pow((bp * cp + bp + cp) / 3, 1 / P);
   const k = 1 / Math.sqrt(m);
@@ -371,14 +368,14 @@ export const RELIEF_PHOT_ALPHAS = [0, 20, 40, 60, 80, 100, 120, 140, 160];
 export const RELIEF_PHOT_WCS = [0, 0.5, 1];
 export const RELIEF_PHOT = {
   bump: [
-    [1.001, 1.006, 1.002, 1.002, 1.005, 0.988, 0.992, 0.927, 0.868],
-    [1.002, 1.016, 1.009, 1.006, 1.001, 0.976, 0.955, 0.859, 0.721],
-    [1.005, 1.040, 1.030, 1.021, 0.997, 0.956, 0.894, 0.766, 0.652],
+    [1.001, 1.006, 1.002, 1.002, 1.007, 0.988, 0.991, 0.931, 0.852],
+    [1.002, 1.015, 1.009, 1.006, 1.002, 0.974, 0.957, 0.868, 0.699],
+    [1.005, 1.040, 1.029, 1.019, 0.999, 0.953, 0.890, 0.773, 0.633],
   ],
   march: [
-    [0.997, 0.999, 0.997, 0.999, 1.004, 0.998, 1.005, 0.953, 0.985],
-    [1.002, 1.010, 1.012, 1.015, 1.045, 1.068, 1.115, 1.159, 1.539],
-    [0.991, 1.008, 1.027, 1.060, 1.120, 1.240, 1.442, 1.750, 3.008],
+    [0.996, 1.000, 0.998, 0.998, 1.011, 1.003, 1.007, 0.940, 1.031],
+    [1.002, 1.010, 1.011, 1.020, 1.043, 1.077, 1.124, 1.169, 1.618],
+    [0.992, 1.011, 1.028, 1.058, 1.123, 1.250, 1.422, 1.833, 3.176],
   ],
 };
 /**
@@ -431,38 +428,4 @@ function lsq(A: number[][], y: number[]): number[] {
   const x = new Array(n).fill(0);
   for (let i = n - 1; i >= 0; i--) { let s = b[i]; for (let j = i + 1; j < n; j++) s -= M[i][j] * x[j]; x[i] = s / M[i][i]; }
   return x;
-}
-
-/**
- * Mean projected area (units of pi a^2) of ellipsoids spinning about their short axis, as seen at elevation
- * `elevDeg` above the ring plane, for particles of radius a (m): spin axes from nearSpinAxis (near-vertical for
- * large particles), spin phase uniform, shapes from nearShape. 1 = the isotropic value the medium assumes.
- */
-export function crossSectionVsElevation(a: number, elevDeg: number, { n = 20000, seed = 5 } = {}): number {
-  const rnd = mulberry32(seed);
-  const el = (elevDeg * Math.PI) / 180;
-  const v = [Math.cos(el), 0, Math.sin(el)];
-  const align = 0.85 * smoothstep(0.05, 1, a);
-  let s = 0;
-  const K = reliefConstants();
-  for (let i = 0; i < n; i++) {
-    const body = randomBody(rnd, a, K);
-    // spin axis (nearSpinAxis) and a random spin phase: body frame (x, y, z = spin axis)
-    const cz = 2 * rnd() - 1, ph = 2 * Math.PI * rnd(), r = Math.sqrt(Math.max(0, 1 - cz * cz));
-    let ax = [(1 - align) * r * Math.cos(ph), (1 - align) * r * Math.sin(ph), (1 - align) * cz + align];
-    const la = Math.hypot(ax[0], ax[1], ax[2]);
-    ax = ax.map((x) => x / la);
-    const t = Math.abs(ax[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
-    let x0 = [ax[1] * t[2] - ax[2] * t[1], ax[2] * t[0] - ax[0] * t[2], ax[0] * t[1] - ax[1] * t[0]];
-    const lx = Math.hypot(x0[0], x0[1], x0[2]);
-    x0 = x0.map((q) => q / lx);
-    const y0 = [ax[1] * x0[2] - ax[2] * x0[1], ax[2] * x0[0] - ax[0] * x0[2], ax[0] * x0[1] - ax[1] * x0[0]];
-    const sp = 2 * Math.PI * rnd(), cs = Math.cos(sp), sn = Math.sin(sp);
-    const bx = [cs * x0[0] + sn * y0[0], cs * x0[1] + sn * y0[1], cs * x0[2] + sn * y0[2]];
-    const by = [-sn * x0[0] + cs * y0[0], -sn * x0[1] + cs * y0[1], -sn * x0[2] + cs * y0[2]];
-    const d = [v[0] * bx[0] + v[1] * bx[1] + v[2] * bx[2], v[0] * by[0] + v[1] * by[1] + v[2] * by[2], v[0] * ax[0] + v[1] * ax[1] + v[2] * ax[2]];
-    const [A, B, C] = body.ax;
-    s += Math.sqrt(B * B * C * C * d[0] * d[0] + A * A * C * C * d[1] * d[1] + A * A * B * B * d[2] * d[2]);
-  }
-  return s / n;
 }

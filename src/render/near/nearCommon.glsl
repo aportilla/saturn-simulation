@@ -17,7 +17,9 @@
 #define NS_SHB   13u  // shape axis ratio b
 #define NS_SHC   14u  // shape axis ratio c
 #define NS_ALB   15u  // albedo factor (2 streams)
-#define NS_ORI   17u  // (unused since the principal-axis rotation: 3 streams kept free)
+#define NS_PART  17u  // participation in the self-gravity wakes (mixture: follows the wake map if < p_k)
+#define NS_ALN   18u  // spin-aligned population (if < f_k)
+#define NS_TID   19u  // tidally locked among the aligned (if < the tidal share)
 #define NS_TEX   20u  // surface texture seed (relief texture offsets)
 #define NS_REL   21u  // relief: clast-weight variation
 
@@ -51,28 +53,27 @@ void nearRadiusBox(float u, out float a, out float D) {
   a = P.x * s;
   D = max(uRadB[i].x * pow(s, uRadB[i].y), 0.05);
 }
-// Alignment of the spin axis with the orbit normal (0 = random .. 0.85): large particles (nearSpinAxis)
-float nearSpinAlign(float a) { return 0.85 * smoothstep(0.05, 1.0, a); }
+// Spin-axis concentration of the aligned population (src/rings/ringDynamics.ts ALIGN_MIX)
+#define NR_ALIGN_MIX 0.85
 // Triaxial ellipsoid semi-axes (units of the equivalent radius a; z = the short axis = the spin axis). The axes
 // are scaled so that the orientation-averaged projected area (= surface area / 4, Cauchy) equals pi a^2: an
 // ensemble then has exactly the optical depth of spheres of radius a (the LOD / medium contract).
-// Isotropy: a body spinning about its short axis presents more area along the spin axis than across it, so
-// with the near-vertical spin axes of large particles the cross-section would depend on the view elevation
-// (x 1.14 from above, x 0.92 edge-on for a >= 1 m with the full axis spread), which the isotropic medium cannot
-// follow. The asphericity of the aligned particles is therefore reduced by NR_ISO x their alignment (their
-// irregularity comes from the relief, isotropic in the mean); the planned direction-dependent LOD contract
-// (with the tidal-alignment hook in nearOrientation) can restore it (NR_ISO 0). Below high quality: spheres.
-#define NR_ISO 0.8
+// Every size has the full shape spread: a body spinning about its short axis presents more area along its spin axis
+// than across it, and the spin-aligned population's cross-section depends on the direction (x 1 + G(mu), from above
+// up to ~1.14, edge-on ~0.92) -- the direction-dependent LOD contract carries it (sv_ringLod lodAniso: the medium's
+// extinction along the view and the Sun, the CPU mirror in src/rings/ringDynamics.ts). Below high quality: spheres.
+// (Distribution mirrored by ringDynamics.ts shapeAxes.)
 vec3 nearShape(uint idx, uint seed, float a) {
   if (uNearQuality < 1.5) return vec3(1.0);
-  float sp = 1.0 - NR_ISO * nearSpinAlign(a) * (1.0 / 0.85);
-  float b = 1.0 - 0.30 * sp * nearU(idx, seed, NS_SHB);
-  float c = b * (1.0 - 0.25 * sp * nearU(idx, seed, NS_SHC));
+  float b = 1.0 - 0.30 * nearU(idx, seed, NS_SHB);
+  float c = b * (1.0 - 0.25 * nearU(idx, seed, NS_SHC));
   const float P = 1.6075; // Knud Thomsen surface-area approximation
   float bp = pow(b, P), cp = pow(c, P);
   float m = pow((bp * cp + bp + cp) / 3.0, 1.0 / P);
   return inversesqrt(m) * vec3(1.0, b, c);
 }
+// Whether a particle belongs to the spin-aligned population of its class (share f_k, sv_ringLod lodClassF)
+bool nearSpinAligned(uint idx, uint seed, float a) { return nearU(idx, seed, NS_ALN) < lodClassF(lodClassOf(a)); }
 // Albedo multiplier, log-normal with mean 1 (sigma 0.12): particle-to-particle variation.
 float nearAlbedoFactor(uint idx, uint seed) {
   float u1 = nearU(idx, seed, NS_ALB), u2 = nearU(idx, seed, NS_ALB + 1u);
@@ -91,12 +92,14 @@ vec4 nearQuatFromZ(vec3 d) {
   float w = 1.0 + d.z;
   return w < 1e-6 ? vec4(1.0, 0.0, 0.0, 0.0) : normalize(vec4(-d.y, d.x, 0.0, w));
 }
-// Spin axis (world, SEF): large particles near the orbit normal (the local flow vorticity, prograde), small
-// ones random (collisions randomize them).
+// Spin axis (world, SEF): the aligned population near the orbit normal (large particles spin slowly about axes normal to
+// the ring plane, small ones fast about random axes: N-body results reviewed by Schmidt et al. 2009), the rest
+// random. Mixture per class (share f_k, src/rings/ringDynamics.ts), so the class's mean cross-section along any
+// direction is exactly the medium's (1 + f_k G(mu)).
 vec3 nearSpinAxis(uint idx, uint seed, float a) {
   float cz = 2.0 * nearU(idx, seed, NS_SAX) - 1.0, ph = TWO_PI * nearU(idx, seed, NS_SAX + 1u);
   vec3 rnd = vec3(sqrt(max(0.0, 1.0 - cz * cz)) * vec2(cos(ph), sin(ph)), cz);
-  return normalize(mix(rnd, vec3(0.0, 0.0, 1.0), nearSpinAlign(a)) + 1e-6);
+  return nearSpinAligned(idx, seed, a) ? normalize(mix(rnd, vec3(0.0, 0.0, 1.0), NR_ALIGN_MIX) + 1e-6) : rnd;
 }
 // Spin angle at spin phase W = (Omega/8)(t - tRef) mod 2pi: rates are integer multiples of Omega/8 so that the
 // angle is exact for any sim time; large particles spin slowly (~Omega/2), small ones faster.
@@ -109,15 +112,22 @@ float nearSpinAngle(uint idx, uint seed, float a, float W) {
 // shortest body axis (z: nearShape gives c <= b <= 1), the axis of maximum moment of inertia - collisions and
 // internal friction damp any other (tumbling) state. The body x axis starts at a random azimuth about the spin
 // axis (random spin phase).
-// HOOK - tidal alignment (planned with the direction-dependent LOD contract; NOT active): large aggregates
-// elongated toward Saturn would replace the free spin angle by the synchronous one, the body x axis kept near
-// the local radial direction uRingER about the spin axis plus a libration (spin rate = Omega): a term
-//   ang = mix(ang, atan(dot(cross(xAxis0, uRingER), ax), dot(xAxis0, uRingER)) + libration(t), tidal(a))
-// with xAxis0 = nearQRot(qa, vec3(1,0,0)), applied right below.
+// Tidal locking: the tidally locked share of the aligned population (sv_ringLod uLodTidal.x, from the Hill parameter:
+// gravitationally bound aggregates rotate synchronously with their long axis nearly radial, Karjalainen & Salo 2004;
+// they form only above r_h ~1.1-1.2 -- 0 in every main-ring zone, src/rings/ringDynamics.ts) keeps its long axis (body
+// x) along the radial direction uRingER projected on its spin plane: synchronous rotation (the frame's radial axis
+// turns at Omega). No libration (its amplitude has no published value for ring aggregates).
 vec4 nearOrientation(uint idx, uint seed, float a, float W) {
   vec3 ax = nearSpinAxis(idx, seed, a);
   vec4 qa = nearQuatFromZ(ax);                 // body z -> spin axis
-  float ang = nearSpinAngle(idx, seed, a, W);  // (tidal-alignment hook: modify ang here)
+  float ang;
+  if (uLodTidal.x > 0.0 && nearSpinAligned(idx, seed, a) && nearU(idx, seed, NS_TID) < uLodTidal.x) {
+    vec3 x0 = nearQRot(qa, vec3(1.0, 0.0, 0.0));
+    vec3 xr = normalize(uRingER - ax * dot(ax, uRingER) + 1e-6);
+    ang = atan(dot(cross(x0, xr), ax), dot(x0, xr));
+  } else {
+    ang = nearSpinAngle(idx, seed, a, W);
+  }
   return nearQuatMul(nearQuatAxisAngle(ax, ang), qa);
 }
 
@@ -153,10 +163,10 @@ uniform vec4 uNearRelief;             // value range of the two textures: (clast
 #define NR_PX0 12.0    // geometric relief fades in between these radii (render px)
 #define NR_PX1 22.0
 // kappa^-2 = 1 + amp (NR_K0 + NR_K1 wc) + amp^2 (NR_K2 + NR_K3 wc)  (measured: scripts/test/particles.mjs)
-#define NR_K0 -0.0035
+#define NR_K0 -0.0034
 #define NR_K1 0.0279
 #define NR_K2 0.0067
-#define NR_K3 0.0338
+#define NR_K3 0.0341
 vec4 nearNoiseT(vec3 x) { return textureLod(tNearNoise, x * 0.0625, 0.0); }
 vec4 nearClastT(vec3 x) { return textureLod(tNearClast, x * 0.125, 0.0); }
 float nearNoiseV(vec3 x) { return textureLod(tNearNoiseV, x * 0.0625, 0.0).x; }

@@ -17,8 +17,13 @@
 //              their ellipsoids: |ratio - 1| <= 0.01 for amp 0.25..1, wc 0..1 (shot noise of the ensemble printed);
 //              prints the measured G (kappa = 1) and the least-squares K0..K3 to paste into nearCommon.glsl (NR_K*)
 //              when the relief changes; the base ellipsoids' mean projected area / pi a^2 (Knud Thomsen) informational.
-// 3. anisotropy (informational) mean cross-section / pi a^2 vs view elevation of the principal-axis rotators
-//              (near-vertical spin axes for large particles): the direction dependence the LOD contract ignores.
+// 3. anisotropy  the direction-dependent LOD contract of the spin-aligned population (src/rings/ringDynamics.ts,
+//              sv_ringLod lodAniso): the GLSL nearShape / nearOrientation (4096 particles of an aligned class, random spin
+//              phases) projected along directions at elevations mu = 0, 0.5, 0.866, 1: mean area / their isotropic mean
+//              - 1 = the CPU table G(mu) (RingLod uLodAniso) within 0.006 (shot noise ~0.002); tidally locked (uLodTidal
+//              forced to 1): the cos 2psi amplitude at mu = 0 = T(0) within 0.006; and a class with aligned share 0 is
+//              isotropic (|mean / iso - 1| <= 0.006). Prints the mean cross-section / pi a^2 vs elevation for the size
+//              classes (aligned share f(a) = smoothstep(0.05, 1, a)), as the medium carries them.
 import { fmt, openApp, table, withHarness } from './lib.mjs';
 
 await withHarness('particles', { usage: 'node scripts/test/particles.mjs [--base URL] [--out DIR] [--only regolith,relief,anisotropy] [--bodies N] [--dirs N]' }, async ({ args, out, rep, base, browser }) => {
@@ -28,10 +33,12 @@ await withHarness('particles', { usage: 'node scripts/test/particles.mjs [--base
     // ------------------------------------------------------------------ GPU programs (shared setup)
     const gpu = await page.evaluate(async () => {
       const raw = async (u) => (await import(/* @vite-ignore */ u)).default;
-      const [common, saturn, lighting, nearCommon] = await Promise.all([
+      const [common, saturn, lighting, profile, lod, nearCommon] = await Promise.all([
         raw('/src/render/shaders/common.glsl?raw'), raw('/src/render/shaders/saturn.glsl?raw'),
-        raw('/src/render/shaders/lighting.glsl?raw'), raw('/src/render/near/nearCommon.glsl?raw'),
+        raw('/src/render/shaders/lighting.glsl?raw'), raw('/src/render/shaders/ringProfile.glsl?raw'),
+        raw('/src/render/shaders/ringLod.glsl?raw'), raw('/src/render/near/nearCommon.glsl?raw'),
       ]);
+      const dyn = await import(/* @vite-ignore */ '/src/rings/ringDynamics.ts');
       const reg = await import(/* @vite-ignore */ '/src/render/near/NearRegolith.ts');
       const rel = await import(/* @vite-ignore */ '/src/render/near/NearRelief.ts');
       const noise = await import(/* @vite-ignore */ '/src/render/near/NearNoise.ts');
@@ -49,10 +56,21 @@ precision highp float; precision highp int; precision highp sampler2D; precision
 ${common}
 ${saturn}
 ${lighting}
+${profile}
+uniform vec4 uRsCam;
+${lod}
 ${nearCommon}
 uniform vec4 uSo[16];
 uniform int uMode;
+uniform float uA;
 out vec4 o;
+// projected area / pi a^2 of particle idx (seed 77) of radius uA along the unit direction d (SEF)
+float projArea(uint idx, vec3 d) {
+  vec3 ax = nearShape(idx, 77u, uA);
+  vec4 q = nearOrientation(idx, 77u, uA, 0.37);
+  vec3 b = nearQRotInv(q, d);
+  return sqrt(ax.y * ax.y * ax.z * ax.z * b.x * b.x + ax.x * ax.x * ax.z * ax.z * b.y * b.y + ax.x * ax.x * ax.y * ax.y * b.z * b.z);
+}
 void main() {
   ivec2 ij = ivec2(gl_FragCoord.xy);
   float i = float(ij.x), j = float(ij.y);
@@ -62,10 +80,23 @@ void main() {
     float si = sqrt(1.0 - mu0 * mu0), se = sqrt(1.0 - mu * mu);
     float cg = mu0 * mu + si * se * (2.0 * t - 1.0);
     o = vec4(ringRegolithIF(mu0, mu, cg, w), extendedSourceCosine(2.0 * mu0 - 1.0, 0.2 + 0.6 * mu), nearRegolithFactor(2.0 * mu - 1.0, mu0));
-  } else {
+  } else if (uMode == 1) {
     int k = ij.y * 64 + ij.x, bI = k / 256, d = k - bI * 256;
     float z = 1.0 - (float(d) + 0.5) / 128.0, ph = float(d) * 2.39996323, r = sqrt(max(0.0, 1.0 - z * z));
     o = nearRelief(vec3(r * cos(ph), r * sin(ph), z), uSo[bI], 4);
+  } else if (uMode == 2) {
+    // anisotropy: elevations mu = 0, 0.5, 0.866, 1 at azimuth 0.3 rad from the radial axis (x)
+    uint idx = uint(ij.y * 64 + ij.x);
+    vec4 r;
+    for (int m = 0; m < 4; m++) {
+      float mu = m == 0 ? 0.0 : (m == 1 ? 0.5 : (m == 2 ? 0.8660254 : 1.0)), sh = sqrt(1.0 - mu * mu);
+      r[m] = projArea(idx, vec3(sh * cos(0.3), sh * sin(0.3), mu));
+    }
+    o = r;
+  } else {
+    // edge-on along the radial / azimuthal axes (tidal locking: the cos 2psi term)
+    uint idx = uint(ij.y * 64 + ij.x);
+    o = vec4(projArea(idx, vec3(1.0, 0.0, 0.0)), projArea(idx, vec3(0.0, 1.0, 0.0)), 0.0, 0.0);
   }
 }`;
       const vsSrc = '#version 300 es\nin vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }';
@@ -159,6 +190,36 @@ void main() {
           eG = Math.max(eG, Math.abs(px[k * 4]));
         }
         Object.assign(out, { eH, hMaxAbs: eG });
+      }
+      // --- anisotropy of the spin-aligned population: GLSL shapes / orientations vs the CPU tables (ringDynamics.ts)
+      {
+        gl.uniform1f(gl.getUniformLocation(prog, 'uNearQuality'), 2);
+        gl.uniform1f(gl.getUniformLocation(prog, 'uA'), 1.5);
+        gl.uniform3f(gl.getUniformLocation(prog, 'uRingER'), 1, 0, 0);
+        gl.uniform3f(gl.getUniformLocation(prog, 'uRingEPhi'), 0, 1, 0);
+        const setF = (f) => gl.uniform4fv(gl.getUniformLocation(prog, 'uLodClassF'), new Float32Array(16).fill(f));
+        const setTidal = (t) => gl.uniform4f(gl.getUniformLocation(prog, 'uLodTidal'), t, 1, 0, 1);
+        const mean = (px, c) => { let s = 0; for (let k = 0; k < 4096; k++) s += px[k * 4 + c]; return s / 4096; };
+        setTidal(0);
+        setF(1);
+        const al = run(2);
+        setF(0);
+        const iso = run(2);
+        setF(1);
+        setTidal(1);
+        const lock = run(3);
+        const isoMean = [0, 1, 2, 3].reduce((s, c) => s + mean(iso, c), 0) / 4;
+        const tab = dyn.anisotropyTables();
+        const mus = [0, 0.5, 0.8660254, 1];
+        out.aniso = {
+          mus,
+          gpu: mus.map((_, c) => mean(al, c) / isoMean - 1),
+          cpu: mus.map((mu) => dyn.anisotropyAt(tab, mu)),
+          isoSpread: mus.map((_, c) => mean(iso, c) / isoMean - 1),
+          isoMean,
+          tGpu: (mean(lock, 0) - mean(lock, 1)) / (2 * isoMean),
+          tCpu: dyn.anisotropyAt(tab, 0, 1, 1) - dyn.anisotropyAt(tab, 0),
+        };
       }
       gl.getExtension('WEBGL_lose_context')?.loseContext();
       return out;
@@ -263,14 +324,24 @@ void main() {
     }
 
     if (only.has('anisotropy')) {
+      const g = gpu.aniso;
+      console.log('\n[anisotropy] the spin-aligned population: mean cross-section / isotropic mean - 1 along elevation mu (GLSL nearShape /');
+      console.log('nearOrientation, 4096 particles, vs the CPU table the medium uses, RingLod uLodAniso)');
+      console.log(table(['mu', 'GLSL', 'CPU table G(mu)', 'random axes (GLSL, ~0)'], g.mus.map((mu, i) => [fmt(mu, 3), fmt(g.gpu[i], 4), fmt(g.cpu[i], 4), fmt(g.isoSpread[i], 4)])));
+      const e = Math.max(...g.gpu.map((x, i) => Math.abs(x - g.cpu[i])));
+      rep.check('anisotropy: GLSL aligned population = CPU table G(mu) (|diff| <= 0.006)', e <= 0.006, `max |diff| ${fmt(e, 4)}`);
+      const ei = Math.max(...g.isoSpread.map(Math.abs));
+      rep.check('anisotropy: random spin axes are isotropic (|mean / iso - 1| <= 0.006)', ei <= 0.006, `max ${fmt(ei, 4)}`);
+      rep.check('anisotropy: tidally locked, cos 2psi amplitude edge-on GLSL = CPU T(0) (|diff| <= 0.006)', Math.abs(g.tGpu - g.tCpu) <= 0.006, `GLSL ${fmt(g.tGpu, 4)}, CPU ${fmt(g.tCpu, 4)}`);
+      // the classes as the medium carries them: 1 + f(a) G(mu), f = smoothstep(0.05, 1, a)
       const an = await page.evaluate(async () => {
-        const rel = await import(/* @vite-ignore */ '/src/render/near/NearRelief.ts');
-        const els = [0, 10, 30, 60, 90];
-        return [0.05, 0.3, 0.6, 1, 5].map((a) => [a, ...els.map((e) => rel.crossSectionVsElevation(a, e))]);
+        const dyn = await import(/* @vite-ignore */ '/src/rings/ringDynamics.ts');
+        const t = dyn.anisotropyTables();
+        return [0.05, 0.3, 0.6, 1, 5].map((a) => [a, dyn.spinAlignedShare(a), ...[0, 10, 30, 60, 90].map((el) => 1 + dyn.spinAlignedShare(a) * dyn.anisotropyAt(t, Math.sin((el * Math.PI) / 180)))]);
       });
-      console.log('\n[anisotropy] mean cross-section / pi a^2 of the principal-axis rotators vs view elevation (informational)');
-      console.log(table(['radius (m)', '0 deg', '10 deg', '30 deg', '60 deg', '90 deg (from above)'], an.map((r) => [fmt(r[0], 2), ...r.slice(1).map((x) => fmt(x, 3))])));
-      rep.data.anisotropy = an;
+      console.log('mean cross-section / pi a^2 vs view elevation by radius (aligned share f(a); the medium carries 1 + f G(mu)):');
+      console.log(table(['radius (m)', 'aligned share', '0 deg', '10 deg', '30 deg', '60 deg', '90 deg (from above)'], an.map((r) => [fmt(r[0], 2), fmt(r[1], 3), ...r.slice(2).map((x) => fmt(x, 3))])));
+      rep.data.anisotropy = { ...g, classes: an };
     }
   } finally {
     await page.close();

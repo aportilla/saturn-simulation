@@ -141,7 +141,12 @@ vec4 gRlRelief = vec4(0.0, 1.0, 0.0, 0.0);
 // Relief: the layer is shaded in its own tilted frame -- normal n from the slope, viewing cosine |V.n|, solar incidence
 // on each face (extended solar disk: the terminator of a tilt is soft), the relief's shadows (horizon toward the Sun),
 // transmission of the background through the tilted layer exp(-tau / |V.n|).
-void rlMainSheet(vec3 rd, vec3 p, float dr, float theta, float fp, float unresFrac, RingStream st, out vec3 L, out float T, out float tauOut) {
+// un (LOD contract, rlMain): (the share of tau the medium carries, its participation in the wakes relative to the
+// whole column's, the share of its tau in spin-aligned classes, 0) -- (1, 1, aligned share of the column, 0) beyond the
+// near field's reach. The profile's tau is the particle population's (tau_dyn with wakes) and its wake channel the
+// wake strength x the column's participation (TauPyramid), so the sheet's contrast is that of D_tau = 1 + pbar (D - 1).
+void rlMainSheet(vec3 rd, vec3 p, float dr, float theta, float fp, vec4 un, RingStream st, out vec3 L, out float T, out float tauOut) {
+  float unresFrac = un.x;
   L = vec3(0.0);
   T = 1.0;
   tauOut = 0.0;
@@ -187,9 +192,11 @@ void rlMainSheet(vec3 rd, vec3 p, float dr, float theta, float fp, float unresFr
   gRlRelief = vec4(st.zeta, relVis, mu0, length(st.slope));
 
   // ---- direct sunlight, with unresolved wakes as a two-column mixture (none in a propeller's stirred material:
-  // RingStream .wakeMod)
-  float ws = uRlWakeStat.w > 0.0 ? clamp(S.wake / uRlWakeStat.w, 0.0, 2.0) * uRlWakeScale * st.wakeMod : 0.0;
+  // RingStream .wakeMod); the medium's contrast includes the participation of the classes it carries (un.y)
+  float ws = uRlWakeStat.w > 0.0 ? clamp(S.wake / uRlWakeStat.w, 0.0, 2.0) * uRlWakeScale * st.wakeMod * un.y : 0.0;
   float fB = uRlWakeStat.x;
+  // the spin-aligned classes' cross-section along the Sun and the view (relative to isotropic)
+  vec2 gA = vec2(1.0 + un.z * lodAniso(uSunDir), 1.0 + un.z * lodAniso(rd));
   vec3 IFsun;
   bool cols = ws * fB > 1e-3;
   float Wb = 1.0, Wg = 1.0, Wvb = 1.0, Wvg = 1.0, Wsb = 1.0, Wsg = 1.0;
@@ -206,15 +213,15 @@ void rlMainSheet(vec3 rd, vec3 p, float dr, float theta, float fp, float unresFr
     float cs = smoothstep(0.0, 0.5, hk.y * S.H * abs(dot(uSunDir, nW)) / (mu0 * lam));
     Wvb = mix(Wb, 1.0, cv); Wsb = mix(Wb, 1.0, cs);
     Wvg = mix(Wg, 1.0, cv); Wsg = mix(Wg, 1.0, cs);
-    IFsun = fB * rlLayerIFW(S, mu, mu0, cosA, lit, Wb, Wsb, Wvb) + (1.0 - fB) * rlLayerIFW(S, mu, mu0, cosA, lit, Wg, Wsg, Wvg);
-    T = mix(1.0, rlTransWakes(S, mu, S.H * abs(dot(V, nW)) / (mu * lam), fB, ws, mW), S.cover);
+    IFsun = fB * rlLayerIFWA(S, mu, mu0, cosA, lit, Wb, Wsb, Wvb, gA) + (1.0 - fB) * rlLayerIFWA(S, mu, mu0, cosA, lit, Wg, Wsg, Wvg, gA);
+    T = mix(1.0, rlTransWakes(S, mu / gA.y, S.H * abs(dot(V, nW)) / (mu * lam), fB, ws, mW), S.cover);
   } else {
-    IFsun = rlLayerIF(S, mu, mu0, cosA, lit);
-    T = mix(1.0, rlTrans(S, mu), S.cover);
+    IFsun = rlLayerIFWA(S, mu, mu0, cosA, lit, 1.0, 1.0, 1.0, gA);
+    T = mix(1.0, rlTrans(S, mu / gA.y), S.cover);
   }
   // near the terminator of a tilted patch the solar disk straddles the local horizon: the part below lights the other
   // face (homogeneous layer)
-  if (mu0o > 1e-7) IFsun += rlLayerIF(S, mu, mu0o, cosA, !lit);
+  if (mu0o > 1e-7) IFsun += rlLayerIFWA(S, mu, mu0o, cosA, !lit, 1.0, 1.0, 1.0, gA);
   vec3 IF = IFsun * vis;
 
   // ---- Saturnshine: each face is lit by the half of Saturn's disk on its side (a beam from the
@@ -231,13 +238,15 @@ void rlMainSheet(vec3 rd, vec3 p, float dr, float theta, float fp, float unresFr
     vec3 bOther = hdir * cos(thC) - nL * (vSide * muB);
     float k = 0.5 * Es / max(uSunE, 1e-9);
     float cS = dot(bSame, V), cO = dot(bOther, V);
+    vec2 gS = vec2(1.0 + un.z * lodAniso(bSame), gA.y), gO = vec2(1.0 + un.z * lodAniso(bOther), gA.y);
+    // (no shadow-hiding surge for the extended source: rlLayerIFWAH)
     if (cols) {
       // the same two wake columns as the direct sunlight (as the march, whose beams take the column's sun-path
       // density): on the unlit face, lit by Saturn, a homogeneous layer was 5-7 % brighter than the columns
-      IF += k * (fB * (rlLayerIFW(S, mu, muB, cS, true, Wb, Wsb, Wvb) + rlLayerIFW(S, mu, muB, cO, false, Wb, Wsb, Wvb))
-        + (1.0 - fB) * (rlLayerIFW(S, mu, muB, cS, true, Wg, Wsg, Wvg) + rlLayerIFW(S, mu, muB, cO, false, Wg, Wsg, Wvg)));
+      IF += k * (fB * (rlLayerIFWAH(S, mu, muB, cS, true, Wb, Wsb, Wvb, gS, 0.0) + rlLayerIFWA(S, mu, muB, cO, false, Wb, Wsb, Wvb, gO))
+        + (1.0 - fB) * (rlLayerIFWAH(S, mu, muB, cS, true, Wg, Wsg, Wvg, gS, 0.0) + rlLayerIFWA(S, mu, muB, cO, false, Wg, Wsg, Wvg, gO)));
     } else {
-      IF += k * (rlLayerIF(S, mu, muB, cS, true) + rlLayerIF(S, mu, muB, cO, false));
+      IF += k * (rlLayerIFWAH(S, mu, muB, cS, true, 1.0, 1.0, 1.0, gS, 0.0) + rlLayerIFWA(S, mu, muB, cO, false, 1.0, 1.0, 1.0, gO));
     }
   }
 

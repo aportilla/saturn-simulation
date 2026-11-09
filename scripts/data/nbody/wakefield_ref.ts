@@ -4,12 +4,14 @@
 //   node_modules/.bin/rolldown scripts/data/nbody/wakefield_ref.ts --file <tmp>/wf.mjs --format esm --platform node
 //   node <tmp>/wf.mjs '{"seed":12345,"cases":[{"rKm":128000,"tau":0.66,"sigma":284,"omega":1.34e-4,"kappa":1.33e-4,"t":8.4e8}]}'
 // Prints JSON: per case the zone values, the wake set, the texture texels (both layers) and delta-texture texels,
-// lambda, tile, strength and the uniforms after update(t).
+// lambda, tile, strength and the uniforms after update(t), and the CPU mirror of the shared wake functions
+// (WakeField.densityAt / displacementAt = wakeDensity / wakeDisplacement) at the given points (units of lambda).
 import { WakeField, type WakeShape } from '../../../src/rings/WakeField';
 import { zoneParamsAtKm } from '../../../src/rings/ringRegions';
 
 interface Case { rKm: number; tau: number; sigma: number; omega: number; kappa: number; qShear?: number; t: number; shape?: Partial<WakeShape> }
-const args = JSON.parse(process.argv[2] ?? '{}') as { seed?: number; texels?: [number, number][]; dtexels?: [number, number][]; cases?: Case[] };
+const args = JSON.parse(process.argv[2] ?? '{}') as { seed?: number; texels?: [number, number][]; dtexels?: [number, number][]; points?: [number, number][]; cases?: Case[] };
+const points = args.points ?? [];
 const texels = args.texels ?? [[0, 0], [1, 0], [0, 1], [17, 93], [128, 64], [200, 31], [255, 255]];
 const dtexels = args.dtexels ?? [[0, 0], [1, 0], [0, 1], [17, 33], [40, 12], [63, 63]];
 const out: unknown[] = [];
@@ -42,6 +44,8 @@ for (const c of args.cases ?? []) {
     pitchDeg: wf.pitchDeg,
     texels: texels.map(([i, j]) => [0, 1].map((L) => Array.from(data.slice(((L * N + j) * N + i) * 4, ((L * N + j) * N + i) * 4 + 4)))),
     dtexels: dtexels.map(([i, j]) => Array.from(ddata.slice((j * DN + i) * 4, (j * DN + i) * 4 + 4))),
+    density: points.map(([x, y]) => wf.densityAt(x * wf.lambda, y * wf.lambda)),
+    displacement: points.map(([x, y]) => wf.displacementAt(x * wf.lambda, y * wf.lambda)),
   });
 }
 console.log(JSON.stringify({ texels, dtexels, cases: out }));

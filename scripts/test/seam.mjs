@@ -2,7 +2,7 @@
 // Near field <-> medium consistency (seams): the particles plus the ring-layer medium carrying the remaining
 // optical depth must look like the medium carrying all of it.
 //
-// usage: node scripts/test/seam.mjs [--base URL] [--out DIR] [--only seam,flux] [--views id1,id2] [--realizations 6]
+// usage: node scripts/test/seam.mjs [--base URL] [--out DIR] [--only seam,flux,handover,base] [--views id1,id2] [--realizations 6]
 //                                   [--strips 10] [--scale S] [--w 1280 --h 720]
 //
 // 1. seam  per view: mean HDR radiance (hdrRT: after the ring layer, before glare / tone mapping) in horizontal
@@ -22,14 +22,20 @@
 //          nodes), in strips across the march -> sheet handover (wM from debug view 12) and in two column regions
 //          (looking along / across the wakes): reflected radiance L (far-field pass off: nothing behind the rings)
 //          and transmission T (debug view 2). Checks in the band strips (0.02 < wM < 0.98): statistics (sheet) /
-//          reference within 1 +- 0.08 (L) and 0.06 (T); prefiltered explicit march / reference T within 0.06 (L: a
-//          known excess of the clipmap's density prefilter, limit 0.22); the march's statistical branch / sheet within
+//          reference within 1 +- 0.08 (L) and 0.06 (T); prefiltered explicit march / reference within 0.08 (L) and 0.06
+//          (T); the march's statistical branch / sheet within
 //          0.03; the largest step of production / reference between neighbouring strips across the band <= 0.04 (a
 //          seam between the representations is a step the reference does not have). Per-view overrides (documented
 //          in HANDOVER_VIEWS) for known residuals. Before Nov 2026 the explicit field was 15-26 % too bright (two
 //          fixed sun-path samples) and the statistical T 30-40 % too low across the wakes.
 //          --hviews id,... --hstrips 13 --hreal 3 (realizations: independent wake patterns, WakeField.realization;
 //          the statistics are the ensemble mean, one pattern's strip means scatter by +-5 % along the wakes)
+// 4. base  the base radiative transfer of the two representations with the wakes off (wakes=0): the march forced over
+//          the frame vs the sheet, L and T in the handover views' strips: L within 1 +- 0.03 in every strip the layer
+//          fills, T's slant optical depth -ln T within 3 % (the same plane-parallel transfer; measured L 0.994-1.027,
+//          T 0.986-1.035 at T >= 0.04, i.e. <= 1.1 % in tau). Found in Nov 2026: the sheet's Saturnshine beams
+//          took the point-source shadow-hiding surge (an opposition peak of a few degrees applied to Saturn's half-disk
+//          of tens of degrees), up to 14 % too bright at high solar phase (yaw120), where Saturnshine dominates.
 // The default render scale (0.5) is used unless --scale is given; astronaut=0 throughout.
 import { join } from 'node:path';
 import { canvasChroma, fmt, hdrMeans, openApp, retry, setPassEnabled, sleep, strips, table, waitFrames, withHarness } from './lib.mjs';
@@ -39,46 +45,40 @@ export const VIEWS = [
   { id: 'arc-repro', note: 'user report: 2 km above the unlit A ring, grazing', params: { cam: 'ring', r: 133374e3, z: 1970, yaw: 60, pitch: -22, t: T_ARC }, rows: [0.42, 1.0] },
   { id: 'a-ring-1km', note: 'preset', params: { preset: 'a-ring-1km', t: T_STD }, rows: [0.25, 1.0] },
   // 30 m above the layer the strips hold relatively few, large particles: +-5 % realization noise per strip even
-  // with 6 realizations -> 6 wider strips and a 0.08 step limit. Known since the Nov 2026 sun-path fix: in the
-  // grazing far strip (0.35-0.42, 0.3-1 km) the particles are ~9 % darker than the medium (their former 2-sample
-  // sun path brightened the mid-plane boulders by ~20 %, the medium's grazing top layer hardly at all) -> 0.10.
-  // Since the near-field contact step (NearContact) the resolved particles no longer overlap: they block more light
-  // than the medium's independently placed (Poisson) particles of the same tau - near + medium +0.3 % (far strip) to
-  // +3.6 % (nearest), measured contact on / off in the same realizations - which adds 0.016 to the step between the
-  // far strip and the next -> 0.11
-  { id: 'a-ring-30m', note: 'preset; rows within ~60 m of the camera excluded (single metre-sized boulders dominate); known far-strip particle deficit and contact brightening, step limit 0.11', params: { preset: 'a-ring-30m', t: T_STD }, rows: [0.35, 0.78], strips: 6, jump: 0.11 },
+  // with 6 realizations -> 6 wider strips and a 0.08 step limit. (It was 0.11 for a ~9 % particle deficit in the grazing
+  // far strip and the contact brightening; with the N-body size rules -- participation, the vertical laws, tau_dyn,
+  // docs/ring-physics.md 10.12 -- the far strip is within 2 % and the contact brightening +1-3 % in the nearest strips:
+  // step 0.041 in two runs.)
+  { id: 'a-ring-30m', note: 'preset; rows within ~60 m of the camera excluded (single metre-sized boulders dominate); realization noise, step limit 0.08', params: { preset: 'a-ring-30m', t: T_STD }, rows: [0.35, 0.78], strips: 6, jump: 0.08 },
   { id: 'lit-500m', note: '500 m below the lit A ring, looking up', params: { cam: 'ring', r: 128000e3, z: -500, yaw: -120, pitch: 10, t: T_ARC }, rows: [0.0, 0.55] },
-  // known (2026-11): on the unlit face the particles are ~5-8 % brighter than the medium they replace (near-field
-  // photometry), which leaves a soft ~0.07 step where the particle range ends -> looser step limit for this view
-  { id: 'under-rings', note: 'preset (unlit face from below); known +5-8 % particle excess, step limit 0.09', params: { preset: 'under-rings', t: T_STD }, rows: [0.0, 0.45], jump: 0.09 },
+  // (the former +5-8 % particle excess on the unlit face, step limit 0.09, is gone since the sun-path fix: step <= 0.011)
+  { id: 'under-rings', note: 'preset (unlit face from below)', params: { preset: 'under-rings', t: T_STD }, rows: [0.0, 0.45] },
 ];
-const LIM = { lo: 0.85, hi: 1.15, jump: 0.06, chroma: 0.002, flux: 0.08 };
+const LIM = { lo: 0.85, hi: 1.15, jump: 0.06, chroma: 0.002, flux: 0.08, base: 0.03 };
 const COMMON = { hud: 0, labels: 0, paused: 1, astronaut: 0 };
 
 // handover views: rows of the frame spanning the explicit field, the handover band and the statistics (within the
 // wake clipmap's coverage, where the reference exists), two column regions [x0, x1]. Limits (HLIM, per-view `lim`
 // overrides with the reason) apply in the handover band, 0.02 < wM < 0.98:
-//   L, T        statistics (sheet) / reference                       targets 0.08 / 0.06
-//   LE, TE      prefiltered explicit march / reference               LE: known clipmap-prefilter excess, see README
+//   L, T        statistics (sheet) / reference                       0.08 / 0.06
+//   LE, TE      prefiltered explicit march / reference               0.08 / 0.06 (LE was 0.22 for the clipmap
+//                                                                    prefilter's reflection excess; <= 2 % since the
+//                                                                    size rules of 10.12)
 //   statSheet   the march's statistical branch / sheet               0.03
 //   step        production / reference between neighbouring strips  0.04 (a seam at the handover)
+// Nov 2026 (docs/ring-physics.md 10.12): with the size rules, the sheet's multiple scattering in the medium's tau metric
+// and no point-source shadow hiding for Saturnshine, all views pass the default limits except as noted (they had L 0.18,
+// T 0.15, TE 0.15 / 0.12, statSheet 0.07, step 0.05 at yaw120, L 0.12 / T 0.08 on the unlit face, TE 0.12 at 1 km).
 export const HANDOVER_VIEWS = [
-  // the explicit field's T across the wakes at the far end of the band is 5-10 % low (the chi_eff model of the
-  // clipmap prefilter is incomplete for strongly decorrelated paths; production T there stays within 5 %). Open
-  // (README handover residual 4): across the wakes the statistical T is up to ~14 % above the reference -- the sheet
-  // and the march's statistics take chi with the local Toomre lambda (rlToomre, ~ Sigma(r)), the explicit field and
-  // the probe's chi unit have the anchor's; with the anchor's lambda (uRlWakeLamRef.x) every check of this view passes
-  { id: 'a-ring-1km', note: 'preset at the Cassini-compare time: left half along the wakes, right half across (Saturn behind)', params: { preset: 'a-ring-1km', t: '2026-11-08T12:00:00Z' }, rows: [0.3, 0.95], regions: [[0.02, 0.48], [0.52, 0.98]], lim: { TE: 0.12 } },
-  // (below the ring plane, z < 0: pitch up to look at the layer). High phase (looking toward the Sun's azimuth): the
-  // two-column reflection is ~10-15 % above the explicit field along the wakes, the statistical and explicit T up to
-  // 13 % low at the band's grazing far end, and the homogeneous march and sheet already differ by up to ~6 % there
-  // (base radiative transfer, not the wakes)
-  { id: 'a-1km-yaw120', note: 'the preset position (lit face, 1 km) looking the other way (yaw 120, high phase)', params: { cam: 'ring', r: 128000e3, phi: 96.2, z: -1000, yaw: 120, pitch: 24, t: '2026-11-08T12:00:00Z' }, rows: [0.05, 0.7], regions: [[0.02, 0.48], [0.52, 0.98]], lim: { L: 0.18, T: 0.15, TE: 0.15, statSheet: 0.07, step: 0.05 } },
-  // the unlit face from 2 km: along the wakes the two-column reflection is up to ~10 % below the explicit field;
-  // across them the statistical T 3-9 % above it (the lambda mismatch of a-ring-1km: within 2 % with the anchor's lambda)
-  { id: 'unlit-2km', note: '2 km above the unlit A ring (arc-repro camera)', params: { cam: 'ring', r: 133374e3, z: 1970, yaw: 60, pitch: -22, t: '2026-11-08T01:02:55Z' }, rows: [0.45, 0.95], regions: [[0.02, 0.48], [0.52, 0.98]], lim: { L: 0.12, T: 0.08 } },
+  { id: 'a-ring-1km', note: 'preset at the Cassini-compare time: left half along the wakes, right half across (Saturn behind)', params: { preset: 'a-ring-1km', t: '2026-11-08T12:00:00Z' }, rows: [0.3, 0.95], regions: [[0.02, 0.48], [0.52, 0.98]] },
+  // (below the ring plane, z < 0: pitch up to look at the layer). High phase (looking toward the Sun's azimuth): across
+  // the wakes, where the paths start to decorrelate (rows 0.25-0.45: the smoothstep of chi in the two-column
+  // reflection, uRlWakeHeff), the sheet's reflection is up to 4 % above the march's statistics (which match the
+  // reference within 1.5 %) -> statSheet 0.05
+  { id: 'a-1km-yaw120', note: 'the preset position (lit face, 1 km) looking the other way (yaw 120, high phase)', params: { cam: 'ring', r: 128000e3, phi: 96.2, z: -1000, yaw: 120, pitch: 24, t: '2026-11-08T12:00:00Z' }, rows: [0.05, 0.7], regions: [[0.02, 0.48], [0.52, 0.98]], lim: { statSheet: 0.05 } },
+  { id: 'unlit-2km', note: '2 km above the unlit A ring (arc-repro camera)', params: { cam: 'ring', r: 133374e3, z: 1970, yaw: 60, pitch: -22, t: '2026-11-08T01:02:55Z' }, rows: [0.45, 0.95], regions: [[0.02, 0.48], [0.52, 0.98]] },
 ];
-const HLIM = { L: 0.08, T: 0.06, LE: 0.22, TE: 0.06, statSheet: 0.03, step: 0.04, wBand: 0.02 };
+const HLIM = { L: 0.08, T: 0.06, LE: 0.08, TE: 0.06, statSheet: 0.03, step: 0.04, wBand: 0.02 };
 const HANDOVER_MODES = ['default', 'sheet', 'stat', 'explicit', 'reference'];
 
 // Strip means averaged over `nReal` realizations: bumping the frame anchor id re-seeds the particles, and the wake
@@ -181,8 +181,8 @@ async function handoverMeans(browser, base, params, mode, rects, nReal) {
   }, { label: `handover ${mode}` });
 }
 
-await withHarness('seam', { usage: 'node scripts/test/seam.mjs [--base URL] [--out DIR] [--only seam,flux,handover] [--views a,b] [--hviews a,b] [--realizations 6] [--hreal 3] [--strips N] [--scale S]' }, async ({ args, out, rep, base, browser }) => {
-  const only = new Set(args.list('only', ['seam', 'flux', 'handover']));
+await withHarness('seam', { usage: 'node scripts/test/seam.mjs [--base URL] [--out DIR] [--only seam,flux,handover,base] [--views a,b] [--hviews a,b] [--realizations 6] [--hreal 3] [--strips N] [--scale S]' }, async ({ args, out, rep, base, browser }) => {
+  const only = new Set(args.list('only', ['seam', 'flux', 'handover', 'base']));
   const scale = args.has('scale') ? { scale: args.num('scale', 0.5) } : {};
   const nReal = args.num('realizations', 6);
   const nStrips = args.num('strips', 10);
@@ -288,6 +288,32 @@ await withHarness('seam', { usage: 'node scripts/test/seam.mjs [--base URL] [--o
         }
         rep.data.handover[v.id][`x${x0}-${x1}`] = { rows, wM, ratios: R };
       });
+    }
+  }
+
+  if (only.has('base')) {
+    // the base radiative transfer of the medium's two representations without wakes: the same plane-parallel transfer
+    rep.data.base = {};
+    const nS = args.num('hstrips', 13);
+    for (const v of HANDOVER_VIEWS.filter((x) => new Set(args.list('hviews', HANDOVER_VIEWS.map((h) => h.id))).has(x.id))) {
+      console.log(`\n[base] ${v.id} — wakes off: march (forced over the frame) vs sheet`);
+      const rects = v.regions.flatMap(([x0, x1]) => strips(v.rows[0], v.rows[1], nS, x0, x1));
+      const M = {};
+      for (const mode of ['explicit', 'sheet']) M[mode] = await handoverMeans(browser, base, { ...scale, ...v.params, wakes: 0 }, mode, rects, 1);
+      const rows = rects.map((r, i) => [`${fmt(r[0], 2)}-${fmt(r[2], 2)} ${fmt(r[1], 3)}-${fmt(r[3], 3)}`, fmt(M.explicit.L[i], 4), fmt(M.sheet.L[i] / M.explicit.L[i], 3), fmt(M.explicit.T[i], 4), fmt(M.sheet.T[i] / M.explicit.T[i], 3)]);
+      console.log(table(['columns rows', 'L march', 'L sheet/march', 'T march', 'T sheet/march'], rows));
+      // strips the ring layer fills (some light reflected, some extinction)
+      const idx = rects.map((_, i) => i).filter((i) => M.explicit.L[i] > 0 && M.explicit.T[i] < 0.99);
+      const rr = idx.map((i) => M.sheet.L[i] / M.explicit.L[i]);
+      const lo = Math.min(...rr), hi = Math.max(...rr);
+      rep.check(`base ${v.id}: L sheet / march (wakes off) within 1 +- ${LIM.base} in every filled strip`, idx.length > 0 && lo >= 1 - LIM.base && hi <= 1 + LIM.base, `${fmt(lo, 3)} .. ${fmt(hi, 3)} (${idx.length} strips)`);
+      // transmission as slant optical depth: -ln T within 3 % (the ratio of T within 3 % where T > 1/e; the grazing far
+      // strips have T of a few % and the sheet's footprint-averaged prefilter differs there by ~1 % in tau)
+      const dt = idx.map((i) => Math.abs(Math.log(M.sheet.T[i] / M.explicit.T[i])) / Math.max(1, -Math.log(M.explicit.T[i])));
+      const tr = idx.map((i) => M.sheet.T[i] / M.explicit.T[i]);
+      rep.check(`base ${v.id}: T sheet / march (wakes off): |ln ratio| / max(1, tau_slant) <= ${LIM.base} in every filled strip`, idx.length > 0 && Math.max(...dt) <= LIM.base,
+        `worst ${fmt(Math.max(...dt), 4)}; ratio ${fmt(Math.min(...tr), 3)} .. ${fmt(Math.max(...tr), 3)} (${idx.length} strips)`);
+      rep.data.base[v.id] = { rects, means: M };
     }
   }
 });

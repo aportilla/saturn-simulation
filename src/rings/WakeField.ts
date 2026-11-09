@@ -446,13 +446,157 @@ export class WakeField {
   }
 
   /**
-   * Hook for size-dependent participation (next work package): the tau-weighted mean participation p of the medium in
-   * the wakes, D_tau = 1 + p (D - 1) (sv_wakes wakeDensityTau). 1 = every size follows the wakes fully (the model now).
+   * The tau-weighted mean participation pbar of the whole column in the wakes, D_tau = 1 + pbar (D - 1) (sv_wakes
+   * wakeDensityTau): the mixture model of src/rings/ringDynamics.ts, set per anchor by the pipeline (1 with wakes off).
    */
   get participationTau(): number {
     return this.uniforms.uWakePartTau.value;
   }
   set participationTau(v: number) {
     this.uniforms.uWakePartTau.value = Math.min(1, Math.max(0, v));
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------
+  // CPU mirror of wakes.glsl (float64; the GPU's bilinear filter weights have ~8 bits, so values agree to ~1e-3):
+  // wakeDisplacement / wakeDensity with the current uniforms (configure + update). Used for the wake statistics behind
+  // the medium's tau_dyn normalization (src/rings/WakeStats.ts) and checked against the Python port (procedural.py
+  // --verify) and the GPU (scripts/test/lod.mjs).
+  private readonly tS = new Float64Array(4);
+  private readonly tS1 = new Float64Array(4);
+  /** bilinear, repeat-wrapped sample of a texture layer (RGBA, texel centres at (i + 0.5) / n) */
+  private texSample(data: Float32Array, n: number, base: number, u: number, v: number, out: Float64Array): void {
+    const x = u * n - 0.5, y = v * n - 0.5;
+    const i0 = Math.floor(x), j0 = Math.floor(y), fx = x - i0, fy = y - j0;
+    const ia = ((i0 % n) + n) % n, ib = (ia + 1) % n, ja = ((j0 % n) + n) % n, jb = (ja + 1) % n;
+    const a00 = base + (ja * n + ia) * 4, a10 = base + (ja * n + ib) * 4, a01 = base + (jb * n + ia) * 4, a11 = base + (jb * n + ib) * 4;
+    for (let c = 0; c < 4; c++) {
+      const r0 = data[a00 + c] + (data[a10 + c] - data[a00 + c]) * fx;
+      const r1 = data[a01 + c] + (data[a11 + c] - data[a01 + c]) * fx;
+      out[c] = r0 + (r1 - r0) * fy;
+    }
+  }
+  private geo(g: number): [number, number, number] {
+    const m0 = this.uniforms.uWakeM0.value, S = this.uniforms.uWakeGen.value[g].x, L = this.uniforms.uWakeTile.value;
+    const kx = ((m0.x + S * m0.y) * 2 * Math.PI) / L, ky = (m0.y * 2 * Math.PI) / L, km = Math.hypot(kx, ky);
+    return [kx / km, ky / km, km];
+  }
+  /** asynchrony phase delta at (x, y) and its gradient (per m) */
+  private deltaAt(x: number, y: number): [number, number, number] {
+    const c = this.uniforms.uWakeClock.value;
+    if (c.y <= 0) return [0, 0, 0];
+    const d = this.uniforms.uWakeDelta.value, sd = d.w;
+    this.texSample(this.ddata, this.DN, 0, x * sd + d.x, (y + d.z * x) * sd + d.y, this.tS);
+    return [this.tS[0], sd * (this.tS[1] + d.z * this.tS[2]), sd * this.tS[2]];
+  }
+  private envYoungAt(delta: number): number { return this.envYoung(delta); }
+  private ampAt(g: number, r2: number, delta: number): number {
+    const c = this.uniforms.uWakeClock.value, ey = this.envYoungAt(delta);
+    return c.w * (g === 1 ? ey : 1 - ey) * (1 - Math.exp(-r2 * this.uniforms.uWakeShape.value.z));
+  }
+  /** (Theta, K) from a texel T at texture coordinate (u, v) */
+  private phaseK(g: number, T: Float64Array, u: number, v: number, nx: number, ny: number, km: number): [number, number] {
+    const m0 = this.uniforms.uWakeM0.value, S = this.uniforms.uWakeGen.value[g].x, L = this.uniforms.uWakeTile.value;
+    const f = m0.x * u + m0.y * v;
+    let th = (f - Math.floor(f)) * 2 * Math.PI + Math.atan2(T[1], T[0] + 1e-20);
+    th -= 2 * Math.PI * Math.floor(th / (2 * Math.PI) + 0.5);
+    const r = 1 + (nx * (T[2] + S * T[3]) + ny * T[3]) / (L * km);
+    const m = this.uniforms.uWakeShape.value.w;
+    return [th, km * 0.5 * (r + m + Math.sqrt((r - m) * (r - m) + 0.01))];
+  }
+  /** composite circle map: (C, dC/dTheta, sin 2C) */
+  private cmap(th: number, a: number): [number, number, number] {
+    const sh = this.uniforms.uWakeShape.value;
+    const gm = Math.exp(a * sh.x), g = Math.exp(a * sh.y);
+    const s = Math.sin(th), c = Math.cos(th), gm2 = gm * gm;
+    const N = g * gm * s, Dd = 0.5 * ((1 - gm2) + (1 + gm2) * c), E = 0.5 * ((1 + gm2) + (1 - gm2) * c), R2 = N * N + Dd * Dd;
+    return [Math.atan2(N, Dd), (g * gm * E) / R2, (2 * N * Dd) / R2];
+  }
+  private cinv(X: number, a: number): number {
+    const sh = this.uniforms.uWakeShape.value;
+    const gm = Math.exp(a * sh.x), g = Math.exp(a * sh.y);
+    const ph = Math.atan2(Math.sin(X), g * Math.cos(X));
+    return 2 * Math.atan2(Math.sin(0.5 * ph), gm * Math.cos(0.5 * ph));
+  }
+  private uv(g: number, x: number, y: number): [number, number] {
+    const G = this.uniforms.uWakeGen.value[g], L = this.uniforms.uWakeTile.value;
+    return [x / L + G.y, (y + G.x * x) / L + G.z];
+  }
+  /** (Theta, a, K) of generation g at (x, y) for asynchrony phase delta (wakeGenEvalAt) */
+  private genEval(g: number, x: number, y: number, n: [number, number, number], delta: number): [number, number, number] {
+    const [u, v] = this.uv(g, x, y);
+    this.texSample(this.data, this.N, (this.uniforms.uWakeGen.value[g].w | 0) * this.N * this.N * 4, u, v, this.tS);
+    const [th, K] = this.phaseK(g, this.tS, u, v, n[0], n[1], n[2]);
+    return [th, this.ampAt(g, this.tS[0] * this.tS[0] + this.tS[1] * this.tS[1], delta), K];
+  }
+  /** (Theta, a, K) at (x, y) (midpoint averages) and their derivatives along n (wakeGenEvalD) */
+  private genEvalD(g: number, x: number, y: number, n: [number, number, number], dl: [number, number, number]): [number[], number[]] {
+    const h = 1.5, S = this.uniforms.uWakeGen.value[g].x, L = this.uniforms.uWakeTile.value;
+    const [u, v] = this.uv(g, x, y);
+    const du = n[0] * (0.5 * h / L), dv = (n[1] + S * n[0]) * (0.5 * h / L);
+    const base = (this.uniforms.uWakeGen.value[g].w | 0) * this.N * this.N * 4;
+    this.texSample(this.data, this.N, base, u - du, v - dv, this.tS);
+    this.texSample(this.data, this.N, base, u + du, v + dv, this.tS1);
+    const T0 = this.tS, T1 = this.tS1;
+    const k0 = this.phaseK(g, T0, u - du, v - dv, n[0], n[1], n[2]);
+    const k1 = this.phaseK(g, T1, u + du, v + dv, n[0], n[1], n[2]);
+    const dd = 0.5 * h * (n[0] * dl[1] + n[1] * dl[2]);
+    const a0 = this.ampAt(g, T0[0] * T0[0] + T0[1] * T0[1], dl[0] - dd);
+    const a1 = this.ampAt(g, T1[0] * T1[0] + T1[1] * T1[1], dl[0] + dd);
+    const dphi = Math.atan2(T1[1] * T0[0] - T1[0] * T0[1], T1[0] * T0[0] + T1[1] * T0[1] + 1e-20);
+    const thn = n[2] + dphi / h;
+    let th = k0[0] + 0.5 * h * thn;
+    th -= 2 * Math.PI * Math.floor(th / (2 * Math.PI) + 0.5);
+    return [[th, 0.5 * (a0 + a1), 0.5 * (k0[1] + k1[1])], [thn, (a1 - a0) / h, (k1[1] - k0[1]) / h]];
+  }
+  private jac(v: number[], d: number[]): number {
+    const sh = this.uniforms.uWakeShape.value;
+    const c = this.cmap(v[0], v[1]);
+    const Ca = c[1] * sh.x * Math.sin(v[0]) + 0.5 * sh.y * c[2];
+    return 1 + ((c[1] - 1) * d[0] + Ca * d[1]) / v[2] - ((c[0] - v[0]) * d[2]) / (v[2] * v[2]);
+  }
+  private get onCpu(): boolean { return (this.uniforms.uWakeOn.value as number) > 0.5; }
+  /** wakeDisplacement(q): displacement (m) of a particle whose undisplaced (epicyclic) position is (x, y). */
+  displacementAt(x: number, y: number): [number, number] {
+    if (!this.onCpu) return [0, 0];
+    const disp = (g: number, px: number, py: number): [number, number] => {
+      const n = this.geo(g);
+      const v = this.genEval(g, px, py, n, this.deltaAt(px, py)[0]);
+      if (v[1] < 1e-4) return [0, 0];
+      const D = (this.cmap(v[0], v[1])[0] - v[0]) / v[2];
+      return [n[0] * D, n[1] * D];
+    };
+    const d0 = disp(0, x, y);
+    const d1 = disp(1, x + d0[0], y + d0[1]);
+    return [d0[0] + d1[0], d0[1] + d1[1]];
+  }
+  /** Inverse of generation g's map at (x, y): [Lagrangian x, y, Jacobian determinant J] (wakeGenInverse). */
+  private genInverse(g: number, x: number, y: number): [number, number, number] {
+    const n = this.geo(g);
+    const v = this.genEval(g, x, y, n, this.deltaAt(x, y)[0]);
+    if (v[1] < 1e-4) return [x, y, 1];
+    const tmax = this.uniforms.uWakeBounds.value.z;
+    let t = Math.min(tmax, Math.max(-tmax, (v[0] - this.cinv(v[0], v[1])) / v[2]));
+    let ve: number[] = v, d: number[] = [0, 0, 0];
+    for (let i = 0; i < 2; i++) {
+      const px = x - t * n[0], py = y - t * n[1];
+      const [vp, dd] = this.genEvalD(g, px, py, n, this.deltaAt(px, py));
+      d = dd;
+      const D = (this.cmap(vp[0], vp[1])[0] - vp[0]) / vp[2];
+      const tn = Math.min(tmax, Math.max(-tmax, t - (t - D) / Math.max(this.jac(vp, d), 0.05)));
+      const dt = tn - t;
+      let th = vp[0] - d[0] * dt;
+      th -= 2 * Math.PI * Math.floor(th / (2 * Math.PI) + 0.5);
+      ve = [th, Math.max(vp[1] - d[1] * dt, 0), Math.max(vp[2] - d[2] * dt, 1e-6)];
+      t = tn;
+    }
+    return [x - t * n[0], y - t * n[1], Math.max(Math.abs(this.jac(ve, d)), 0.06)];
+  }
+  /** wakeDensity(x): Eulerian surface-density factor (mean 1) at local position (x, y) (m). */
+  densityAt(x: number, y: number): number {
+    if (!this.onCpu) return 1;
+    const [qx, qy, J1] = this.genInverse(1, x, y);
+    const J0 = this.genInverse(0, qx, qy)[2];
+    const b = this.uniforms.uWakeBounds.value;
+    return Math.min(b.y, Math.max(b.x, 1 / (J1 * J0)));
   }
 }

@@ -107,7 +107,11 @@ export function computeLiveInfo(f: FrameState, ctx: PipelineContext | null, rig:
   const local = ctx && inProfile ? localAtCamera(ctx, f, rCyl, mid) : null;
   const zMid = nearRings ? mid.z : 0;
   const z = p.z - zMid;
-  const sd = local && local.macroscopic ? sizeDistribution(local) : null;
+  // the particle population (counts, spacing) carries the dynamical optical depth: the profile's is photometric
+  // (ring-physics.md 10.12; RingLod.tauDynFactor, as the near field draws them)
+  const lodDyn = ctx ? (ctx.lod as unknown as { tauDynFactor?: (t: number) => number }) : null;
+  const popTau = local ? local.tau * (lodDyn?.tauDynFactor ? lodDyn.tauDynFactor(local.tau) : 1) : 0;
+  const sd = local && local.macroscopic ? sizeDistribution({ ...local, tau: popTau }) : null;
   const rf = Math.max(rCyl, SATURN.R_EQ);
   const fr = orbitalFrequencies(rf);
   const q = shearParameter(rf);

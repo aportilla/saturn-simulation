@@ -516,7 +516,7 @@ export class NearFieldPass implements RenderPass {
     const t = f.t;
     const cam = ring.camLocal;
     const qO = ring.qShear * ring.omega;
-    const slab = 1.6 * lod.H + 0.5;
+    const slab = lod.slabHalf;
     // the camera's height above the local mid-plane (vertical relief: f.ring.zMid)
     const camZ = cam.z - ring.zMid;
     this.frame++;
@@ -564,7 +564,9 @@ export class NearFieldPass implements RenderPass {
     // 2-D ring structure: the boxes are Lagrangian (nearUpdate.glsl); the camera's Lagrangian radial offset is
     // cam.x + st.da (st.da = a' - r = -xi_cam), and the optical depth at the camera is tau0(a') J
     const st = ctx.structure.cam;
-    u.uTauCam.value = ctx.profile.tauAtKm((ring.r0 + cam.x + st.da) / 1000) * st.J;
+    // (the particle population's optical depth: tau_dyn, RingLod.tauDynFactor as the shader's lodTauDyn)
+    const tauCam = ctx.profile.tauAtKm((ring.r0 + cam.x + st.da) / 1000);
+    u.uTauCam.value = tauCam * lod.tauDynFactor(tauCam) * st.J;
     this.fsMesh.material = this.updMat;
     for (const c of this.classes) {
       if (!c.active || this.skip.update) continue;
