@@ -205,8 +205,10 @@ export class NearFieldPass implements RenderPass {
     uNfWc: { value: null as unknown },
     uNfWcLev: { value: Array.from({ length: NF_WC_LEVELS }, () => new Vector4(0, 0, 1, 0)) },
     uNfWcLevels: { value: 0 },
-    uNfWcInfo: { value: new Vector2(1024, 5) },
+    uNfWcInfo: { value: new Vector4(1024, 5, 1, 0) },
   };
+  /** the particles' sun-path wake density from the ring layer's wake clipmap where it covers them (nearDraw.vert.glsl) */
+  sunPathClip = true;
   /** near-field sun shadow map (crisp shadows from nearby particles) */
   shadowsEnabled = true;
   /** debugging / profiling: skip sub-passes */
@@ -369,7 +371,9 @@ export class NearFieldPass implements RenderPass {
     // RS_LIGHT_ONLY: the draw only does lighting lookups (sv_ringStructure LIGHT modulation), so the modulation's code
     // and sampler stay out of this program, which is at the 16 texture units ANGLE/Metal allows
     const lightOnly = '#define RS_LIGHT_ONLY\n';
-    const vs = lightOnly + common + listGlsl + NEAR_SHADOW_PROFILE_GLSL + NEAR_SHADOW_LOOKUP_GLSL + nearDrawVert;
+    // (nearOcclusion: the wake clipmap for the particles' sun-path nodes, one more sampler -- the draw is at 15 since the
+    // asynchrony field moved into the wake texture array)
+    const vs = lightOnly + common + listGlsl + NEAR_SHADOW_PROFILE_GLSL + NEAR_SHADOW_LOOKUP_GLSL + nearOcclusion + nearDrawVert;
     const fs = lightOnly + common + NEAR_SHADOW_PROFILE_GLSL + NEAR_SHADOW_LOOKUP_GLSL + nearDrawFrag;
     const drawMat = (quad: number) =>
       new RawShaderMaterial({
@@ -388,6 +392,7 @@ export class NearFieldPass implements RenderPass {
           uNearSatDir: this.satDirU,
           uNearAllocD: this.allocDU,
           uDebug: { value: 0 },
+          ...this.occlusionUniforms,
         },
         depthTest: true,
         depthWrite: true,
@@ -590,7 +595,7 @@ export class NearFieldPass implements RenderPass {
     // describe the texture's content until the ring layer refreshes levels later in this frame)
     const wc = ctx.wakeClip, ou = this.occlusionUniforms;
     const lam = ctx.wakes.lambda;
-    const nWc = wc && this.cullEnabled && this.cullPathWakes && (ctx.wakes.uniforms.uWakeOn.value as number) > 0.5 && Number.isFinite(lam) && lam > 0
+    const nWc = wc && (ctx.wakes.uniforms.uWakeOn.value as number) > 0.5 && Number.isFinite(lam) && lam > 0
       ? Math.min(wc.levelCount, NF_WC_LEVELS) : 0;
     ou.uNfWcLevels.value = nWc;
     if (wc && nWc > 0) {
@@ -599,9 +604,10 @@ export class NearFieldPass implements RenderPass {
         const s = wc.levels[k];
         if (s) ou.uNfWcLev.value[k].set(s.x, s.y, s.z, s.w); else ou.uNfWcLev.value[k].set(0, 0, 1, 0);
       }
-      // node spacing along the line of sight: an eighth of the wake spacing (resolves the wake profile)
-      ou.uNfWcInfo.value.set(wc.n, Math.max(lam, 20) / 8);
     }
+    // node spacing along the line of sight: an eighth of the wake spacing (resolves the wake profile); the cull's path
+    // test on / off; the particles' sun path from the clipmap on / off (w)
+    ou.uNfWcInfo.value.set(wc ? wc.n : 1024, Math.max(Number.isFinite(lam) ? lam : 60, 20) / 8, this.cullEnabled && this.cullPathWakes ? 1 : 0, this.sunPathClip ? 1 : 0);
     this.fsMesh.material = this.updMat;
     for (const c of this.classes) {
       if (!c.active || this.skip.update) continue;

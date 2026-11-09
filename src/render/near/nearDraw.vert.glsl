@@ -142,11 +142,15 @@ void main() {
   // dominates the brightness of the unlit face
   // (the stratified nodes of sv_ringLod ringSunNodeRise, exactly as the medium: a noisier estimate has more
   // variance and, through the convexity of exp(-tau W / mu0), would make the particles systematically brighter)
+  // (the density at the nodes: the ring layer's wake clipmap at the level the medium's march reads here -- one fetch
+  // instead of wakeDensity's 10-16, and the same sun-path field as the medium it hands over to -- where it covers the
+  // particle, else wakeDensity: nearOcclusion.glsl nfWakeLevelFor, display-pixel footprint)
   float Ws = 1.0;
   if (uWakeOn > 0.5) {
     vec2 sh2 = sh / max(abs(sunNp), 0.02);
     float qsun = (sg > 0.0 ? fUp : wsum - fUp) / wsum, acc = 0.0;
-    for (int j = 0; j < LOD_SUN_NODES; j++) acc += wakeDensity(lp.xy + sh2 * (ringSunNodeRise(j, qsun, sg * zl / H) * H));
+    int kw = uNfWcInfo.w > 0.5 ? nfWakeLevelFor(lp.xy, s * uLodPixelAngle) : -1;
+    for (int j = 0; j < LOD_SUN_NODES; j++) acc += nfWakeAtLevel(kw, lp.xy + sh2 * (ringSunNodeRise(j, qsun, sg * zl / H) * H));
     Ws = acc / float(LOD_SUN_NODES);
   }
   vec2 tauSun = vec2(sg > 0.0 ? tUp : tDn, tau * fPart) * (Ws / mu0);  // slant: (whole column, part the map can't resolve)

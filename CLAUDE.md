@@ -30,8 +30,11 @@ units, pipeline, depth, shared GLSL, LOD contract, photometry). Science and data
   `test:contact` (near-field contact resolution: overlaps before / after vs an independent CPU pair search,
   displacement bound, R0 write-back and drawn flags, frame-to-frame smoothness, warp ±1000; `--cost` adds the
   step's GPU time and a whole-frame off / on A/B). `npm run test:fps` = informational fps table per preset ×
-  quality; `npm run test:wakecost` = GPU cost per call of the shared wake functions (in-page micro-benchmark for
-  before/after comparisons). Details, tolerances, measured values and the shared helpers: `scripts/test/README.md`.
+  quality (`-- --compare <dir|url>`: another checkout, e.g. an older revision via `git archive`, interleaved fresh
+  pages); `npm run test:framecost` = frame or single-stage cost (ms) of JS-defined configurations in the same page, min /
+  p20 over interleaved trials — the tool for A/B cost measurements on the shared GPU; `npm run test:wakecost` = GPU
+  cost per call of the shared wake functions (in-page micro-benchmark for before/after comparisons; checks that the
+  per-frame skips are bit-exact). Details, tolerances, measured values and the shared helpers: `scripts/test/README.md`.
 - **Bibliography**: `npm run check:refs` (no GPU, ~1 s; also first in `npm test`) — every author–year citation in
   README.md and docs/{ring-physics,data-sources,ARCHITECTURE}.md needs an entry in `src/app/references.ts` (the in-app
   Sources panel, key G) and every entry must be cited; `-- --online` re-verifies DOIs / arXiv ids. A new citation in
@@ -95,9 +98,11 @@ mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,bod
 | LOD contract (which particles are drawn vs. carried by the medium), self-gravity wakes | `src/rings/RingLod.ts` + `shaders/ringLod.glsl`, `src/rings/WakeField.ts` + `shaders/wakes.glsl` (CPU/GLSL mirrors; wake sets per zone `wakeB` in `ringRegions.ts`; Python port + N-body calibration `scripts/data/nbody/procedural.py`, keep `--verify` passing) |
 | 2-D ring structure (streamline map: moonlet gap edges, normal modes of eccentric edges; hooks for relief and 2-D τ modulation) — every main-ring τ lookup goes through it | `src/rings/RingStructure.ts` + `src/rings/streamlines.ts` + `src/rings/ringModes.ts` (CPU) + `shaders/ringStructure.glsl`; table `public/data/rings/moonlet_response.*` from `scripts/data/rings/moonlet_response.mjs` |
 | sub-km 2-D τ texture (sheared, evolving; footprint prefilter → `rlApplyTauMod` in `rlOptics.glsl`) | `src/rings/ringTexture.ts` + `shaders/ringTexture.glsl` (chunk `sv_ringTexture`, included by `sv_ringStructure`) |
+| cache of the 2-D modulation around the camera (near-field presence, the march near the camera, the near field's allocation bound from its block maxima) | `src/render/rings/ModClipmap.ts` (`ctx.modClip`, owned by the Pipeline) + `shaders/ringModClip.glsl` (chunk `sv_ringModClip`: `rsModCached`); check `npm run test:propellers -- --only cache` |
 | propeller moonlets (named giants, belts: positions, partial gaps / lobes / wakes, relief; moonlet bodies) | `src/rings/propellers.ts` + `shaders/ringPropellers.glsl` (chunk `sv_ringPropellers`), `src/render/passes/PropellerMoonletPass.ts` + `src/render/propellers/*`; presets `propeller-bleriot`, `propeller-belt`; Cassini views `scripts/test/specs/propellers.json` |
 | vertical relief: one height field z0 (bending waves, 1983 corrugation, B-ring-edge region A / S/2009 S1, moonlet ζ; propeller heights computed but off: `RS_PROPELLER_RELIEF`) that every renderer takes heights relative to | `src/rings/relief.ts` (model + CPU mirror, owned by `RingStructure`), `shaders/ringRelief.glsl` (sources, behind `ringStructure.glsl`'s `rsReliefWaves` / `rsReliefSites`), `shaders/ringReliefShade.glsl` (sheet hit, shadows, normals); numbers `scripts/data/rings/relief_check.mjs`; ring-physics.md §13 |
 | individual ring particles (near field) | `src/render/passes/NearFieldPass.ts`, `src/render/near/*` |
+| statistical occlusion of near-field particles (the update pass's cull; meant for the contact set too) | `src/render/near/nearOcclusion.glsl` (`nearLosTau`; uniforms `NearFieldPass.occlusionUniforms`, the ring layer's wake clipmap `ctx.wakeClip`); check `npm run test:counts` section 4 |
 | particle contacts (resolved particles pushed out of each other's overlaps: hash grid + Jacobi, written back into R0 after the update pass) | `src/render/near/NearContact.ts` (run from `NearFieldPass.render`); check `npm run test:contact` |
 | particle shape, spin, relief, regolith photometry (+ CPU mirrors) | `src/render/near/nearCommon.glsl` (`nearShape`, `nearOrientation`, `nearRelief`, `nearRegolithFactor`), `nearDraw.frag.glsl`, `NearRegolith.ts`, `NearRelief.ts`, `NearNoise.ts`; `ringRegolithIF` in `src/render/shaders/lighting.glsl` |
 | astronaut companion (camera-pinned, 1.9 m, for scale; lit like the particles) | `src/render/passes/AstronautPass.ts`, `src/render/astronaut/*` |

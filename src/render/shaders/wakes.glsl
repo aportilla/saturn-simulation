@@ -18,8 +18,9 @@
 #ifndef SV_WAKES
 #define SV_WAKES
 
-uniform highp sampler2DArray uWakeTex;  // 2 layers (envelope fields A, B): (Re W, Im W, G_u, G_v), periodic, <|W|^2> = 1
-uniform sampler2D uWakeDTex;  // asynchrony field: (delta in [0, 1), d delta/du, d delta/dv, 0), periodic
+uniform highp sampler2DArray uWakeTex;  // layers 0, 1 (envelope fields A, B): (Re W, Im W, G_u, G_v), periodic, <|W|^2> = 1;
+                                        // layer 2: the asynchrony field (delta in [0, 1), d delta/du, d delta/dv, 0), its
+                                        // 64^2 tile repeated 4 x 4 (WakeField.ts): sampled at the tile coordinate / 4
 uniform float uWakeTile;      // tile size L (m)
 uniform vec4 uWakeGen[2];     // [0] older, [1] younger generation: (shear S_g, offsetU, offsetV, texture layer)
 uniform vec4 uWakeClock;      // (cycle phase phi, asyncD, 2 envW (0: sin^2 handover), strength)
@@ -53,7 +54,7 @@ vec2 wakeUV(int g, vec2 p) {
 vec3 wakeDelta(vec2 p) {
   if (uWakeClock.y <= 0.0 || uWakeOpt.x < 0.5) return vec3(0.0);
   float sd = uWakeDelta.w;
-  vec4 t = texture(uWakeDTex, vec2(p.x, p.y + uWakeDelta.z * p.x) * sd + uWakeDelta.xy);
+  vec4 t = texture(uWakeTex, vec3((vec2(p.x, p.y + uWakeDelta.z * p.x) * sd + uWakeDelta.xy) * 0.25, 2.0));
   return vec3(t.x, sd * (t.y + uWakeDelta.z * t.z), sd * t.z);
 }
 // Envelope of the younger generation at asynchrony phase delta (the older one has 1 - e).

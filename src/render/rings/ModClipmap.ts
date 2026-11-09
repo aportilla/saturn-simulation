@@ -94,8 +94,13 @@ export class ModClipmap {
   readonly rt: WebGLRenderTarget;
   /** sv_ringModClip uniforms (shared objects: spread into the shared set before the passes' materials are made) */
   readonly uniforms: { uMcTex: { value: unknown }; uMcLev: { value: Vector4[] }; uMcInfo: { value: Vector4 } };
-  /** false: no cache (every lookup evaluates the modulation directly; A/B tests) */
+  /** false: no cache (every lookup evaluates the modulation directly, the allocation takes the analytic bound) */
   enabled = true;
+  /**
+   * false: the shaders evaluate the modulation directly while the cache keeps updating and bounding the allocation (A/B
+   * tests of the lookups with the same particles: switching `enabled` off re-fits the near field)
+   */
+  useInShaders = true;
   maxPerFrame = 3;
   levelCount = 0;
   /** levels re-rendered in the last frame (stats) */
@@ -207,7 +212,7 @@ export class ModClipmap {
       const usable = k < n && s.valid && s.anchorId === this.wantAnchor;
       lev[k].set(s.cr, s.cs, 1 / (s.d || 1), usable ? 1 : 0);
     }
-    this.uniforms.uMcInfo.value.x = n;
+    this.uniforms.uMcInfo.value.x = this.useInShaders ? n : 0;
   }
 
   /** Re-render the levels chosen by update() (before any pass renders); block maxima of what changed. */

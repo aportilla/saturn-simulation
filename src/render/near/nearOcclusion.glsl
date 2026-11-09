@@ -32,8 +32,9 @@
 #define NF_WC_LEVELS 6
 uniform sampler2D uNfWc;             // R16F atlas, NF_WC_LEVELS levels of N x N stacked vertically (box-filtered W)
 uniform vec4 uNfWcLev[NF_WC_LEVELS]; // per level: (centre x, centre y, texel (m), usable), local frame
-uniform int uNfWcLevels;             // levels in use (0: the emptiest-gap bound alone)
-uniform vec2 uNfWcInfo;              // (N, node spacing along the line of sight: wake spacing / 8 (m))
+uniform int uNfWcLevels;             // levels in use (0: none -- the emptiest-gap bound alone, wakeDensity itself)
+uniform vec4 uNfWcInfo;              // (N, node spacing along the line of sight: wake spacing / 8 (m), 1 = the cull's
+                                     // path test is on, -)
 #define NF_CULL_NODES 24
 #define NF_CULL_WMAX 1.5
 
@@ -102,6 +103,23 @@ float nfPathWakeTau(vec2 c, vec2 dir, float d, float zc, float zt, float qc, flo
   return acc * wn;
 }
 
+// Self-gravity-wake density for a particle's sun-path nodes (nearDraw.vert.glsl): the clipmap level the medium's march
+// would read at the particle (rlWakeLevel: the finest valid level covering it whose texels are at least its display
+// pixel footprint fp / 1.5), so particles and medium see the same sun-path field where they hand over; the shared
+// wakeDensity itself outside the clipmap. Returns the level (-1: none) for nfWakeAtLevel.
+int nfWakeLevelFor(vec2 xy, float fp) {
+  float halfN = 0.5 * uNfWcInfo.x - 2.0;
+  for (int k = 0; k < NF_WC_LEVELS; k++) {
+    if (k >= uNfWcLevels) break;
+    vec4 L = uNfWcLev[k];
+    if (L.w < 0.5 || L.z * 1.5 < fp) continue;
+    vec2 q = (xy - L.xy) / L.z;
+    if (max(abs(q.x), abs(q.y)) < halfN) return k;
+  }
+  return -1;
+}
+float nfWakeAtLevel(int k, vec2 xy) { return k >= 0 ? nfWakeClipAt(k, xy) : wakeDensity(xy); }
+
 float nearLosTau(vec2 c, vec2 pxy, float rb, float zc, float zt, float tauP, float H, float tauCap) {
   float lp = length(pxy);
   float d = max(lp - rb, 0.0);
@@ -116,6 +134,6 @@ float nearLosTau(vec2 c, vec2 pxy, float rb, float zc, float zt, float tauP, flo
     tSlab = tauP * abs(qc - qt) * L / abs(dz);
   }
   float tl = tSlab * wakeMinDensity();
-  if (tl > tauCap || uNfWcLevels <= 0 || tSlab * NF_CULL_WMAX <= tauCap) return tl;
+  if (tl > tauCap || uNfWcLevels <= 0 || uNfWcInfo.z < 0.5 || tSlab * NF_CULL_WMAX <= tauCap) return tl;
   return max(tl, nfPathWakeTau(c, lp > 1e-6 ? pxy / lp : vec2(1.0, 0.0), d, zc, zt, qc, qt, H, flatP, tSlab, tauCap));
 }

@@ -12,9 +12,10 @@ follow [Adding a tool](#adding-a-tool) so the next session can run it too.
 | `npm run test:sources` | the Sources panel (key G) and every place's Sources line in the explainer: keys, focus, filtering, links | ~20 s |
 | `npm run test:smoke` | every place loads and renders cleanly (errors, fallbacks, NaN / negative pixels) | ~1.5 min |
 | `npm run test:physics` | Sun ephemeris, orbital frequencies, near-field particle kinematics | ~15 s |
-| `npm run test:counts` | drawn particle counts vs the analytic expectation, HUD count line, radius sampler | ~30 s |
+| `npm run test:counts` | drawn particle counts vs the analytic expectation, HUD count line, radius sampler, the occlusion cull removes only hidden particles | ~1 min |
 | `npm run test:seam` | near field + medium vs medium alone (seams/arcs), particle flux vs render scale, the medium's wake representations vs a reference field across the march → sheet handover | ~4.5 min |
-| `npm run test:fps` | uncapped fps table: places × particle quality (informational) | ~2.5 min |
+| `npm run test:fps` | uncapped fps table: places × particle quality (informational); `--compare DIR` another checkout interleaved | ~2.5 min |
+| `npm run test:framecost` | frame or stage cost (ms) of configurations in the same page, min / p20 over interleaved trials (informational) | ~1 min / view |
 | `npm run test:exposure` | the camera-pinned astronaut doesn't change the auto exposure (meter mask) | ~45 s |
 | `npm run test:edges` | gap edges perturbed by moonlets and the B-ring edge modes (streamline map): gaps empty, rendered edges = model, near field follows | ~50 s |
 | `npm run test:moonflux` | point-source flux of unresolved moons = resolved brightness (measured shapes + ellipsoid control) | ~10 s |
@@ -95,14 +96,25 @@ run caught tiny negative radiances from the F-ring line profiles, since fixed).
    height, the class's power-law radii and the view frustum with the same ≥ 1 px condition (`--mc 400000`
    samples), with τ_macro × the 2-D modulation M of `sv_ringStructure` at each sample (sub-km texture, propellers:
    CPU mirror `structure.tauModAt`; presence follows τ0 J M). Tolerance 1 ± max(4/√expected, 0.04) for the
-   `--classes 4` classes with the most expected particles (≥ 300). Measured ratios 0.997 … 1.031 (Poisson-consistent).
+   `--classes 4` classes with the most expected particles (≥ 300). Measured ratios 0.997 … 1.031 (Poisson-consistent;
+   0.991 … 1.028 with presence read from the modulation cache, Nov 2026).
 2. **HUD count line** (`near.count`) starts with `complete` at those places; above the dense B ring
    (`--heights 100,1000,5000` m) it states the status explicitly — `complete…` or `DEFICIT: ~x% …` (measured: a
-   9.2 % deficit at 100 m with the 12M-slot cap binding — 0.3 % before the sub-km texture raised the allocation
-   bound by its maximum factor 1.43 in the B-ring core — complete at 1 and 5 km).
+   2.9 % deficit at 100 m with the 12M-slot cap binding, boxes clipped at 573 m — 0.3 % before the sub-km texture,
+   9.2 % with its global allocation bound 1.43 in the B-ring core, 2.9 % with the modulation cache's local maximum
+   there, ~1.26 — complete at 1 and 5 km).
 3. **radius sampler**: the per-class radius/box sampler (`RingLod.pieceP/pieceB`, mirrored from `nearRadiusBox`
    in `nearCommon.glsl`) reproduces the target density τmax a⁻ᵠ/(π I₂) in every radius bin: |ratio − 1| ≤ 0.02
    when the slot cap does not bind (measured 2e-5).
+4. **occlusion cull** (`--cull-views b-ring-inside,a-ring-inside,a-ring-30m`, render scale 1, astronaut off): the
+   statistical-occlusion cull (`near/nearOcclusion.glsl` `nearLosTau`: line-of-sight τ > 5) may only remove particles
+   the layer hides — the same frame (same particles) with the cull off and on, after the draw lists settled: mean HDR
+   radiance on / off within 1 ± 0.005, pixels whose radiance changes by > 5 % ≤ 0.5 % (a culled particle that was
+   visible leaves a hole; at the cull's τ ≥ 5/0.8 it is seen with probability ≤ e^−6.25 = 0.2 %). Measured 2026-11-08
+   at 1280×720 (drawn ≥ 1 px off → on, ratio, pixels changed): b-ring-inside 877k → 86k, 0.9996, 0.059 %;
+   a-ring-inside 235k → 57k, 1.0003, 0.12 %; a-ring-30m 204k → 180k, 1.0000, 0.008 %. At 1920×1080: b-ring-inside
+   1.17 M → 0.10 M drawn, a-ring-inside 0.54 M → 0.10 M, a-ring-30m 0.49 M → 0.41 M; with the emptiest-gap bound alone,
+   as before Nov 2026: 1.17 M, 0.35 M, 0.49 M.
 
 ### seam — `scripts/test/seam.mjs` (`--only seam,flux,handover`, `--views id,…`)
 1. **seam**: per view, mean HDR radiance (`hdrRT`, after the ring layer and before glare / tone mapping, so
@@ -213,6 +225,37 @@ propellers): `--ab-off "s=__sv.pipeline.ctx.structure;s.texture.amp=0;s.propelle
 `--ab-on "…amp=1;…scale=1"`; add `;__sv.pipeline.lastModKey='force'` to both and `--ab-settle 3000` to include
 the near-field allocation bound (the local LOD re-fits within 60 frames).
 
+**Compare mode** (`--compare DIR|URL`, `--rounds 3`, `--label-a`, `--label-b`): this checkout (A) against another one
+(B) — a directory holding another revision (`git archive <rev> -o x.tar`, untar into an empty directory, symlink
+`node_modules`; a private Vite server is started for it, `startServer({ root })`) or a running server's URL. Per cell
+`--rounds` rounds of one fresh page per tree in ABBA order, so both trees see the same slowly drifting GPU load; reports
+mean ms per frame of A and B, B − A ± its standard error and the ratio. Presets the other tree lacks are `n/a`. With
+other agents' browsers on the GPU, single fps numbers vary by 2× between runs; repeat and compare within a run.
+
+### framecost — `scripts/test/framecost.mjs` (informational)
+`--views a-ring-1km,b-ring-inside` (presets or `k=v&…` parameter sets) × configurations `--cfg "name::<setup js>"` or
+`--cfg "name::<setup js>::<timed js>"` (repeatable). Per view one page; the app's frame loop is held; per trial every
+configuration in turn (rotating order): its setup JavaScript runs, `--settle-frames` whole frames are rendered, then
+`--reps` frames (`pipeline.render`) — or the timed snippet, e.g. one stage alone — are timed between synchronous 1-pixel
+read-backs of every target a stage may write (hdrRT, sceneRT, the near field's R0: a read-back only waits for work on
+its own target). `--trials 30`; reports min, 20th percentile and median per configuration and their differences to the
+first. In scope: `sv`, `P` (pipeline), `near` / `rings` / `far` / `post` (the passes' inner objects), `S`
+(`ctx.structure`), `f` (`sv.frame`), `ctx`. The setup must set everything it relies on (nothing is undone between
+configurations). Examples:
+```sh
+# the near field's update pass alone, with and without the modulation cache
+node scripts/test/framecost.mjs --views a-ring-30m \
+  --cfg "mc::ctx.modClip.useInShaders=true;Object.assign(near.skip,{update:false,contact:true,compact:true,points:true,quads:true,shadow:true})::near.render(f,ctx)" \
+  --cfg "direct::ctx.modClip.useInShaders=false;Object.assign(near.skip,{update:false,contact:true,compact:true,points:true,quads:true,shadow:true})::near.render(f,ctx)"
+# whole frames, texture + propellers off / on
+node scripts/test/framecost.mjs --views a-ring-1km --cfg "on::S.texture.amp=1;S.propellers.scale=1" --cfg "off::S.texture.amp=0;S.propellers.scale=0"
+```
+Far less noisy than fps counting on a shared GPU (another agent's browser triples the median; compare minima / p20 and
+repeat runs). Measured with it (Nov 2026, 1920×1080, min ms): the near field's update pass a-ring-1km 5.4 → 2.0 with
+the modulation cache, a-ring-30m 14.3 → 8.4, propeller-belt 6.1 → 2.1; the line-of-sight occlusion test costs
++0.4 ms (b-ring-inside) / +1.2 ms (a-ring-30m) in the update pass and saves 3.8 / 2.8 ms of the near field in
+b-ring-inside / a-ring-inside.
+
 ### exposure — `scripts/test/exposure.mjs` (`--presets id,…`, `--tol EV`, `--settle ms`)
 
 The astronaut is left out of the auto-exposure meter: `AstronautPass` writes `ctx.meterMask` (its visible pixels)
@@ -302,7 +345,7 @@ propeller / relief merge 22/22 places, 151 entries, 157 links (121 DOIs), 11/11,
 screenshots: `node scripts/shots.mjs scripts/test/specs/sources.json <outDir> [--w 390 --h 844]` (explainer lines,
 panel, entry focus, search, topic filter, an unverified entry, help).
 
-### propellers — `scripts/test/propellers.mjs` (`--only positions,texture,prefilter,structure,presence,bodies`)
+### propellers — `scripts/test/propellers.mjs` (`--only positions,texture,prefilter,structure,presence,cache,bodies`)
 The 2-D τ modulation of `sv_ringStructure` (docs/ring-physics.md §11–12): the sub-km texture (`src/rings/ringTexture.ts`
 + `shaders/ringTexture.glsl`) and the propeller moonlets (`src/rings/propellers.ts` + `shaders/ringPropellers.glsl`,
 bodies `PropellerMoonletPass`). CPU mirrors run in the page (`__sv.pipeline.ctx.structure.texture / .propellers`),
@@ -326,7 +369,9 @@ the GLSL through ring-layer and near-field read-backs; t = 2026-11-08T12:00Z.
 | | deepest gap τ / τ0 (gaps present) | ≤ 0.65 | 0.433 / 0.502 |
 | | the belt view with the texture on: median τ_GPU / (τ0 J M_CPU); share within ± 8 %; rms of the modulation GPU / CPU | 0.97 … 1.03; ≥ 0.9; 0.9 … 1.1 | 1.000; 0.998; 0.998 (rms 0.110) |
 | presence | near-field particles ≥ 1 px of the busiest class, 400 m above a belt propeller's outer partial gap, grouped by the CPU M at each particle's drawn position: drawn / expected (counts.mjs Monte Carlo of n_k τ0 M with frustum, layer, radii; 4M samples) — gap (M < 0.75), flank (0.75–0.95), undisturbed / enhanced (≥ 0.95) | 1 ± max(0.08, 4/√n) | 1.002 (3,039) / 0.975 (3,927) / 1.026 (9,970) — presence is decided at the guiding centre, the classification uses the drawn (wake- and epicycle-displaced) position, which moves a few % across the group boundaries |
-| | near-field cost gate (`uRpNearMask`): present particles (count and position checksum) with the CPU class mask vs the enumeration forced for every class, in the presence view and at `a-ring-30m` | identical | identical (inside a belt no class is gated: the gate saves work outside the belts) |
+| | near-field cost gate (`uRpNearMask`): present particles (count and position checksum) with the CPU class mask vs the enumeration forced for every class, in the presence view and at `a-ring-30m` | identical | identical (inside a belt no class is gated: the gate saves work outside the belts; since Nov 2026 presence reads the modulation cache, the gate only matters where no cache level covers a particle) |
+| cache | the modulation cache presence reads (`ModClipmap`, `sv_ringModClip`) at `propeller-belt` and `a-ring-1km`: max / rms \|M cache − M CPU\| at texel centres, each level at its prefilter fp = texel; levels with texels ≤ 4 m vs fp = 0 | ≤ 4e-3 / ≤ 1e-3; ≤ 4e-3 | ≤ 6.6e-4 / ≤ 2.0e-4 (float32); ≤ 2.2e-3 (coarser levels vs fp = 0: rms 0.5 % at 8 m … 4 % at 128 m — the prefilter) |
+| | drawn particles whose presence differs between the cache and the direct evaluation (same frame and particles) | ≤ 2 % | 0.99 % / 0.83 % (distant particles on prefiltered coarse levels; 0.04 % in b-ring-inside, all on ≤ 2 m levels); switched with `modClip.useInShaders` (`enabled = false` also withdraws the allocation bound: the near field re-fits) |
 | bodies | presets `propeller-bleriot`, `propeller-belt`: moonlets drawn (pass stats); opaque distance at the projected centre of the largest-looking body in view − its distance, in units of R | ≥ 1; −1.4 … 0.1 | 1 / 113 drawn; −0.93 / −0.89 |
 | all | console / GL errors, passes ok, NaN / negative pixels (structure views, presets) | none | none |
 
@@ -418,6 +463,13 @@ neither R nor K. `--async D` overrides the asynchrony depth (WakeField `shapeOve
 before/after comparison extract the old revision (`git archive <rev> -o x.tar`, untar, symlink `node_modules`), copy
 this script into it and run both trees alternately (other GPU users skew single runs). Measured 2026-11-08 at
 `a-ring-1km`, 1024² × 16 × 16: see docs/ring-physics.md §10.11 (cost). ~10 s.
+One check (fails the run): the per-frame skips `uWakeOpt` (WakeField.update: in the part of each cycle where the
+generations' handover is complete for every asynchrony phase δ the δ fetches and the zero generation are skipped) change
+no result — both functions on a 512² grid with the flags as set vs every path forced on, bit for bit (max |diff| 0);
+the cost with every path on is reported too. The cost depends on the cycle phase (printed): measured Nov 2026 at
+t = 2026-11-08T12:00Z (phase 0.52, handover complete) wakeDensity 80 ps / wakeDisplacement 21 ps per call vs 110 / 45 with
+every path on; at 15:30Z (phase 0.08, both generations and δ active) ~200–300 / ~50–80 ps, unchanged (single runs vary
+by 2–4× with other agents' browsers on the GPU).
 
 ## Tools
 
@@ -499,7 +551,7 @@ this script into it and run both trees alternately (other GPU users skew single 
 | `withHarness(name, { bool, w, h, uncapped, usage }, async ({ args, out, rep, base, browser }) => …)` | arg parsing, output dir, server, browser, report, exit code — the skeleton of every test |
 | `parseArgs(argv, { bool })` → `{ _, str, num, flag, list, has }` | CLI options (`--k v`, `--k=v`, boolean flags) |
 | `outputDir(name, dir)`, `writeJson`, `table`, `fmt`, `Report` (`check`, `range`, `error`, `data`, `finish`) | output and bookkeeping (`results.json`) |
-| `startServer({ base })` | reuse `base` if it answers, else a private Vite server (no HMR / watching) on a free port |
+| `startServer({ base, root })` | reuse `base` if it answers, else a private Vite server (no HMR / watching) on a free port, for this checkout or `root` (another revision) |
 | `launchBrowser({ w, h, dpr, uncapped })` | headless Chrome on the GPU (`CHROME_ARGS`, `UNCAPPED_ARGS`) |
 | `openApp(browser, base, params, { path, settle, keepStorage })` → `{ page, errs, url }` | fresh page (localStorage cleared), URL with params, waits for `__svReady`, retries once |
 | `captureErrors(page, { ignore, echo, echoAll })`, `problems(page, errs)` | console errors/warnings, page errors, failed requests, HTTP ≥ 400, `gl.getError()`, passes not `ok` |

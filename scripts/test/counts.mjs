@@ -3,6 +3,7 @@
 //
 // usage: node scripts/test/counts.mjs [--base URL] [--out DIR] [--places a-ring-30m,a-ring-1km,cassini-division]
 //                                     [--classes N] [--mc 400000] [--heights 100,1000,5000] [--w 1280 --h 720]
+//                                     [--cull-views b-ring-inside,a-ring-inside,a-ring-30m]
 //
 // 1. drawn vs expected  per place (astronaut=0, statistical occlusion culling switched off for the comparison):
 //    measured = particles of class k in the near-field R0 read-back that are drawn (in view) and >= 0.5 display
@@ -15,6 +16,11 @@
 // 3. radius sampler     the per-class radius / box sampler (RingLod pieceP / pieceB, mirrored from nearRadiusBox)
 //    reproduces the target number density tauMax a^-q / (pi I2) in every radius bin (ratio 1 +- 0.02) when
 //    the slot cap does not bind.
+// 4. occlusion cull     (--cull-views; render scale 1, astronaut off) the statistical-occlusion cull (nearOcclusion.glsl
+//    nearLosTau: line-of-sight tau > 5) may only remove particles the layer hides: the same frame (same particles) with
+//    the cull on and off, after the draw lists settled -- mean HDR radiance ratio within 1 +- 0.005, pixels whose
+//    radiance changes by > 5 % <= 0.5 % (a culled particle that was visible leaves a hole: at the cull's tau >= 5 / 0.8
+//    it is seen with probability <= e^-6.25 = 0.2 %); drawn >= 1 px with the cull off / on reported.
 import { fmt, openApp, retry, sleep, table, withHarness } from './lib.mjs';
 
 const BASE_PARAMS = { hud: 0, labels: 0, paused: 1, astronaut: 0, t: '2026-11-07T20:00:00Z' };
@@ -80,6 +86,49 @@ async function countClasses(page, nClasses, nMc) {
   }, nClasses, nMc);
 }
 
+// --- in-page: the same frame with the occlusion cull off and on (HDR radiance per pixel, drawn counts)
+async function cullCompare(page) {
+  return page.evaluate(async () => {
+    const sv = window.__sv, near = sv.pipeline.passes.near?.inner ?? sv.pipeline.passes.near;
+    if (!near || !near.r0RT) return { error: 'near-field internals (r0RT) not found — update counts.mjs' };
+    const frames = (n) => new Promise((r) => { let k = 0; const f = () => (++k >= n ? r() : requestAnimationFrame(f)); requestAnimationFrame(f); });
+    // the draw-list cap follows the read-back list size: let it settle after every switch
+    const settle = async () => { await frames(10); await new Promise((r) => setTimeout(r, 1500)); await frames(5); };
+    const grab = () => {
+      const rt = sv.pipeline.ctx.hdrRT, b = new Float32Array(rt.width * rt.height * 4);
+      sv.renderer.readRenderTargetPixels(rt, 0, 0, rt.width, rt.height, b);
+      let drawn = 0;
+      const pa = sv.frame.canvasPixelAngle;
+      for (const c of near.classes) {
+        if (!(c.slots > 0) || !c.active) continue;
+        const r0 = new Float32Array(2048 * c.rows * 4);
+        sv.renderer.readRenderTargetPixels(near.r0RT, 0, c.row0, 2048, c.rows, r0);
+        for (let i = 0; i < c.slots; i++) {
+          const w = r0[i * 4 + 3];
+          if (w > 0 && w / (Math.hypot(r0[i * 4], r0[i * 4 + 1], r0[i * 4 + 2]) * pa) >= 0.5) drawn++;
+        }
+      }
+      return { b, drawn };
+    };
+    const was = near.cullEnabled;
+    try {
+      near.cullEnabled = false; await settle();
+      const A = grab();
+      near.cullEnabled = true; await settle();
+      const B = grab();
+      let sa = 0, sb = 0, n5 = 0, n = 0;
+      for (let i = 0; i < A.b.length; i += 4) {
+        const la = 0.2126 * A.b[i] + 0.7152 * A.b[i + 1] + 0.0722 * A.b[i + 2], lb = 0.2126 * B.b[i] + 0.7152 * B.b[i + 1] + 0.0722 * B.b[i + 2];
+        sa += la; sb += lb; n++;
+        if (Math.abs(lb - la) > 0.05 * Math.max(la, 1e-12)) n5++;
+      }
+      return { ratio: sb / sa, changed: n5 / n, drawnOff: A.drawn, drawnOn: B.drawn };
+    } finally {
+      near.cullEnabled = was;
+    }
+  });
+}
+
 // --- in-page: radius / box sampler density check (mirror of nearRadiusBox in nearCommon.glsl)
 function samplerCheck(page) {
   return page.evaluate(() => {
@@ -119,7 +168,7 @@ function samplerCheck(page) {
   });
 }
 
-await withHarness('counts', { usage: 'node scripts/test/counts.mjs [--base URL] [--out DIR] [--places a,b] [--classes N] [--mc N] [--heights 100,1000,5000]' }, async ({ args, rep, base, browser }) => {
+await withHarness('counts', { usage: 'node scripts/test/counts.mjs [--base URL] [--out DIR] [--places a,b] [--classes N] [--mc N] [--heights 100,1000,5000] [--cull-views a,b]' }, async ({ args, rep, base, browser }) => {
   const places = args.list('places', ['a-ring-30m', 'a-ring-1km', 'cassini-division']);
   const nClasses = args.num('classes', 4), nMc = args.num('mc', 400000);
   const rows = [];
@@ -179,4 +228,19 @@ await withHarness('counts', { usage: 'node scripts/test/counts.mjs [--base URL] 
   }
   console.log(`\n${table(['B ring z m', 'drawn', 'allocated', 'count'], hrows)}`);
   rep.data.heights = hrows;
+
+  // ---- the statistical-occlusion cull removes only what the layer hides
+  const crows = [];
+  for (const v of args.list('cull-views', ['b-ring-inside', 'a-ring-inside', 'a-ring-30m'])) {
+    const r = await retry(async () => {
+      const { page } = await openApp(browser, base, { ...BASE_PARAMS, preset: v, scale: 1 }, { settle: 2500 });
+      try { return await cullCompare(page); } finally { await page.close(); }
+    }, { label: `cull ${v}` });
+    if (r.error) { rep.check(`cull ${v}: setup`, false, r.error); continue; }
+    crows.push([v, r.drawnOff, r.drawnOn, fmt(r.ratio, 5), `${fmt(100 * r.changed, 3)} %`]);
+    rep.range(`cull ${v}: mean radiance cull on / off (same particles)`, r.ratio, 0.995, 1.005);
+    rep.range(`cull ${v}: share of pixels changed by > 5 %`, r.changed, 0, 0.005);
+    rep.data[`cull-${v}`] = r;
+  }
+  console.log(`\n${table(['cull view', 'drawn >= 1 px, cull off', 'cull on', 'radiance on / off', 'pixels changed > 5 %'], crows)}`);
 });
