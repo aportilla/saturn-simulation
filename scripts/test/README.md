@@ -325,7 +325,7 @@ the GLSL through ring-layer and near-field read-backs; t = 2026-11-08T12:00Z.
 | | share of pixels within ± 8 % | ≥ 0.95 | 0.998 / 1.000 |
 | | deepest gap τ / τ0 (gaps present) | ≤ 0.65 | 0.433 / 0.502 |
 | | the belt view with the texture on: median τ_GPU / (τ0 J M_CPU); share within ± 8 %; rms of the modulation GPU / CPU | 0.97 … 1.03; ≥ 0.9; 0.9 … 1.1 | 1.000; 0.998; 0.998 (rms 0.110) |
-| presence | near-field particles ≥ 1 px of the busiest class, 400 m above a belt propeller's outer partial gap, grouped by the CPU M at each particle's drawn position: drawn / expected (counts.mjs Monte Carlo of n_k τ0 M with frustum, layer, radii; 4M samples) — gap (M < 0.75), flank (0.75–0.95), undisturbed / enhanced (≥ 0.95) | 1 ± max(0.08, 4/√n) | 1.002 (3,039) / 0.975 (3,927) / 1.026 (9,970) — presence is decided at the guiding centre, the classification uses the drawn (wake- and epicycle-displaced) position, which moves a few % across the group boundaries |
+| presence | near-field particles ≥ 1 px of the busiest class, 400 m above a belt propeller's outer partial gap, grouped by the CPU M at each particle's drawn position: drawn / expected (counts.mjs Monte Carlo of n_k τ0 M with frustum, layer about the local mid-plane z0 — the propeller's relief lifts the stirred material toward the Sun, i.e. toward this camera, which moves ~5 % of the particles across 1 px —, radii; 4M samples) — gap (M < 0.75), flank (0.75–0.95), undisturbed / enhanced (≥ 0.95) | 1 ± max(0.08, 4/√n) | 1.006 / 0.972 / 1.036 (~3,100 / 3,900 / 9,900 particles); without z0 in the expectation 1.063 / 1.024 / 1.074 — presence is decided at the guiding centre, the classification uses the drawn (wake- and epicycle-displaced) position, which moves a few % across the group boundaries |
 | | near-field cost gate (`uRpNearMask`): present particles (count and position checksum) with the CPU class mask vs the enumeration forced for every class, in the presence view and at `a-ring-30m` | identical | identical (inside a belt no class is gated: the gate saves work outside the belts) |
 | bodies | presets `propeller-bleriot`, `propeller-belt`: moonlets drawn (pass stats); opaque distance at the projected centre of the largest-looking body in view − its distance, in units of R | ≥ 1; −1.4 … 0.1 | 1 / 113 drawn; −0.93 / −0.89 |
 | all | console / GL errors, passes ok, NaN / negative pixels (structure views, presets) | none | none |
@@ -334,10 +334,11 @@ Screenshots `structure-belt.png`, `structure-bleriot.png`, `presence.png`, `prop
 `propeller-belt.png`. ~1 min. The texture statistics are deterministic (CPU mirror); the prefilter and presence
 Monte Carlos vary by ~0.3 % / ~2 % between runs.
 
-### relief — `scripts/test/relief.mjs` (`--only model,gpu,shadow,near`, `--views mimas53,titan,cring,region-a,keeler`)
-The rings' vertical relief: ONE height field z0 = moonlet ζ + bending waves + corrugation + B-ring-edge sites
-(`src/rings/relief.ts`, `sv_ringRelief` / `sv_ringReliefShade`, docs/ring-physics.md §13) that every renderer takes
-heights relative to. The model part imports the TypeScript sources in Node (type stripping, Node ≥ 23).
+### relief — `scripts/test/relief.mjs` (`--only model,gpu,shadow,near`, `--views mimas53,titan,cring,region-a,keeler,propeller`)
+The rings' vertical relief: ONE height field z0 = moonlet ζ + bending waves + corrugation + B-ring-edge sites +
+the propellers' stirred regions (`src/rings/relief.ts`, `sv_ringRelief` / `sv_ringReliefShade`, `rsReliefPropellers`
+in `sv_ringPropellers`, docs/ring-physics.md §12–13) that every renderer takes heights relative to. The model part
+imports the TypeScript sources in Node (type stripping, Node ≥ 23).
 
 | check | tolerance (why) | measured |
 |---|---|---|
@@ -350,11 +351,14 @@ heights relative to. The model part imports the TypeScript sources in Node (type
 | … max \|slope GPU − CPU\| | ≤ 0.002 + 2 % of the max slope | ≤ 2.0e-4 |
 | … ray / height-field intersection: \|z0 − z_ray\| tan(zenith angle) at the hit > 0.3 footprints + 2 m | ≤ 0.5 % of the pixels (the search is skipped exactly where the relief moves the hit by less than 0.3 footprints) | 0 % (max 0.22 footprints) |
 | … relief in view | max \|z0\| 100–2000 m (waves), 300–3600 m (region A): the views see the relief | see above |
+| giant propeller Blériot (2008-04-12, 25 km above it, fp 41 m): the same GPU vs CPU checks; relief at the moonlet (CPU) × sign(Sun's elevation) / Z (Tiscareno et al. 2010 Table S3: 430 m) | 0.99 … 1.01 (the sunlit half of the thickening, toward the Sun) | 1.0000 |
+| … max \|z0 GPU − CPU\|; slope; bad hits; rendered max \|z0\| / Z | as above; 0.8 … 1.05 (prefiltered, pixel sampling) | 0.0007 m; 3.6e-6; 0 % (max 0.27 fp); 0.915 (393 m) |
 | S/2009 S1 at its NAC frame time (Sun 0.24°): rendered shadow end (relief visibility 0.5 on the anti-Sun axis) / (h / tan B = 35.9 km) | 0.97 … 1.03 | 0.983 (35.3 km) |
 | … relief visibility halfway along the shadow | ≤ 0.1 | 0.000 |
 | near field 30 m above the local mid-plane inside the Mimas 5:3 wave (mid-plane −364 m): 99 % of \|z_particle − z0(x, y)\| over the drawn particles (r0RT readback) | ≤ 40 m (the layer's vertical scatter; on the SEF plane it would be hundreds of m) | 4.7 m (6,033 particles; vs the camera's mid-plane: 458 m) |
 | … z0 spread under the drawn particles | ≥ 50 m (the check sees relief) | 599 m |
-| … HUD height above the local mid-plane; after ~2 s at warp 3000 (mid-plane moved ≥ 20 m), then paused | 29.5–30.5 m | 30.00 m; moved 65–80 m (frame-rate dependent), 30.00 m |
+| … HUD height above the local mid-plane; after 6,000 s of simulated time at warp 3000 (mid-plane moved ≥ 20 m), then paused | 29.5–30.5 m | 30.00 m; moved 47 m, 30.00 m |
+| near field beside Blériot (30 m above the local mid-plane, 2 r_H outside its orbit, 0.3 d_B downstream; the propellers' relief in the near field: class mask, presence + relief enumeration): 99 % of \|z_particle − z0\|; z0 spread; HUD height | ≤ 40 m; ≥ 30 m; 29.5–30.5 m | 4.1 m (4,106 particles, z0 −425 … 0 m); 425 m; 30.00 m |
 | every view: NaN / negative pixels, console / GL errors, passes ok | none | none |
 
 Screenshots of every view in `<out>`; numbers per view in `results.json` (incl. the worst pixel). ~1 min.

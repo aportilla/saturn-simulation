@@ -182,10 +182,19 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   displaced edges; the ring layer has the same as `rlSampleP`); `ringSunTransmissionStream(p, fp)`. Hooks (one
   function per source, so work packages fill different functions): `ringStructureRelief(aL, dth, fp)` → (height,
   ∂/∂a', ∂/∂S) = `rsReliefWaves` (bending waves, the C-ring corrugation) + `rsReliefSites` (B-ring-edge region A,
-  S/2009 S1) (both chunk `sv_ringRelief`, included before `sv_ringStructure`); `rsReliefPropellers` (the propellers'
-  equinox heights) is NOT added yet (`#define RS_PROPELLER_RELIEF`, CPU `PROPELLER_RELIEF` in RingStructure.ts): it
-  has no footprint prefilter and is in neither the relief bounds (`uRrCamN`, `ringReliefBound`) nor the relief shadows
-  (`rrSourcesSunVisSided`), so only the sheet would have shaded it (6–10 % off the march in the seam handover);
+  S/2009 S1) (both chunk `sv_ringRelief`, included before `sv_ringStructure`) + `rsReliefPropellers(aL, dth, fp)` (the
+  sunlit half of the propellers' stirred-region thickening, prefiltered to fp; `#define RS_PROPELLER_RELIEF`, CPU
+  `PROPELLER_RELIEF` in RingStructure.ts; `gRsPropRelief = false` leaves it out of one lookup). It is in the relief
+  bounds (`ringReliefBound(dr, fp, proc)` / `rpReliefBound`; CPU: `uRpTF.w` = `PropellerSystem.nearReliefBound` near
+  the camera, added to `reliefBoundCam` / `uRrCamN`), the relief shadows (`ringReliefSunVis` → `rpReliefSunVis`:
+  opaque prefiltered ridges, the giants with a reach extended by their shadow length) and the near field's heights;
+  the sheet's ray / surface search leaves the procedural propellers out (`gRpProcRelief = false`: ≤ 160 m, the hit
+  then evaluates them). Cost: `rsInvert` sets `gRpAlsoRelief` when it wants ζ, so `rsPropellersMod` enumerates the
+  τ factor and the relief in ONE pass (`rpEnumerate` mode 3, result cached in `gRpRel` for `rsReliefPropellers` at
+  the same (aL, dth, fp)); a relief lookup also lists the procedural propellers it found (`gRpList*`, ≤ 6) and
+  `rpReliefSunVis` at the same point reuses that list instead of a third enumeration; classes whose prefiltered
+  relief is < 0.5 m (or whose shadow is < half a footprint) are skipped; `nearUpdate.glsl` takes the relief from the
+  presence lookup's enumeration (mode 3) after the presence test, so absent particles pay nothing;
   `vec3 ringStructureMod(aL, dth, fp)` → (mean M, variance of M below the footprint, wake factor) combines
   `rsTauModTexture` (chunk `sv_ringTexture`, `src/render/shaders/ringTexture.glsl`, CPU `src/rings/ringTexture.ts`:
   the sub-km 2-D sheared texture) and `rsPropellersMod` (chunk `sv_ringPropellers`, `ringPropellers.glsl`, CPU
@@ -223,9 +232,12 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   by < 0.3 footprints) and shades the layer in its tilted frame (`ringReliefNormal`, solar incidence on both faces from
   the extended disk `ringReliefSunMu`, transmission exp(−τ/|V·n|)); relief shadows `ringReliefSunVis(aL, dth, z0, τ,
   fp)` (bending-wave crests via their inverse phase tables, single peaks as opaque Gaussians, region A by a cell walk,
-  the moonlet edges at three streamlines; footprint- and penumbra-averaged; the geometry is mirrored to the lit face,
-  where the sites' structures rise); the near-slab march follows z0 per step (LOD functions, two-stream and sun paths
-  with the local tilt; its slab is widened by `uRrCamN.z`, the |z0| bound near the camera); near-field particles are
+  the moonlet edges at three streamlines, the propellers' stirred regions as prefiltered ridges; footprint- and
+  penumbra-averaged; the geometry is mirrored to the lit face, where the sites' and propellers' structures rise); the
+  near-slab march follows z0 (LOD functions, two-stream and sun paths with the local tilt; its slab is widened by
+  `uRrCamN.z`, the |z0| bound near the camera; z0 is re-evaluated every `RL_RELIEF_CACHE` = 15 m of horizontal travel
+  inside the layer, every half the height above it outside, extrapolated with its slope in between; the relief
+  shadows only within 4 H of the local mid-plane); near-field particles are
   displaced by z0 at their guiding centre and lit relative to the local mid-plane (`vLitN`); the astronaut's column and
   the HUD use the camera's mid-plane height `uRsCam.y` = `f.ring.zMid`. The ring frame stays in the SEF plane;
   ring-frame cameras keep their height above the local mid-plane (`FreeController.midPlane`, set by the app: station

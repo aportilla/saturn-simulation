@@ -1157,11 +1157,26 @@ S shape):
   unlit-face dark wings (PIA12790 / PIA12791).
 * **Footprint prefilter**: the Gaussian lobes are convolved with the footprint (mean preserved), the wakes faded
   like the gap-edge waves; what is smoothed away is returned as sub-footprint variance (sheet: §11's prefilter).
-* **Vertical relief** (`rsReliefPropellers`): the moonlet's inclination excites the material around it to its
-  height z_m = Z cos(phase) (Hoffmann et al. 2013, 2015), decaying radially over 2.5 h, downstream over d_B and
-  upstream over 2h; Z = the equinox shadow height where measured (Blériot 0.43 km, Earhart 0.26, Santos-Dumont
-  0.12; Tiscareno et al. 2010 Table S3), else 0.45 r_H (their median per r_H). Computed and exposed through the
-  relief hook; drawn geometrically by the relief work package.
+* **Vertical relief** (`rsReliefPropellers`, part of z0, §13): the moonlet's gravity pulls the stirred material out
+  of the ring plane. Tiscareno et al. 2010 measured it from equinox shadows "cast by the propeller structures as a
+  whole, and not directly by the central moonlets" (Table S3): Blériot 0.47 / 0.49 ± 0.17 km (2009-05-10), 0.424 ±
+  0.057 and 0.353 ± 0.092 km (2009-07-13 and -15), adopted 0.43 ± 0.03 km; Santos-Dumont 0.136 / 0.113, Earhart
+  0.263 / 0.259, 116-006-A 0.159 / 0.156 km (2009-08-13). Blériot's height is the same at three independent epochs —
+  a coherent displacement following an inclined moonlet (z = Z cos(vertical phase), 14 h period) would give all
+  three |cos| ≳ 0.8 only ~7 % of the time — so the structure is a thickening of the layer that persists and decays
+  downstream (Hoffmann et al. 2013: a non-inclined moonlet heats the gap region; the height decays until viscous
+  heating and collisional cooling balance, reproducing Earhart's ~120 km shadow). Model: height Z decaying radially
+  over 2.5 h, downstream over d_B and upstream over 2h; Z = the Table S3 height (Blériot 0.43, Earhart 0.26,
+  Santos-Dumont 0.12 km), else 0.45 r_H (the median of Blériot 0.70, Earhart 0.45, Santos-Dumont 0.25 with r_H =
+  Δr_lit/9). The single mid-plane height carries the thickening's sunlit half, as for the B-ring-edge sites:
+  z0 = sign(B_sun) Z G L, rising toward the lit face (switching sides at equinox); the moonlets stay in the mid-plane.
+  The stirred (downstream) side meets the undisturbed (upstream) one across the horseshoe zone, |x| < 2h, whose
+  material turns around in front of and behind the moonlet: the relief's two sides blend over it (the τ structure's
+  S keeps h/2), so there is no step across the orbit. Prefiltered to the footprint like the lobes (radial σ² → σ² +
+  (fp/2)², amplitude × σ/√(..); along the orbit × d_B/√(d_B² + fp²); the side blend and the upstream rise widened
+  with fp so that they don't alias), in the relief
+  bounds and the relief shadows (opaque ridges at the sunlit height, 0.6 d_B long; the giants with a reach extended by
+  their shadow length), in the near field's particle heights.
 
 **The moonlets themselves** (`PropellerMoonletPass`): bodies ≥ 0.25 display px within 3,000 km, ellipsoids with
 the Roche-lobe proportions 1 : 0.667 : 0.638 (long axis toward Saturn), mean radius R, low-frequency relief, the
@@ -1183,12 +1198,28 @@ same GPU): texture + propellers +9.3 ± 1.6 ms per frame at `a-ring-1km` (16.4 �
 propellers ~5 ms (near-field presence and the march's cache), the texture ~4 ms (near-field presence: 12 lookups per
 particle slot). Outside the propeller region (B ring) the texture costs ~3 ms. A per-frame clipmap of M around the
 camera (as the wake-density clipmap), sampled by the near field and the march, would remove most of it.
+The propellers' relief (A/B `reliefScale` 0 / 1 in the same page, otherwise as above, one other browser on the GPU)
+costs +16.7 ± 4.1 ms at `a-ring-1km` (inner belt: 28.8 → 45.4 ms; +30 ms when first enabled) — the march's slab is
+widened by the propellers' bound near the camera (48 m there; with the classes' 331 m bound, which was taken by
+mistake, the medium alone cost +9.8 ms, +4.2 ms without any widening), the near field enumerates per present slot
+and per drawn particle. The cost rules (ARCHITECTURE.md): the τ factor and the relief in one enumeration (mode 3),
+the shadows from that enumeration's list, the ray / surface search without the procedural propellers, classes below
+0.5 m (shadows below half a footprint) skipped, the march's relief cached over 15 m. A clipmap of z0 and M around
+the camera would remove most of the rest.
 
 **Not modelled / caveats.** The giants are much fainter in renders than in Cassini's 2 km/px images: removing the
 wakes in the stirred material changes the propeller's brightness by only 0.6 % (Earhart, lit, phase 82°) to 2.3 %
-(Santos-Dumont, unlit) at those resolutions — the observed contrast must come mostly from the vertical structure
-(the puffed-up stirred layer, its shadows and its larger path lengths at low elevation), which is not drawn yet.
-The procedural moonlets are on circular orbits with a vertical oscillation; the giants' eccentricities (if any) and
+(Santos-Dumont, unlit) at those resolutions, and the relief (the thickening's sunlit half at the Table S3 heights)
+adds little: the whole propeller (on vs off, `scripts/test/specs/propellers.json`, mean |difference| in 120 × 240 px
+around the moonlet at 1600 × 900) changes the Cassini-matched views by 0.47 % (Earhart, PIA12790; 0.09 % with the
+earlier oscillating height, then −30 m), 0.19 % (Santos-Dumont, PIA12791, unlit face), 0.12 % (Blériot, Fig. 1b)
+and 2.5 % (the PIA07792 belt propeller, 52 m/px). What the relief adds at 2 km/px is a 1 × 3 px dark streak at
+Earhart: behind the moonlet only the outer side is thickened, and the slope across the orbit (≈ 0.75 Z / 2h after
+the blend, ~0.13 rad) is as steep as the Sun's elevation (7.5°), so that patch shows its unlit face. The relief's
+slopes average out across a 2 km pixel elsewhere, and a single
+mid-plane height cannot carry what probably makes the contrast — the thickened layer's own photometry (a volume of
+heated, unclumped particles: longer paths at low elevation, no wake gaps). The procedural moonlets are on circular
+orbits in the mid-plane (no inclination is measured); the giants' eccentricities (if any) and
 their non-Keplerian wandering beyond Blériot's one sinusoid are not modelled. Interactions between nearby
 propellers and with density waves are ignored (the factors multiply), and the texture of §11 is independent of the
 propellers. The moonlet bodies don't yet shadow the near-field particles (the particle pass enables per-particle
@@ -1196,7 +1227,10 @@ moon shadows only when moons are near: one condition to add in `NearFieldPass`),
 shadow the ring (`uShadowSph`): in wide views of a belt the farther moonlets have no shadow. For cost, the lighting
 lookups of the particles, the astronaut and the bodies use the unmodulated column (particles inside a partial gap
 are lit as in the undisturbed ring; their number follows the gap) and shadow casters outside the view ignore the
-propellers.
+propellers. Open: the `propeller-bleriot` preset (2026, unlit face, 30 km behind Blériot) shows a row of ~15
+isolated dark pixels along the radial line through the moonlet, where the relief's along-orbit profile switches
+from the upstream rise to the downstream decay (a slope crease); not the side step (unchanged when that was
+widened), not diagnosed yet. Seen from the unlit face, the sunlit-half thickening is a trench (§13).
 
 ## 13. Vertical relief (`src/rings/relief.ts`, `sv_ringRelief`, `sv_ringReliefShade`)
 
@@ -1285,10 +1319,17 @@ the footprint exceeds a fraction of the local wavelength / structure size), occl
 their guiding centre, lit relative to the local mid-plane) and the astronaut follow z0; the camera keeps its height
 above the local mid-plane (station keeping includes the material's vertical motion, ~5 cm/s in the Mimas 5:3 wave).
 
+**Cost** (A/B `reliefScale` 0 / 1 in the same page, `scripts/test/fps.mjs --ab-off/--ab-on`, 1920×1080, render
+scale 0.5, quality high): `bending-wave` +2.4 ± 0.1 ms (3.2 → 5.6 ms; it lies in the outer propeller belt, whose
+relief it now also draws; b9dab72 without the propellers' relief +1.8 ± 0.8 ms), `keeler-gap` +0.4 ± 0.1 ms (+0.2 ±
+0.7), the B-ring edge at the PIA11668 equinox geometry +0.3 ± 0.7 ms, `b-ring-inside` +5.6 ± 5.9 ms (no relief there:
+GPU noise); inside the propeller belts §12. Shadows are tested only where material is (the march: within 4 H of the
+local mid-plane) and the march re-evaluates z0 every 15 m of horizontal travel in the layer.
+
 **Not modelled.** The Mimas 7:4 and 8:5 bending waves (third-order e'i' / i'³ terms; their shadow bands appear in
-PIA11676), the Encke-gap ringlet clumps (~600 m, PIA11676) and other ringlet structure, the propellers' vertical
-structure (their equinox heights, §12, are computed by `rsReliefPropellers` but stay out of z0 until they are
-prefiltered to the footprint and part of the relief bounds and shadows: `RS_PROPELLER_RELIEF`), the vertical rift of the B-ring edge's other sites, non-linear bending-wave profiles
+PIA11676), the Encke-gap ringlet clumps (~600 m, PIA11676) and other ringlet structure, the lower half of the
+symmetric thickenings (region A, S/2009 S1, the propellers' stirred regions, §12: z0 carries their sunlit half, so
+seen from the unlit face they are dips, not bumps), the vertical rift of the B-ring edge's other sites, non-linear bending-wave profiles
 (the calibrations only scale linear theory), the waves' τ modulation by the tilted path (the occultation τ already
 contains it), multiple crossings of one ray through a strongly corrugated surface (the hit search returns the first),
 the sub-pixel bright walls of region A (prefiltered away from a distance).

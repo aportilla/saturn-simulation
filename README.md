@@ -199,10 +199,9 @@ every DOI and arXiv id against the registries.
 * Vertical relief: the bending-wave amplitudes are linear theory scaled to the measured peak height (Mimas 5:3) or
   slope (Titan), the Mimas 4:2 wave is unscaled linear theory, and the weaker Mimas 7:4 / 8:5 waves are missing; the
   B-ring-edge structures are a phenomenological field matched to Cassini's equinox images, carried on their sunlit
-  side only; Daphnis's vertical edge waves reach 0.1–0.5 km in the model (depending on its vertical phase) where
-  Cassini's shadows suggest 0.5–1.5 km; the Encke-gap ringlet clumps and the propellers have no height yet (the
-  propellers' equinox heights are computed, but stay out of the height field until they are filtered to the pixel
-  footprint and cast shadows).
+  side only, and so are the propellers' stirred regions (their measured equinox heights, 0.12–0.43 km, else 0.45 Hill
+  radii); Daphnis's vertical edge waves reach 0.1–0.5 km in the model (depending on its vertical phase) where
+  Cassini's shadows suggest 0.5–1.5 km; the Encke-gap ringlet clumps have no height yet.
 * Moonlet gap edges: the edge's azimuthal bunching, other perturbers (e.g. Prometheus on the Keeler outer edge) and
   the Encke-gap ringlets are not modelled; in the most compressed wave crests particles far from the camera may be
   missing.
