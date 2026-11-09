@@ -31,7 +31,7 @@
 // the orbit), so 3 x 3 cells around a point find every propeller that can touch it; existence is a Bernoulli trial
 // with the expected number per cell (<= 0.1).
 import { Vector4 } from 'three';
-import { DAY, DEG, orbitalFrequencies } from '../core/constants';
+import { DAY, DEG } from '../core/constants';
 import type { MoonletTable } from './streamlines';
 import { omegaModel, omegaSlope, type RingTexture } from './ringTexture';
 
@@ -110,7 +110,8 @@ export interface GiantState {
   aFit: number;
   /** SEF longitude now (rad) */
   theta: number;
-  /** current height of the moonlet and the excited region (m) */
+  /** height of the moonlet (m): 0, in the mid-plane (no inclination is measured; its stirred region's relief, Z toward
+   *  the Sun's side, is in the height field: rpRelief) */
   z: number;
   /** Hill radius, enhanced-lobe and gap downstream scales (m), gap depth, vertical amplitude (m), moonlet radius (m) */
   h: number;
@@ -192,7 +193,9 @@ export interface Moonlet {
   R: number;
   dB: number;
   dD: number;
-  /** procedural: orbit (n-units), phase in it (2^-32 turns), vertical phase (turns), vertical amplitude (m); giants: index */
+  /** procedural: orbit (n-units), phase in it (2^-32 turns), (unused hash), height of the excited region (m); giants:
+   *  index. The moonlets themselves stay in the mid-plane (z = 0: no inclination is measured; the relief is the
+   *  thickening's sunlit half, rpRelief) */
   n: number;
   phi: number;
   psi: number;
@@ -203,6 +206,8 @@ export interface Moonlet {
 export class PropellerSystem {
   /** 1 = on, 0 = off (tests) */
   scale = 1;
+  /** multiplier on the relief heights (1 = physical, 0 = flat; RingStructure.reliefScale, ?relief=) */
+  reliefScale = 1;
   readonly lattice: ClassLattice[];
   readonly giants: GiantState[];
   readonly uniforms: {
@@ -224,15 +229,15 @@ export class PropellerSystem {
   private r0 = 1.3e8;
   private phi0 = 0;
   private t = 0;
+  /** the Sun's side of the ring plane (+1 north / -1 south): the relief rises toward it */
+  private sunSign = 1;
   private kDay = 0;
   private fDay = 0;
   private nRef = 0;
   private dn0 = 0;
   private P = 0;
-  private dnu = 0;
   private readonly giantG = Array.from({ length: RP_GIANTS }, () => [0, 0, 0, 0, 0, 0, 0, 0]);
   private readonly range: [number, number];
-  private readonly psiZ: number[];
 
   /** tex: the flow model of the tau mirror (tauModAt); null for a positions-only instance (presets: findLargest) */
   constructor(private readonly tex: RingTexture | null, private readonly table: MoonletTable | null) {
@@ -247,7 +252,6 @@ export class PropellerSystem {
         h, dB, dD, D0: RP_D0, Z: p.hEqKm !== undefined ? p.hEqKm * 1e3 : RP_Z_PER_H * h, R: RP_R_PER_H * h, n,
       };
     });
-    this.psiZ = NAMED_PROPELLERS.map((p) => u24(pcg(hashString(p.name))) * 2 * Math.PI);
     // procedural lattices
     let lo = Infinity, hi = -Infinity;
     this.lattice = PROPELLER_CLASSES.map((c, ci) => {
@@ -291,12 +295,14 @@ export class PropellerSystem {
     });
   }
 
-  /** Per frame (after the texture's update: the flow model at the frame origin). */
-  update(t: number, r0: number, phi0: number): void {
+  /** Per frame (after the texture's update: the flow model at the frame origin); sunZ: the Sun's elevation side (its
+   *  sign: the relief, the sunlit half of the propellers' thickening, rises toward it -- as relief.ts's sites). */
+  update(t: number, r0: number, phi0: number, sunZ = 1): void {
     const u = this.uniforms;
     this.t = t;
     this.r0 = r0;
     this.phi0 = phi0;
+    this.sunSign = sunZ >= 0 ? 1 : -1;
     const on = this.scale > 0;
     // ---- time split and the frame origin's phase in orbit n_ref (exact integer part)
     const days = t / DAY;
@@ -309,17 +315,17 @@ export class PropellerSystem {
     const P = fract(phi0 / (2 * Math.PI) - intPart / 2 ** 24 - (this.nRef * this.fDay) / 2 ** 24);
     this.P = P;
     const Pu = Math.floor(P * T32);
-    const fr = orbitalFrequencies(r0);
-    this.dnu = Math.round(K_N * (fr.nu - fr.omega));
     u.uRpCtl.value.set(on ? 1 : 0, K_N, this.dn0, this.fDay);
     const T = u.uRpT.value;
-    T[0] = this.kDay; T[1] = this.nRef; T[2] = Pu | 0; T[3] = this.dnu;
+    T[0] = this.kDay; T[1] = this.nRef; T[2] = Pu | 0; T[3] = 0;
     u.uRpTF.value.x = P - Pu / T32;
     for (let ci = 0; ci < RP_CLASSES; ci++) {
       const L = this.lattice[ci];
       const I = Math.floor(this.nRef / L.N);
       const CI = u.uRpCI.value;
       CI[4 * ci] = on ? L.N : 0; CI[4 * ci + 1] = L.B; CI[4 * ci + 2] = I; CI[4 * ci + 3] = this.nRef - I * L.N;
+      // the class's relief height per Hill radius (x the relief multiplier), signed: toward the Sun's side
+      u.uRpC1.value[ci].w = PROPELLER_CLASSES[ci].zPerH * this.reliefScale * this.sunSign;
     }
     // ---- named giants
     let ng = 0;
@@ -328,12 +334,12 @@ export class PropellerSystem {
       let lon = p.lonDeg * DEG + g.n * (t - PROPELLER_EPOCH);
       if (p.sinusoid) lon += p.sinusoid.ampDeg * DEG * Math.sin((2 * Math.PI * (t - PROPELLER_EPOCH)) / (p.sinusoid.periodDays * DAY) + p.sinusoid.phase);
       g.theta = wrapPi(lon);
-      const nu = orbitalFrequencies(g.a).nu;
-      g.z = g.Z * Math.cos(this.psiZ[k] + wrapPi(nu * (t - PROPELLER_EPOCH)));
+      // the moonlet in the mid-plane; its stirred region's relief: the Table S3 height toward the Sun's side
+      g.z = 0;
       if (!on || ng >= RP_GIANTS) continue;
       const s0 = g.a * wrapPi(phi0 - g.theta);
       const G = this.giantG[ng];
-      G[0] = g.a - r0; G[1] = s0; G[2] = g.h; G[3] = g.dB; G[4] = g.D0; G[5] = g.z; G[6] = 6 * g.dD; G[7] = g.dD;
+      G[0] = g.a - r0; G[1] = s0; G[2] = g.h; G[3] = g.dB; G[4] = g.D0; G[5] = this.sunSign * g.Z * this.reliefScale; G[6] = 6 * g.dD; G[7] = g.dD;
       u.uRpG0.value[ng].set(G[0], G[1], G[2], G[3]);
       u.uRpG1.value[ng].set(G[4], G[5], G[6], G[7]);
       ng++;
@@ -351,12 +357,59 @@ export class PropellerSystem {
     out[2] = acc[2];
     return out;
   }
-  /** relief: [height (m), d/da', d/dS] (rsReliefPropellers). */
-  reliefAt(aL: number, dth: number, out: number[] = [0, 0, 0]): number[] {
+  /** relief at the footprint fp: [height (m), d/da', d/dS] (rsReliefPropellers). */
+  reliefAt(aL: number, dth: number, fp = 0, out: number[] = [0, 0, 0]): number[] {
     const acc = [0, 0, 0, 0];
-    if (this.scale > 0) this.enumerate(aL, dth, 0, 1, acc);
+    if (this.scale > 0 && this.reliefScale !== 0) this.enumerate(aL, dth, fp, 1, acc);
     out[0] = acc[0]; out[1] = acc[1]; out[2] = acc[2];
     return out;
+  }
+
+  /**
+   * Upper bound of |relief height| near the Lagrangian offset aL at footprint fp (rpReliefBound): the giants within
+   * their radial reach (+ 3 km), plus every procedural class whose region is within reach (its largest moonlet's
+   * prefiltered amplitude).
+   */
+  reliefBound(aL: number, fp = 0): number {
+    if (this.scale <= 0) return 0;
+    let bg = 0;
+    const ng = this.uniforms.uRpGiantN.value;
+    for (let k = 0; k < ng; k++) {
+      const G = this.giantG[k];
+      if (Math.abs(aL - G[0]) > 13.5 * G[2] + 3000) continue;
+      bg = Math.max(bg, Math.abs(G[5]) * rpReliefAmp(G[2], G[3], fp));
+    }
+    let bc = 0;
+    const a = this.r0 + aL;
+    if (a > this.range[0] && a < this.range[1]) {
+      for (let c = 0; c < RP_CLASSES; c++) {
+        const L = this.lattice[c], C = PROPELLER_CLASSES[c];
+        const cf = 1 - smooth(8 * L.hMax, 16 * L.hMax, fp);
+        if (cf <= 0) continue;
+        if (regionWeight(C, a - L.reachR) <= 0 && regionWeight(C, a) <= 0 && regionWeight(C, a + L.reachR) <= 0) continue;
+        bc += cf * C.zPerH * this.reliefScale * L.hMax * rpReliefAmp(L.hMax, (C.dBPerDr * L.hMax) / C.hPerDr, fp);
+      }
+    }
+    return bg + bc;
+  }
+
+  /**
+   * Largest relief amplitude (m) of the propellers collected by collectNear whose structure reaches within `margin` of
+   * the SEF point (r, th) now: the bound of the propellers' heights near the camera (march slab, near-field culling
+   * pad uRpTF.w). 0 when none is near.
+   */
+  nearReliefBound(r: number, th: number, margin: number): number {
+    if (this.scale <= 0) return 0;
+    const dt = this.t - this.nearT;
+    let b = 0;
+    for (const m of this.nearList) {
+      const dr = Math.abs(r - m.a), ds = Math.abs(m.a * wrapPi(th - m.theta - omegaModel(m.a) * dt));
+      if (dr < margin + 13.5 * m.h && ds < margin + 6 * m.dD) b = Math.max(b, Math.abs(m.Z) * this.reliefScale);
+    }
+    // the list may be incomplete when the camera moved beyond its reach: then the classes' bound there
+    const moved = Math.hypot(r - this.nearR, r * wrapPi(th - this.nearTh - omegaModel(r) * dt));
+    if (moved + margin > this.nearReach) b = Math.max(b, this.reliefBound(r - this.r0, 0));
+    return b;
   }
 
   private enumerate(aL: number, dth: number, fp: number, mode: number, acc: number[]): void {
@@ -372,7 +425,7 @@ export class PropellerSystem {
       if (Math.abs(s) > hc) s -= 2 * hc * Math.floor(s / (2 * hc) + 0.5);
       if (Math.abs(s) > G[6]) continue;
       if (mode === 0) combine(acc, this.structure(x, s, fp, h, G[3], G[7], G[4]));
-      else addRelief(acc, rpRelief(x, s, h, G[3], G[5]));
+      else addRelief(acc, rpRelief(x, s, h, G[3], G[5], fp));
     }
     const a = this.r0 + aL;
     if (!this.tex || !(a > this.range[0] && a < this.range[1])) return;
@@ -382,6 +435,8 @@ export class PropellerSystem {
       const L = this.lattice[c], C = PROPELLER_CLASSES[c];
       const cf = 1 - smooth(8 * L.hMax, 16 * L.hMax, fp);
       if (cf <= 0) continue;
+      // relief: the class is left out where its largest prefiltered relief is below 0.5 m (as the GLSL)
+      if (mode === 1 && cf * C.zPerH * this.reliefScale * L.hMax * rpReliefAmp(L.hMax, (C.dBPerDr * L.hMax) / C.hPerDr, fp) < 0.5) continue;
       const I = Math.floor(this.nRef / L.N), R = this.nRef - I * L.N;
       const i0 = Math.floor((R + dnq) / L.N);
       for (let di = -1; di <= 1; di++) {
@@ -407,10 +462,9 @@ export class PropellerSystem {
             const q = this.structure(x, s, fp, p.h, p.dB, p.dD, RP_D0);
             combine(acc, [1 + cf * (q[0] - 1), cf * cf * q[1], 1 + cf * (q[2] - 1)]);
           } else {
-            const nz = (this.nRef + dni + this.dnu) >>> 0;
-            const phz = p.psi + (Math.imul(nz, this.kDay) & 0xffffff) / 2 ** 24 + (nz * this.fDay) / 2 ** 24;
-            const zm = C.zPerH * p.h * Math.cos(2 * Math.PI * fract(phz));
-            addRelief(acc, rpRelief(x, s, p.h, p.dB, zm));
+            // the excited region's height: the sunlit half of the thickening (as the GLSL's uRpC1.w)
+            const zm = cf * C.zPerH * this.reliefScale * this.sunSign * p.h;
+            addRelief(acc, rpRelief(x, s, p.h, p.dB, zm, fp));
           }
         }
       }
@@ -539,20 +593,14 @@ export class PropellerSystem {
         if (Math.abs(ai * wrapPi(th - thc)) > distS) continue;
         if (round && Math.hypot(ai * Math.cos(th) - rc * Math.cos(thc), ai * Math.sin(th) - rc * Math.sin(thc)) - R > distR) continue;
         const Z = C.zPerH * p.h;
+        // (the moonlet in the mid-plane, z = 0; Z = its stirred region's relief height)
         const m: Moonlet = { key: `${C.id}:${i}:${jc}`, name: `${C.id} propeller`, cls: c, a: ai, theta: th, z: 0, h: p.h, R, dB: p.dB, dD: p.dD, n: ni, phi: p.phi, psi: p.psi, Z };
-        m.z = this.moonletHeight(m);
         out.push(m);
       }
     }
   }
 
-  /** current height of a procedural moonlet (its vertical oscillation; same formula as the GLSL relief) */
-  private moonletHeight(m: Moonlet): number {
-    const nz = (m.n + this.dnu) >>> 0;
-    const phz = m.psi + (Math.imul(nz, this.kDay) & 0xffffff) / 2 ** 24 + (nz * this.fDay) / 2 ** 24;
-    return m.Z * Math.cos(2 * Math.PI * fract(phz));
-  }
-  /** Move a moonlet found earlier to the current time (longitude, height): cheap, for every frame. */
+  /** Move a moonlet found earlier to the current time (longitude): cheap, for every frame. */
   refresh(m: Moonlet): void {
     if (m.cls < 0) {
       const g = this.giants[m.n];
@@ -561,7 +609,6 @@ export class PropellerSystem {
       return;
     }
     m.theta = wrapPi(2 * Math.PI * (m.phi / T32 + this.orbitTurns(m.n)));
-    m.z = this.moonletHeight(m);
   }
   /** turns travelled by orbit n (n-units) since J2000 at the current time, mod 1 (exact integer part) */
   private orbitTurns(n: number): number {
@@ -720,19 +767,30 @@ function rpLobes(y: number, d: number, h: number, dB: number, dD: number, sf: nu
   const gb = rpGauss(y - 4.5 * h, sB, sf);
   return [L * gd[0], L * L * Math.max(gd[1] - gd[0] * gd[0], 0), E * gb[0], E * E * Math.max(gb[1] - gb[0] * gb[0], 0)];
 }
-export function rpRelief(x: number, s: number, h: number, dB: number, zm: number): number[] {
+/** amplitude factor of the prefiltered relief (rpReliefAmp): radial Gaussian x footprint kernel, along-orbit damping */
+export function rpReliefAmp(h: number, dB: number, fp: number): number {
+  const sr = 2.5 * h, sf = 0.5 * fp;
+  return (sr / Math.sqrt(sr * sr + sf * sf)) * (dB / Math.sqrt(dB * dB + fp * fp));
+}
+/** one propeller's relief at footprint fp: [height, d/dx, d/ds] (rpRelief) */
+export function rpRelief(x: number, s: number, h: number, dB: number, zm: number, fp = 0): number[] {
   if (zm === 0) return [0, 0, 0];
-  const sr = 2.5 * h;
-  const G = Math.exp((-0.5 * x * x) / (sr * sr));
-  const wo = smooth(-0.5 * h, 0.5 * h, x);
-  const dwo = Math.abs(x) < 0.5 * h ? (6 * (x / h + 0.5) * (0.5 - x / h)) / h : 0;
+  const sr = 2.5 * h, sf = 0.5 * fp;
+  const s2 = sr * sr + sf * sf;
+  const A = zm * rpReliefAmp(h, dB, fp);
+  const G = Math.exp((-0.5 * x * x) / s2);
+  // the blend of the two sides across the horseshoe zone (|x| < 2 h) and the upstream rise, widened with the footprint
+  // (as the GLSL)
+  const wb = Math.sqrt(4 * h * h + sf * sf), up = Math.sqrt(4 * h * h + fp * fp);
+  const wo = smooth(-wb, wb, x);
+  const dwo = Math.abs(x) < wb ? (0.75 * (x / wb + 1) * (1 - x / wb)) / wb : 0;
   const dO = -s, dI = s;
-  const LO = dO >= 0 ? Math.exp(-dO / dB) : Math.exp(dO / (2 * h));
-  const LI = dI >= 0 ? Math.exp(-dI / dB) : Math.exp(dI / (2 * h));
-  const LOd = dO >= 0 ? -LO / dB : LO / (2 * h);
-  const LId = dI >= 0 ? -LI / dB : LI / (2 * h);
+  const LO = dO >= 0 ? Math.exp(-dO / dB) : Math.exp(dO / up);
+  const LI = dI >= 0 ? Math.exp(-dI / dB) : Math.exp(dI / up);
+  const LOd = dO >= 0 ? -LO / dB : LO / up;
+  const LId = dI >= 0 ? -LI / dB : LI / up;
   const Lz = wo * LO + (1 - wo) * LI;
-  return [zm * G * Lz, zm * ((-x / (sr * sr)) * G * Lz + G * dwo * (LO - LI)), zm * G * (-wo * LOd + (1 - wo) * LId)];
+  return [A * G * Lz, A * ((-x / s2) * G * Lz + G * dwo * (LO - LI)), A * G * (-wo * LOd + (1 - wo) * LId)];
 }
 function combine(acc: number[], p: number[]): void {
   acc[1] = acc[1] * p[0] * p[0] + p[1] * acc[0] * acc[0] + acc[1] * p[1];
@@ -771,8 +829,3 @@ function mod2_24(n: number, k: number): number {
 }
 const fract = (x: number) => x - Math.floor(x);
 const mod = (x: number, m: number) => x - m * Math.floor(x / m);
-function hashString(s: string): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193);
-  return h >>> 0;
-}

@@ -22,7 +22,7 @@ follow [Adding a tool](#adding-a-tool) so the next session can run it too.
 | `npm run test:particles` | resolved-particle photometry and shape contract: GLSL vs CPU mirrors, factor LUT, relief area / photometry | ~20 s |
 | `npm run test:propellers` | propeller moonlets and the sub-km τ texture: named positions vs Tiscareno 2010 Table 1, texture statistics, footprint prefilter, GPU τ vs the CPU model, near-field presence and its cost gate, moonlet bodies | ~1 min |
 | `npm run test:relief` | the rings' vertical relief (one height field z0): model checks, GPU heights / slopes vs the CPU mirror, ray / height-field hits, equinox shadow length, near field and station keeping on the local mid-plane | ~1 min |
-| `npm run test:contact` | near-field contact resolution: overlaps before / after (independent CPU pair search), displacement bound, R0 write-back and drawn flags, frame-to-frame smoothness, warp; `--cost`: GPU time | ~40 s (`--cost` +2–3 min) |
+| `npm run test:contact` | near-field contact resolution: overlaps before / after (independent CPU pair search), displacement bound, R0 write-back and drawn flags, frame-to-frame smoothness, warp, tilted mid-planes; `--cost`: GPU time | ~65 s (`--cost` +3–5 min) |
 | `npm run test:wakecost` | GPU cost of the shared wake functions (`wakeDensity`, `wakeDisplacement`) per call, in-page micro-benchmark (informational) | ~10 s |
 | `node scripts/shot.mjs …` / `node scripts/shots.mjs …` | screenshots (one / batch spec) | — |
 | `node scripts/img.mjs profile\|mean\|crop\|rotate …` | PNG brightness profiles, region ratios, contrast-stretched zooms, rotate/scale | — |
@@ -368,7 +368,7 @@ the GLSL through ring-layer and near-field read-backs; t = 2026-11-08T12:00Z.
 | | share of pixels within ± 8 % | ≥ 0.95 | 0.998 / 1.000 |
 | | deepest gap τ / τ0 (gaps present) | ≤ 0.65 | 0.433 / 0.502 |
 | | the belt view with the texture on: median τ_GPU / (τ0 J M_CPU); share within ± 8 %; rms of the modulation GPU / CPU | 0.97 … 1.03; ≥ 0.9; 0.9 … 1.1 | 1.000; 0.998; 0.998 (rms 0.110) |
-| presence | near-field particles ≥ 1 px of the busiest class, 400 m above a belt propeller's outer partial gap, grouped by the CPU M at each particle's drawn position: drawn / expected (counts.mjs Monte Carlo of n_k τ0 M with frustum, layer, radii; 4M samples) — gap (M < 0.75), flank (0.75–0.95), undisturbed / enhanced (≥ 0.95) | 1 ± max(0.08, 4/√n) | 1.002 (3,039) / 0.975 (3,927) / 1.026 (9,970) — presence is decided at the guiding centre, the classification uses the drawn (wake- and epicycle-displaced) position, which moves a few % across the group boundaries |
+| presence | near-field particles ≥ 1 px of the busiest class, 400 m above a belt propeller's outer partial gap, grouped by the CPU M at each particle's drawn position: drawn / expected (counts.mjs Monte Carlo of n_k τ0 M with frustum, layer about the local mid-plane z0 — the propeller's relief lifts the stirred material toward the Sun, i.e. toward this camera, which moves ~5 % of the particles across 1 px —, radii; 4M samples) — gap (M < 0.75), flank (0.75–0.95), undisturbed / enhanced (≥ 0.95) | 1 ± max(0.08, 4/√n) | 1.006 / 0.972 / 1.036 (~3,100 / 3,900 / 9,900 particles); without z0 in the expectation 1.063 / 1.024 / 1.074 — presence is decided at the guiding centre, the classification uses the drawn (wake- and epicycle-displaced) position, which moves a few % across the group boundaries |
 | | near-field cost gate (`uRpNearMask`): present particles (count and position checksum) with the CPU class mask vs the enumeration forced for every class, in the presence view and at `a-ring-30m` | identical | identical (inside a belt no class is gated: the gate saves work outside the belts; since Nov 2026 presence reads the modulation cache, the gate only matters where no cache level covers a particle) |
 | cache | the modulation cache presence reads (`ModClipmap`, `sv_ringModClip`) at `propeller-belt` and `a-ring-1km`: max / rms \|M cache − M CPU\| at texel centres, each level at its prefilter fp = texel; levels with texels ≤ 4 m vs fp = 0 | ≤ 4e-3 / ≤ 1e-3; ≤ 4e-3 | ≤ 6.6e-4 / ≤ 2.0e-4 (float32); ≤ 2.2e-3 (coarser levels vs fp = 0: rms 0.5 % at 8 m … 4 % at 128 m — the prefilter) |
 | | the joint channel the allocation bound reads (largest τ0 over each texel's ±dr support × M) ≥ τ0 × M at the texel centre (CPU profile), every sampled texel | all | all |
@@ -380,10 +380,11 @@ Screenshots `structure-belt.png`, `structure-bleriot.png`, `presence.png`, `prop
 `propeller-belt.png`. ~1 min. The texture statistics are deterministic (CPU mirror); the prefilter and presence
 Monte Carlos vary by ~0.3 % / ~2 % between runs.
 
-### relief — `scripts/test/relief.mjs` (`--only model,gpu,shadow,near`, `--views mimas53,titan,cring,region-a,keeler`)
-The rings' vertical relief: ONE height field z0 = moonlet ζ + bending waves + corrugation + B-ring-edge sites
-(`src/rings/relief.ts`, `sv_ringRelief` / `sv_ringReliefShade`, docs/ring-physics.md §13) that every renderer takes
-heights relative to. The model part imports the TypeScript sources in Node (type stripping, Node ≥ 23).
+### relief — `scripts/test/relief.mjs` (`--only model,gpu,shadow,near`, `--views mimas53,titan,cring,region-a,keeler,propeller`)
+The rings' vertical relief: ONE height field z0 = moonlet ζ + bending waves + corrugation + B-ring-edge sites +
+the propellers' stirred regions (`src/rings/relief.ts`, `sv_ringRelief` / `sv_ringReliefShade`, `rsReliefPropellers`
+in `sv_ringPropellers`, docs/ring-physics.md §12–13) that every renderer takes heights relative to. The model part
+imports the TypeScript sources in Node (type stripping, Node ≥ 23).
 
 | check | tolerance (why) | measured |
 |---|---|---|
@@ -396,63 +397,84 @@ heights relative to. The model part imports the TypeScript sources in Node (type
 | … max \|slope GPU − CPU\| | ≤ 0.002 + 2 % of the max slope | ≤ 2.0e-4 |
 | … ray / height-field intersection: \|z0 − z_ray\| tan(zenith angle) at the hit > 0.3 footprints + 2 m | ≤ 0.5 % of the pixels (the search is skipped exactly where the relief moves the hit by less than 0.3 footprints) | 0 % (max 0.22 footprints) |
 | … relief in view | max \|z0\| 100–2000 m (waves), 300–3600 m (region A): the views see the relief | see above |
+| giant propeller Blériot (2008-04-12, 25 km above it, fp 41 m): the same GPU vs CPU checks; relief at the moonlet (CPU) × sign(Sun's elevation) / Z (Tiscareno et al. 2010 Table S3: 430 m) | 0.99 … 1.01 (the sunlit half of the thickening, toward the Sun) | 1.0000 |
+| … max \|z0 GPU − CPU\|; slope; bad hits; rendered max \|z0\| / Z | as above; 0.8 … 1.05 (prefiltered, pixel sampling) | 0.0007 m; 3.6e-6; 0 % (max 0.27 fp); 0.915 (393 m) |
 | S/2009 S1 at its NAC frame time (Sun 0.24°): rendered shadow end (relief visibility 0.5 on the anti-Sun axis) / (h / tan B = 35.9 km) | 0.97 … 1.03 | 0.983 (35.3 km) |
 | … relief visibility halfway along the shadow | ≤ 0.1 | 0.000 |
 | near field 30 m above the local mid-plane inside the Mimas 5:3 wave (mid-plane −364 m): 99 % of \|z_particle − z0(x, y)\| over the drawn particles (r0RT readback) | ≤ 40 m (the layer's vertical scatter; on the SEF plane it would be hundreds of m) | 4.7 m (6,033 particles; vs the camera's mid-plane: 458 m) |
 | … z0 spread under the drawn particles | ≥ 50 m (the check sees relief) | 599 m |
-| … HUD height above the local mid-plane; after ~2 s at warp 3000 (mid-plane moved ≥ 20 m), then paused | 29.5–30.5 m | 30.00 m; moved 65–80 m (frame-rate dependent), 30.00 m |
+| … HUD height above the local mid-plane; after 6,000 s of simulated time at warp 3000 (mid-plane moved ≥ 20 m), then paused | 29.5–30.5 m | 30.00 m; moved 47 m, 30.00 m |
+| near field beside Blériot (30 m above the local mid-plane, 2 r_H outside its orbit, 0.3 d_B downstream; the propellers' relief in the near field: class mask, presence + relief enumeration): 99 % of \|z_particle − z0\|; z0 spread; HUD height | ≤ 40 m; ≥ 30 m; 29.5–30.5 m | 4.1 m (4,106 particles, z0 −425 … 0 m); 425 m; 30.00 m |
 | every view: NaN / negative pixels, console / GL errors, passes ok | none | none |
 
 Screenshots of every view in `<out>`; numbers per view in `results.json` (incl. the worst pixel). ~1 min.
 Model numbers in full: `node scripts/data/rings/relief_check.mjs`.
 
-### contact — `scripts/test/contact.mjs` (`--views b-inside,a-inside,a-30m,b-preset`, `--no-temporal`, `--cost [--cost-views …] [--reps 3] [--trials 12]`)
+### contact — `scripts/test/contact.mjs` (`--views b-inside,a-inside,a-30m,b-preset,mimas53,titan`, `--no-temporal`, `--cost [--cost-views …] [--reps 3] [--trials 12]`)
 The contact step of the near field (`src/render/near/NearContact.ts`, contract in ARCHITECTURE.md → "Near-field frame
 and contact contract"). Views (paused, `t=2026-11-08T12:00:00Z`, render scale 1, astronaut off): `b-inside` =
 b-ring-inside at fov 35 (cassini-compare b-inside), `a-inside` = a-ring-inside at fov 35, `a-30m` = a-ring-30m,
 `b-preset` = b-ring-inside at its fov 60 (other particle boxes than at fov 35: the camera lies inside a 1.8 m boulder;
-no temporal part). Per view the contact list (analytic positions, R0 slots, weights, contact shapes), the result, the
-bound D_i and R0 are read back and evaluated on the CPU in the page:
+no temporal part), and on a mid-plane tilted by the vertical relief (`cam=ring`, z = 0 above the local mid-plane, fov
+35): `mimas53` (Mimas 5:3 bending wave, 131,850 km, local slope 2.3°; a dense zone: τ 0.92, a_max 5 m) and `titan`
+(Titan −1:0 wave in the C ring, 77,545.5 km, local slope 17°). Per view the contact list (analytic positions, R0 slots,
+weights, contact shapes), the result, the bound D_i and R0 are read back and evaluated on the CPU in the page:
 1. **overlaps**: all pairs closer than their contact distance (the shader's ρ_i + ρ_j along the centre line), by a CPU
    multi-level grid search over the list, at the analytic and at the resolved positions. *Resolved pair* = both at
    weight 1 (≥ 6 render px radius, not occluded); *hidden* = the smaller one entirely inside the larger (left alone by
    design); *visible beyond tolerance* = a visible overlap deeper than max(2 % of the contact distance, 1 render px);
    *crowded* = a particle with ≥ 3 initial resolved overlaps (clusters / wake cores whose analytic packing is too dense
-   to resolve locally). Limits: residual / visible-before ≤ 0.2 (B) / 0.12 (A); uncrowded residual / resolved
-   particles ≤ 0.012.
+   to resolve locally). Limits: residual / visible-before ≤ 0.2 (B) / 0.12 (A) / 0.3 (mimas53: its dense zone has 15 %
+   of the resolved particles crowded vs 6 % in a-inside; flat, `relief=0`, it measures the same within 0.02); uncrowded
+   residual / resolved particles ≤ 0.012.
 2. **bound**: max |x − x_analytic| / (clampK D_i) ≤ 1.0001 (float32: 4 ulps of the coordinates); D_i(GPU) ≥ D_i(CPU,
    first iteration) for ≥ 99.8 % of the particles with overlaps (the GPU search missed nothing that matters); hash
    bucket overflow (CPU simulation of the grid) ≤ 0.1 % of the list.
 3. **write-back**: R0 at every list slot = the resolved position; present particles unchanged; drawn (R0 w > 0)
    with contact on − off = exactly the particles moved into view, ≤ 0.1 %; the HUD's ≥ 1 px count changes ≤ 0.1 %;
-   bodies around the camera (not drawn) have contact weight 0 (b-preset: 1 such body).
+   bodies around the camera (not drawn) have contact weight 0 (b-preset: 1 such body); the wake-field bounds the step
+   mirrors are sane — with wakes on 0 < density floor (= `wakeMinDensity()`) ≤ 1 ≤ core density 1/γ_core^s (the wake
+   retune of Nov 2026 re-parameterized `uWakeShape`, and the old read turned the floor into 1/R_C² ≈ 1.6–2.8: the
+   occlusion bound 30–50× too high, the contact set collapsed to a few metres).
 4. **temporal**: the same paused frame twice is bit-identical; one frame later (t + 1/30 s) "pops" (displacement
    change > max(5 × the analytic motion, 1 render px)) / matched particles ≤ 2e-4 (B) / 1e-4 (A); +1 s and +10 s
    reported; warp ±1000 running: no NaN, residual ratio ≤ 1.5 × the paused limit.
 5. **cost** (`--cost`, informational): the step alone, re-run on the captured frame between synchronous 1-px
-   read-backs (min over trials; stages cumulative), and whole frames (`pipeline.render`) with the step off / on
-   interleaved; plus an fps A/B (noisiest). b-default / a-default = the presets at the default render scale 0.5.
+   read-backs, the configurations interleaved within every trial (min over trials; stages cumulative; "step before" =
+   the 2026-11-08 configuration: 3 → 6 px, the whole grid, 12 undamped iterations), and whole frames
+   (`pipeline.render`) with the step off / on interleaved; plus an fps A/B (noisiest). b-default / a-default = the
+   presets at the default render scale 0.5; optional views `b-fov12` (the B ring through a 12° fov at render scale 1,
+   the largest contact set) and `a-1km` (an empty set: the step idles).
 
-Measured 2026-11-08 (deterministic, identical in every run):
+Measured on the re-calibrated wake field (ring-morphology b9dab72 + the Nov 2026 contact update; deterministic, identical
+in every run):
 
 | view | list | resolved | visible overlaps beyond tol. before → after (crowded) | deepest (× contact distance) | max displacement | moved into view | frame + 1/30 s pops (max px) |
 |---|---|---|---|---|---|---|---|
-| b-inside | 48.9k | 13.3k | 3672 → 469 (378): 0.128 | 0.938 → 0.639 | 6.5 a (bound 1.0000) | 37 | 1 (3.1 px) |
-| a-inside | 11.9k | 3.2k | 829 → 79 (55): 0.095 | 0.881 → 0.736 | 3.6 a | 5 | 0 (0.38 px) |
-| a-30m | 4.1k | 0.84k | 336 → 17 (16): 0.051 | 0.862 → 0.561 | 2.9 a | 3 | 0 (0.00 px) |
-| b-preset | 29.5k | 7.7k | 2344 → 310 (240): 0.132 | 0.945 → 0.765 | 5.4 a | 22 | — |
+| b-inside | 35.7k | 16.0k | 5272 → 541 (481): 0.103 | 0.914 → 0.539 | 5.4 a (bound 1.0000) | 31 | 3 (1.5 px) |
+| a-inside | 6.9k | 2.9k | 728 → 33 (32): 0.045 | 0.956 → 0.418 | 5.7 a | 4 | 0 (0.53 px) |
+| a-30m | 2.2k | 0.86k | 238 → 8 (5): 0.034 | 0.887 → 0.642 | 2.9 a | 2 | 0 (0.06 px) |
+| b-preset | 20.1k | 8.2k | 2939 → 273 (236): 0.093 | 0.932 → 0.529 | 5.8 a | 27 | — |
+| mimas53 | 15.7k | 7.3k | 2906 → 651 (605): 0.224 | 0.886 → 0.835 | 9.0 a | 8 | 0 (0.20 px) |
+| titan | 0.81k | 0.34k | 6 → 0: 0 | 0.546 → 0.000 | 2.0 a | 0 | 0 (0.00 px) |
 
-All overlapping resolved pairs (incl. shallow ones within the tolerance and hidden ones): b-inside 5568 → 3719 (hidden
-1423 → 1015), a-inside 1205 → 698, a-30m 402 → 203. GPU-missed 0, bucket overflow 0 (max bucket fill 5–8 of 16).
-Temporal, + 1 s / + 10 s: b-inside 46 / 84 pops (max 18.7 / 55 px: clusters that re-pack as the shear moves them),
-a-inside 3 / 5, a-30m 0 / 0; warp +1000 / −1000 residual ratios 0.12 / 0.13 (B), 0.06 / 0.10 (A), 0.04 / 0.05 (30 m).
-Cost on a GPU shared with other agents (min over trials; ranges over 4 runs show the contention), ms — the step
-alone: b-default (9k list) 2.5–4.5, a-default (1.8k) 1.2–1.4, b-inside (49k) 7.9–11 (one run 18), a-inside (12k)
-2.0–4.1, `b-fov12` (55k: the B ring through a 12° fov at render scale 1, the largest contact set) 8.4; its fixed part
-(list compaction 0.3–1.5, materialization ≤ 0.3) dominates small lists. Whole frame with the step off → on (2 runs):
-b-default +1.9 / +3.9 (28 → 32 ms), a-default +2.3 / +2.4 (10.3 → 12.6 ms), b-inside +7.5 / +10.6, a-inside
-+7.0 / +3.9, b-fov12 +7.5. Uncapped fps off → on (last run): b-default 43.2 → 40.0 (+1.9 ms), a-default 117.9 →
-107.3 (+0.8 ms), b-inside +5.7 ms, a-inside +2.6 ms, b-fov12 +6.7 ms; earlier runs were noise-dominated (±20 ms).
+All overlapping resolved pairs (incl. shallow ones within the tolerance — damped iterations approach contact from the
+overlapping side — and hidden ones): b-inside 6639 → 5265 (hidden 646 → 377), a-inside 1009 → 669, mimas53 6303 → 3993
+(hidden 2974 → 1691). GPU-missed 0, bucket overflow 0 (max bucket fill 3–13 of 16). Temporal, + 1 s / + 10 s: b-inside
+30 / 41 pops (max 30 / 41 px: mostly small particles emerging from a boulder through the embedding fade, and boulders
+next to the camera sliding in jammed clusters), a-inside 0 / 2, a-30m 1 / 1, mimas53 12 / 31, titan 0 / 0; warp +1000 /
+−1000 residual ratios 0.11 / 0.10 (b-inside), 0.05 / 0.05 (a-inside), 0.03 / 0.03 (a-30m), 0.22 / 0.22 (mimas53), 0 / 0
+(titan). Relief on / flat (`relief=0`, same views): mimas53 0.224 / 0.242, titan 0 / 0 — the tilted mid-plane changes
+nothing (the grid, the contact distance and the camera fade are 3-D; the occlusion slab takes heights above the
+camera's local mid-plane).
+Before the wake-mirror fix (b9dab72 as merged) the lists had collapsed to 1.4k (b-inside) / 2.5k (a-inside) and the
+check failed on 3 pops in 1430 (0.0021) and 4 residual overlaps of 26 (0.154); with the fix alone (3 → 6 px, 12
+iterations) b-inside listed 60.7k: residual 0.140, pops 6.6e-5; a-inside 0.068.
+Cost (`--cost`, a GPU shared with other agents), ms — step now / step before (interleaved) / whole frame off → on:
+b-default (4.8k list) 2.1 / 2.4 / 36.9 → 38.5, a-default (0.8k) 1.0 / 0.9 / 17.2 → 18.0, b-inside (35.7k) 4.5 / 9.2 /
+70.3 → 73.7, a-inside (6.9k) 1.8 / 1.9 / 43.8 → 44.9, b-fov12 (58k) 7.6 / 9.7, a-1km (idle) 0.2. The search (~0.05 µs
+per listed particle and round, ~100 cells per particle over its own and the larger size levels) dominates large lists,
+the list compaction (a full R0 scan, 0.4–0.8) small ones.
 
 ### wakecost — `scripts/test/wakecost.mjs` (`--preset id`, `--size N`, `--k K`, `--reps R`, `--trials T`, `--async D`)
 In-page micro-benchmark of the shared self-gravity-wake functions on the real app state (the place's wake set and

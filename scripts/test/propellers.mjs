@@ -36,7 +36,8 @@
 // 5. presence   near-field particles 400 m above a belt propeller's outer partial gap (looking down): drawn particles
 //               >= 1 px of the busiest class, grouped by the CPU modulation M at each particle (gap M < 0.75, flank
 //               0.75 .. 0.95, undisturbed / enhanced >= 0.95), vs the counts.mjs expectation (Monte Carlo of
-//               n_k(a) tau0 M over the box, layer height, radii, frustum, >= 1 px): within 1 +- max(0.08, 4/sqrt(n)).
+//               n_k(a) tau0 M over the box, layer height about the local mid-plane z0 -- the propeller's relief, CPU
+//               mirror on a 40 x 40 grid --, radii, frustum, >= 1 px): within 1 +- max(0.08, 4/sqrt(n)).
 //               Cost gate: the present particles (count, position checksum) with the CPU class mask uRpNearMask are
 //               identical to those with the propeller enumeration forced for every class (presence view, a-ring-30m).
 // 5b. cache     the modulation cache the presence test reads (src/render/rings/ModClipmap.ts, sv_ringModClip) at the
@@ -379,15 +380,30 @@ await withHarness('propellers', { usage: 'node scripts/test/propellers.mjs [--ba
         }
         out.sort((a, b) => b.n[0] + b.n[1] + b.n[2] - (a.n[0] + a.n[1] + a.n[2]));
         const best = out[0], k = best.c.k;
-        // expected (counts.mjs): Monte Carlo of n_k(a) tau0 M over the box, layer height, radii, frustum, >= 1 px
+        // expected (counts.mjs): Monte Carlo of n_k(a) tau0 M over the box, layer height about the local mid-plane z0
+        // (the propeller's relief lifts the stirred material toward the Sun's side: CPU z0 on a grid), radii,
+        // frustum, >= 1 px
         const D = lod.box[k], lo = lod.aLo[k], hi = lod.aHi[k], q = lod.q, sig = lod.sigZ(k), p1 = 1 - q;
+        const NG = 40, zg = new Float64Array((NG + 1) * (NG + 1));
+        for (let j = 0; j <= NG; j++) {
+          for (let i = 0; i <= NG; i++) {
+            const gx = -D + (2 * D * i) / NG, gy = -D + (2 * D * j) / NG;
+            zg[j * (NG + 1) + i] = st.streamAt(cam.x + gx, Math.atan2(cam.y + gy, f.ring.r0 + cam.x + gx), 0, true).zeta;
+          }
+        }
+        const z0At = (lx, ly) => {
+          const u = ((lx + D) / (2 * D)) * NG, v = ((ly + D) / (2 * D)) * NG;
+          const i = Math.min(NG - 1, Math.max(0, Math.floor(u))), j = Math.min(NG - 1, Math.max(0, Math.floor(v)));
+          const fu = u - i, fv = v - j, g = j * (NG + 1) + i;
+          return (zg[g] * (1 - fu) + zg[g + 1] * fu) * (1 - fv) + (zg[g + NG + 1] * (1 - fu) + zg[g + NG + 2] * fu) * fv;
+        };
         const e = [0, 0, 0], mSum = [0, 0, 0], mN = [0, 0, 0];
         const nMc = 4000000;
         for (let n = 0; n < nMc; n++) {
           const lx = (2 * Math.random() - 1) * D, ly = (2 * Math.random() - 1) * D;
           const zz = sig * Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random());
           const a = Math.abs(p1) < 1e-9 ? lo * Math.pow(hi / lo, Math.random()) : Math.pow(lo ** p1 + (hi ** p1 - lo ** p1) * Math.random(), 1 / p1);
-          const x = lx * eR.x + ly * eP.x, y = lx * eR.y + ly * eP.y, z = zz - cam.z;
+          const x = lx * eR.x + ly * eP.x, y = lx * eR.y + ly * eP.y, z = zz + z0At(lx, ly) - cam.z;
           const s = Math.hypot(lx, ly, z);
           if (a / (s * pa) < 0.5 || !inFrustum(x, y, z, 1.2 * a)) continue;
           const M = Mof(lx, ly), g = grp(M);

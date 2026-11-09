@@ -49,6 +49,7 @@ uniform vec4 uRlExtLutP;            // (u0, du, log10 s0, dlog10 s)
 // the march takes the 2-D modulation from the cache around the camera where its footprint and the cache's texels are
 // both at most this (m): every texture octave resolved (the finest, 15.6 m, fades above 5.2 m)
 #define RL_MC_FP 4.0
+#define RL_RELIEF_CACHE 15.0   // horizontal distance (m) between relief evaluations along a march ray
 
 vec3 rlExt(float z, float H, float s) {
   float x = ((z / H - uRlExtLutP.x) / uRlExtLutP.y + 0.5) / RL_LUT_NU;
@@ -278,8 +279,12 @@ void rlMarch(vec3 rd, float sA, float sB, float jitter, out vec3 Lout, out float
       Jst = stJ;
     }
     // ---- relief: the local mid-plane at the sample (forward map at its Lagrangian offset), the layer's normal there,
-    // the Sun's side / incidence and the viewer's side relative to it
-    if (relOn) {
+    // the Sun's side / incidence and the viewer's side relative to it. Re-evaluated every RL_RELIEF_CACHE m of horizontal
+    // travel inside the layer (the mid-plane extrapolated linearly with its slope in between: < 0.1 m error for the
+    // bending waves and propellers, ~1 m in the Titan wave's 2 km crests), every half of the height above it outside
+    // (there it only sizes the steps): the relief's sources cost far more than a step.
+    float dCache = max(RL_RELIEF_CACHE, 0.5 * (abs(zr0) - 3.0 * S.H));
+    if (relOn && dot(l.xy - pe, l.xy - pe) > dCache * dCache) {
       vec3 rr, zz;
       rsEval(drL, dthL, fpR, true, rr, zz);
       z0e = zz.x;
@@ -295,13 +300,14 @@ void rlMarch(vec3 rd, float sA, float sB, float jitter, out vec3 Lout, out float
       b0View = texture(uRlPhaseLut, vec2((min(abs(vN), 1.0) * 63.0 + 0.5) / 64.0, 0.5)).rg;
       b0Sun = texture(uRlPhaseLut, vec2((min(mu0, 1.0) * 63.0 + 0.5) / 64.0, 0.5)).rg;
       zr0 = l0.z - (z0e + dot(g0e, l0.xy - pe));
-      if (length(l.xy - pVis) > 30.0) {
+      // the relief's shadows where there is material to shadow (within 4 H of the local mid-plane)
+      if (length(l.xy - pVis) > 30.0 && abs(l.z - z0e) < 4.0 * S.H) {
         relVis = ringReliefSunVis(drL, dthL, z0e, tau0 * Jst, fpR);
         pVis = l.xy;
       }
     }
     float zrE = relOn ? l0.z + d.z * ds - (z0e + dot(g0e, l0.xy + d.xy * ds - pe)) : l0.z + d.z * ds;
-    float zrM = relOn ? l.z - z0e : l.z;
+    float zrM = relOn ? l.z - (z0e + dot(g0e, l.xy - pe)) : l.z;
     // vertical structure at the step end (LOD contract LUT): column fraction for the exact step optical
     // depth, unresolved share, and the depth at which the sources are evaluated
     vec3 exB = rlExt(zrE, S.H, s + ds);

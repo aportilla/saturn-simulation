@@ -93,22 +93,24 @@ struct RingStream {
 //                                                         structures (included BEFORE this chunk; src/rings/relief.ts)
 //   sv_ringTexture     vec2 rsTauModTexture(aL, dth, fp)      sub-km optical-depth texture (src/rings/ringTexture.ts)
 //   sv_ringPropellers  vec2 rsTauModPropellers(aL, dth, fp)   propeller partial gaps, lobes, moonlet wakes
-//                      vec3 rsReliefPropellers(aL, dth)       their vertical relief (src/rings/propellers.ts)
+//                      vec3 rsReliefPropellers(aL, dth, fp)   their vertical relief (src/rings/propellers.ts)
 #include <sv_ringTexture>
 #include <sv_ringPropellers>
 // Vertical relief sources at Lagrangian offset aL (m), azimuth offset dth, radial footprint fp (m): (height (m), d/da',
 // d/dS) each.
 vec3 rsReliefWaves(float aL, float dth, float fp) { return rrWaves(aL, dth, fp); }  // bending waves, 1983 corrugation (sv_ringRelief)
 vec3 rsReliefSites(float aL, float dth, float fp) { return rrSites(aL, dth, fp); }  // B-ring-edge region A, S/2009 S1 (sv_ringRelief)
-// The propellers' relief (rsReliefPropellers) is NOT part of z0 yet: its heights are not prefiltered to the footprint
-// (no fp argument), and neither the relief bounds (uRrCamN, ringReliefBound) nor the relief shadows include it, so only
-// the sheet would shade it -- inconsistent with the march and the near field (seam handover, a 1 km view inside a
-// propeller belt: the sheet 6-10 % off). Define RS_PROPELLER_RELIEF once those are in place (and set PROPELLER_RELIEF
-// in src/rings/RingStructure.ts, the CPU mirror).
+// The propellers' relief (rsReliefPropellers, prefiltered to fp) is part of z0 like the other sources: it is in the
+// relief bounds (ringReliefBound; uRrCamN / uRpTF.w on the CPU), the relief shadows (ringReliefSunVis) and the near
+// field's particle heights. RS_PROPELLER_RELIEF (mirror: PROPELLER_RELIEF in src/rings/RingStructure.ts) switches it.
+// gRsPropRelief = false leaves it out of a lookup (nearUpdate.glsl: a slot's first, culling height; the draw where no
+// propeller can reach the size class: uRpNearMask).
+#define RS_PROPELLER_RELIEF
+bool gRsPropRelief = true;
 vec3 ringStructureRelief(float aL, float dth, float fp) {
   vec3 h = rsReliefWaves(aL, dth, fp) + rsReliefSites(aL, dth, fp);
 #ifdef RS_PROPELLER_RELIEF
-  h += rsReliefPropellers(aL, dth);
+  if (gRsPropRelief) h += rsReliefPropellers(aL, dth, fp);
 #endif
   return h;
 }
@@ -308,7 +310,10 @@ RingStream rsInvert(float dr, float dth, float fp, bool wantZ, int mm) {
   RingStream st;
   st.da = 0.0; st.J = 1.0; st.tauMod = 1.0; st.tauVar = 0.0; st.wakeMod = 1.0; st.zeta = 0.0; st.slope = vec2(0.0); st.daGrad = vec2(0.0);
   if (rsIdentityAt(dr)) {
+    // (the propellers' tau factor and relief at the same point in one enumeration: sv_ringPropellers mode 3)
+    gRpAlsoRelief = wantZ;
     vec3 tm = rsModFor(mm, dr, dth, fp);
+    gRpAlsoRelief = false;
     st.tauMod = tm.x;
     st.tauVar = tm.y;
     st.wakeMod = tm.z;

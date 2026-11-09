@@ -199,10 +199,9 @@ every DOI and arXiv id against the registries.
 * Vertical relief: the bending-wave amplitudes are linear theory scaled to the measured peak height (Mimas 5:3) or
   slope (Titan), the Mimas 4:2 wave is unscaled linear theory, and the weaker Mimas 7:4 / 8:5 waves are missing; the
   B-ring-edge structures are a phenomenological field matched to Cassini's equinox images, carried on their sunlit
-  side only; Daphnis's vertical edge waves reach 0.1–0.5 km in the model (depending on its vertical phase) where
-  Cassini's shadows suggest 0.5–1.5 km; the Encke-gap ringlet clumps and the propellers have no height yet (the
-  propellers' equinox heights are computed, but stay out of the height field until they are filtered to the pixel
-  footprint and cast shadows).
+  side only, and so are the propellers' stirred regions (their measured equinox heights, 0.12–0.43 km, else 0.45 Hill
+  radii); Daphnis's vertical edge waves reach 0.1–0.5 km in the model (depending on its vertical phase) where
+  Cassini's shadows suggest 0.5–1.5 km; the Encke-gap ringlet clumps have no height yet.
 * Moonlet gap edges: the edge's azimuthal bunching, other perturbers (e.g. Prometheus on the Keeler outer edge) and
   the Encke-gap ringlets are not modelled; in the most compressed wave crests particles far from the camera may be
   missing.
@@ -216,10 +215,11 @@ every DOI and arXiv id against the registries.
   ring (measured on a shared GPU; docs/ring-physics.md §12), most of it in the particles' presence test.
 * Particle shapes and surface detail are procedural; light reflected from one part of the rings onto another is
   not modelled.
-* Particle contacts are resolved geometrically, per frame, among the particles that are resolved on screen (≥ 3–6
-  pixels in radius): there are no collisions in the dynamics (no bouncing, sticking or aggregate growth). In the
-  densest clusters (B-ring mid-layer, A-ring wake cores) some 10–13 % of the visible overlaps remain, and a small
-  particle lying entirely inside a larger one is left there (it is hidden).
+* Particle contacts are resolved geometrically, per frame, among the particles that are resolved on screen (≥ 4–6
+  pixels in radius): there are no collisions in the dynamics (no bouncing, sticking or aggregate growth). Jammed
+  clusters keep some overlaps — about 5 % of the visible ones in the A ring, 10 % in the B-ring mid-layer, 20 % in
+  the densest outer A ring (τ ≈ 0.9 with metre-sized boulders) — and a small particle lying entirely inside a larger
+  one is left there (it is hidden).
 * Daphnis's orbit is extrapolated (Horizons coverage ends in 2018); Hyperion's actual present-day orientation is
   unknowable (chaotic rotation).
 * Only the seven small inner moons have measured shapes, and only at the models' ~2° resolution (finer relief is

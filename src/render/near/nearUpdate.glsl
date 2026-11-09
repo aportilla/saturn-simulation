@@ -79,6 +79,12 @@ void main() {
   float qe = qx;
   float Jp = 1.0;
   float z0p = 0.0;
+  // the propellers' relief (a hash-grid enumeration per lookup) is added below, only for slots that may be drawn or
+  // cast a shadow, in the size classes a propeller can reach (uRpNearMask); the tests before it allow for its bound
+  // near the camera (uRpTF.w)
+  bool rpZ = (uRpNearMask & (1 << uClass)) != 0 && uRpTF.w > 0.0;
+  float zPad = rpZ ? uRpTF.w : 0.0;
+  gRsPropRelief = false;
   if (uRsCam.w > 0.5) {
     vec3 sx = ringStreamXi(aL, dthP, 0.0);
     qe += sx.x - uRsCam.x;
@@ -87,6 +93,7 @@ void main() {
   } else if (uRrCamN.w > 0.5) {
     z0p = ringStructureRelief(aL, dthP, 0.0).x;
   }
+  gRsPropRelief = true;
 
   // --- vertical oscillation about the local mid-plane
   float B = uSig.y * sqrt(-2.0 * log(nearU(idx, seed, NS_VA)));
@@ -102,14 +109,14 @@ void main() {
   vec3 p0 = qe * uRingER + qy * uRingEPhi + vec3(0.0, 0.0, z + z0p - uRingCamLocal.z);
   bool cand;   // possibly in view and large enough to be drawn
   {
-    float r = rb + mw;
+    float r = rb + mw + zPad;
     vec3 v = uWorldToCam * p0;
     float w = -v.z;
     float tx = uTanHalfFov * uAspect, ty = uTanHalfFov;
     bool outside = w < -r || abs(v.x) > w * tx + r * sqrt(1.0 + tx * tx) || abs(v.y) > w * ty + r * sqrt(1.0 + ty * ty);
-    cand = !outside && lodCarryParticle(a, uClass, max(length(p0) - mw, 1e-4), p0.z) > 0.0;
+    cand = !outside && lodCarryParticle(a, uClass, max(length(p0) - mw - zPad, 1e-4), p0.z) > 0.0;
   }
-  if (!cand && !nearShadowCaster(p0, rb + mw, uClass)) { o = vec4(p0, 0.0); return; }
+  if (!cand && !nearShadowCaster(p0, rb + mw + zPad, uClass)) { o = vec4(p0, 0.0); return; }
 
   // --- presence: thin by the macroscopic optical depth at the guiding-center (Lagrangian) radius (empty gaps) times the
   // 2-D modulation there (sv_ringStructure: sub-km texture, propellers -- the medium carries the same tau0 J M)
@@ -126,10 +133,15 @@ void main() {
   if (rsModCached(aL, uRingR0 * dthP, mcw)) smod = vec3(mcw.x, 0.0, mcw.y);
   else {
     bool rpEval = cand && (uRpNearMask & (1 << uClass)) != 0;
+    gRpAlsoRelief = rpZ && rpEval;   // the propellers' relief in the same enumeration (sv_ringPropellers mode 3)
     smod = rpEval ? ringStructureMod(aL, dthP, 0.0) : ringStructureModNoPropellers(aL, dthP, 0.0);
+    gRpAlsoRelief = false;
   }
   float tauM = rs.tau * (1.0 - rs.dust) * smod.x;
   if (nearU(idx, seed, NS_PRES) * uTauBoxMax >= tauM) { o = vec4(0.0); return; }
+  // the propellers' relief at the guiding centre (present particles only; shadow casters outside the view: its own
+  // enumeration -- their heights stay exact)
+  if (rpZ) z0p += rsReliefPropellers(aL, dthP, 0.0).x;
 
   // --- self-gravity wakes (Eulerian field), faded out at the particle's (Lagrangian) box edge, where it is too
   // small to be drawn, and absent in a propeller's stirred material (sv_ringStructure wake factor)

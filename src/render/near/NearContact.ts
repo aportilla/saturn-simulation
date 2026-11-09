@@ -8,16 +8,18 @@
 // the shadow-map casters, the astronaut's received shadows through ctx.nearShadow) sees the same positions.
 //
 // WHO (the contact set): present particles (R0 w != 0, drawn or not) with weight
-//   w_i = smoothstep(rhoLo, rhoHi, a / (s * renderPixelAngle))        resolved: 3 -> 6 render px radius
+//   w_i = smoothstep(rhoLo, rhoHi, a / (s * renderPixelAngle))        resolved: 4 -> 6 render px radius
 //       x (1 - smoothstep(tauVisLo, tauVisHi, tau_los))                 not statistically occluded: tau 4 -> 5
 //       x (1 - smoothstep(e1 - F, e1, out))                             near the view frustum
 //       x smoothstep(1, 1.15, d / rho_cam)                              the camera outside the body
 // An overlap is at most the smaller particle's diameter deep and typically ~0.3 of its radius, i.e. about one pixel
-// of silhouette at 3 px radius: below that it is invisible, so pairs are corrected with min(w_i, w_j); the fades
-// make every correction continuous in time. tau_los: slab-model optical depth from the camera to the particle's
-// near side with a conservative path tau (the lowest macroscopic tau within the contact range x the emptiest
-// wake-gap density x 0.8, as the update pass's cull) - direction-independent; at tau 4-5 only e^-tau = 2-0.7 % of
-// a particle is seen. out: the centre's distance outside the view frustum; e1 = rb + min(M a + F, mw): the frustum
+// of silhouette at 3-4 px radius: below that it is invisible, so pairs are corrected with min(w_i, w_j); the fades
+// make every correction continuous in time (3 -> 6 px listed 70 % more B-ring particles - the search's cost - for the
+// same residual). tau_los: slab-model optical depth from the camera to the particle's near side (heights above the
+// camera's local mid-plane) with a conservative path tau (min(tau at the camera x its streamline density, the lowest
+// profile tau within the contact range) x wakeMinDensity() x 0.8, as the update pass's cull; the density floor is read
+// from the WakeField's uWakeBounds.x, the uniform wakeMinDensity() returns) - direction-independent; at tau 4-5 only
+// e^-tau = 2-0.7 % of a particle is seen. out: the centre's distance outside the view frustum; e1 = rb + min(M a + F, mw): the frustum
 // dilated by M = 4 x the largest semi-axis / a (two of the particle's own contact distances: a smaller particle
 // yields to a larger one, so only particles about that close can push a visible one), fading out over F = half
 // of it - but never beyond the coverage of R0 (the update pass keeps out-of-view particles within rb + mw, mw = the
@@ -32,6 +34,11 @@
 // identical ellipsoids, close otherwise, so elongated bodies cannot pass through each other end-on. The high-quality
 // surface relief (+-~0.1 a about the base ellipsoid's mean surface, nearRelief) is left to interlock with the
 // neighbour's dimples, as rubble surfaces do.
+// SHAPE MIRROR (update when particle shapes / orientations change): MATERIALIZE_FRAG calls nearShape and
+// nearOrientation (nearCommon.glsl) - shapes follow automatically; the largest base semi-axis / a, SHAPE_EXT_HIGH
+// below (1.37 >= nearShape's 1.36), sizes the grid cells and the search reach (scripts/test/contact.mjs reads the value
+// in use from the instance, `ext`); nearMaxExtent() (bounding radius incl. the relief) sets the frustum / occlusion
+// margins.
 //
 // HOW (no compute shaders / atomics; everything is a deterministic function of this frame's analytic positions):
 //   1. list: the near-field HistoPyramid (NearCompaction: the draw lists' atlases, rebuilt with the contact
@@ -40,8 +47,10 @@
 //   2. ROUNDS (3) x:
 //      a. hash grid of the round's start positions: one level per size class (octave from 1 mm); cell = the class's
 //         largest diameter (2 x max semi-axis x aHi), or larger where the class is sparse (cbrt(cellFill / mid-plane
-//         number density): a search then scans few, mostly occupied cells); 2^n buckets (>= 2 x the list capacity) of
-//         16 R32UI entries (list index + 1 in 21 bits, an 11-bit tag of the cell hash above) in 4 x 4 texel blocks.
+//         number density, the wake cores' compression 1 / gammaCore^s included): a search then scans few, mostly
+//         occupied cells); 2^n buckets (>= 2 x the entries processed this frame; the clears and the routing pattern
+//         cover only those rows) of 16 R32UI entries (list index + 1 in 21 bits, an 11-bit tag of the cell hash above)
+//         in 4 x 4 texel blocks.
 //         Filled by ONE point pass with stencil routing (Purcell et al. 2003): every list entry draws a 4 x 4 px
 //         point over its bucket's block, whose stencil holds 15 - slot; the test passes at 15 and every fragment
 //         increments, so the k-th entry of a bucket in primitive (= list) order lands in slot k - 1 - deterministic,
@@ -51,11 +60,11 @@
 //         buckets never count twice) and keeps the CT_NB = 8 candidates with the smallest normalized surface gap
 //         g = (d - rho_i - rho_j) / (2 min(rho_i, rho_j)) below gapMargin = 0.5 (overlaps first; the margin admits
 //         pairs the iterations can close), with their gaps at the round's start;
-//      c. ITERATIONS / ROUNDS Jacobi iterations (12 in all) over the neighbour lists: per overlapping pair
+//      c. ITERATIONS / ROUNDS Jacobi iterations (24 in all) over the neighbour lists: per overlapping pair
 //         (penetration delta = rho_i + rho_j - d > 0) the correction c = e x share x delta along n, with
 //         e = min(w_i, w_j) x (1 - embedding fade) x listing weight; share = m_j / (m_i + m_j) (m ~ a^3) within a size
 //         class, 1 for the smaller particle of a pair from different classes (small particles yield to boulders; the
-//         larger one never lists the pair); x += omega sum c n / max(1, soft count), omega = 1 (pairs with
+//         larger one never lists the pair); x += omega sum c n / max(1, soft count), omega = 0.7 (pairs with
 //         delta < 0.1 rho_min count delta / (0.1 rho_min): continuous). Embedding fade: a smaller particle lying
 //         entirely inside a larger one (delta / rho_min 2 -> 2.5) is hidden and left alone - ejecting it would move
 //         it by up to the larger radius into a cascade of new contacts that changes chaotically with the analytic
@@ -72,6 +81,9 @@
 //      in view is drawn).
 // The medium (ring layer) is not touched: it is statistical. No state persists between frames, so time warp,
 // reverse time, pausing (bit-identical frames) and re-anchoring need nothing special.
+// IDLE: nothing runs when the camera is farther from the layer than the largest particles are resolved at; with an
+// empty contact set (last read-back) only the list compaction runs, every 4th frame (particles enter the set through
+// the weights' fades, from 0, so the few frames until the next read-back keep the result continuous).
 // Regression check: scripts/test/contact.mjs (overlaps before / after, displacement bound, temporal smoothness,
 // counts, cost).
 import {
@@ -88,6 +100,8 @@ import { NEAR_PYR_GLSL, type NearCompaction } from './NearCompaction';
 
 /** width of the contact list textures */
 export const CT_W = 2048;
+/** largest base-shape semi-axis / a at high particle quality (nearShape: <= 1.36; spheres below: 1) - the shape mirror */
+export const SHAPE_EXT_HIGH = 1.37;
 /** hash buckets: 4 x 4 texel blocks of an R32UI texture CT_W wide (512 buckets per block row): 16 entries each */
 export const CT_SLOTS = 16;
 const CT_BPR_LOG2 = 9;
@@ -375,7 +389,7 @@ uniform vec4 uCtIt;       // (omega, clamp factor x D_i, gap margin, 1 = the fra
 uniform vec3 uCtEmb;      // embedding fade (units of the smaller radius): (start, end); yield bound (units of a)
 layout(location = 0) out vec4 oP;
 int gI, gLi;
-vec3 gX, gAcc;
+vec3 gX, gX0, gAcc;
 float gAi, gAi3, gCnt, gDmax, gEmb;
 vec4 gMi, gSi;
 // one neighbour-list slot (list index + 1, 0 = empty; g0: its gap at the round's start): accumulate the pair's
@@ -395,7 +409,9 @@ void ctPair(float v, float g0) {
   if (delta <= 0.0) return;
   // the smaller particle lies entirely inside the larger one (delta >= its diameter along n): it is hidden, so the
   // pair is left alone (fading over 2 -> 2.5 smaller radii) - ejecting it would move it by up to the larger one's
-  // radius into a cascade of new contacts that changes chaotically with the analytic positions
+  // radius into a cascade of new contacts that changes chaotically with the analytic positions. (Judged at the
+  // current positions: deciding it at the analytic ones exposes hidden particles whose host moves away, and did not
+  // reduce the jumps - measured.)
   float rmin = min(ri, rj);
   float emb = smoothstep(uCtEmb.x, uCtEmb.y, delta / rmin);
   if (ri <= rj) gEmb = max(gEmb, emb);
@@ -422,6 +438,7 @@ void main() {
   gAi3 = gAi * gAi * gAi;
   gLi = ctLevel(gAi);
   gX = P.xyz;
+  gX0 = texelFetch(tCP0, c, 0).xyz;
   gAcc = vec3(0.0);
   gCnt = 0.0;
   gDmax = 0.0;
@@ -437,9 +454,9 @@ void main() {
   // one stays where it is
   vec3 x = gX + (uCtIt.x * (1.0 - gEmb)) * gAcc / max(1.0, gCnt);
   // displacement bound: no farther from the analytic position than the overlaps require
-  vec3 x0 = texelFetch(tCP0, c, 0).xyz, t = x - x0;
+  vec3 t = x - gX0;
   float tl = length(t), lim = uCtIt.y * D;
-  if (tl > lim) x = x0 + t * (lim / tl);
+  if (tl > lim) x = gX0 + t * (lim / tl);
   oP = vec4(x, D);
 }`;
 
@@ -505,6 +522,8 @@ export interface NearContactFrame {
   lod: RingLod;
   profile: RingProfile;
   wakes: WakeField;
+  /** the update pass's uTauCam: tau at the camera's Lagrangian radius x its streamline density J */
+  tauCam: number;
   r0RT: WebGLRenderTarget;
   texRows: number;
   /** per class: active this frame (its R0 rows were written by the update pass) */
@@ -517,11 +536,12 @@ export interface NearContactFrame {
 
 export class NearContact {
   enabled = true;
-  /** neighbour-search rounds (each: hash grid + search) and Jacobi iterations in all */
+  /** neighbour-search rounds (each: hash grid + search) and Jacobi iterations in all (iterations are cheap next to a
+   *  search: 24 damped ones instead of 12 undamped resolve a quarter more of the jammed clusters' overlaps, measured) */
   rounds = 3;
-  iterations = 12;
-  /** relaxation factor of the averaged pair corrections (over-relaxation amplifies the sensitivity to the input) */
-  omega = 1;
+  iterations = 24;
+  /** relaxation factor of the averaged pair corrections (damped: over-relaxation amplifies the sensitivity to the input) */
+  omega = 0.7;
   /** displacement bound: |x - x_analytic| <= clampK x the largest pair correction the particle has needed */
   clampK = 4;
   /** neighbour candidates: surface gap below gapMargin x the smaller particle's diameter (fading in from half of it) */
@@ -532,8 +552,9 @@ export class NearContact {
   yieldBound = 0.5;
   /** target mean fill of a grid cell at the densest mid-plane (sparse classes get cells larger than their diameter) */
   cellFill = 0.5;
-  /** contact set: render-px radius fade-in (lo, hi) and line-of-sight tau fade-out (lo, hi) */
-  rhoLo = 3;
+  /** contact set: render-px radius fade-in (lo, hi) and line-of-sight tau fade-out (lo, hi). (3 -> 6 px listed 70 %
+   *  more particles in the B ring - most of the search cost - for overlaps of ~1 px: the same residual, measured) */
+  rhoLo = 4;
   rhoHi = 6;
   tauVisLo = 4;
   tauVisHi = 5;
@@ -541,6 +562,8 @@ export class NearContact {
   occlusion = true;
   /** debugging / profiling: stop after 1 the list compaction, 2 the materialization, 3 the first grid, 4 the first search */
   stage = 0;
+  /** fit the hash grid and the processed range to the list (false: the whole allocation, as before Nov 2026; profiling) */
+  gridFit = true;
 
   /** last read-back contact-set size (entries in the list, before truncation to the capacity) */
   count = 0;
@@ -548,9 +571,16 @@ export class NearContact {
   drawn = 0;
   cap = 0;
   buckets = 0;
+  /** hash buckets used this frame (a power of two <= buckets: twice the entries processed) */
+  bucketsUsed = 0;
+  /** largest base-shape semi-axis / a used this frame (SHAPE_EXT_HIGH at high quality, 1 otherwise) */
+  ext = 1;
+  /** wake-field bounds used this frame (tests: 0 < wakeMin <= 1 <= wakeCore) and the conservative path tau */
+  readonly bounds = { wakeMin: 1, wakeCore: 1, tauPath: 0 };
   readonly slotsPerBucket = CT_SLOTS;
-  /** whether the contact step ran this frame */
+  /** whether the contact step ran this frame, and why not ('' = disabled or no active class) */
   ran = false;
+  idle = '';
   /** target holding the last run's result (tests / debugging): (final position, bound D_i) */
   outRT: WebGLRenderTarget | null = null;
 
@@ -576,7 +606,7 @@ export class NearContact {
   private frameNo = 0;
   private readonly zero4 = new Uint32Array(4);
   // shared uniform objects
-  private readonly selU = { value: [3, 6, 4, 5] };
+  private readonly selU = { value: [4, 6, 4, 5] };
   private readonly visU = { value: [0, 10, 10, 10] };
   private readonly mwU = { value: 0 };
   private readonly invCellU = { value: new Float32Array(LOD_CLASSES) };
@@ -607,7 +637,7 @@ export class NearContact {
     });
     this.itMat = fsMat(MIN_HEADER + GRID_GLSL + ITERATE_FRAG, {
       ...grid, ...list(), tCP0: { value: null }, tCN0: { value: null }, tCN1: { value: null }, tCG0: { value: null }, tCG1: { value: null },
-      uCtIt: { value: [1, 4, 0.5, 1] }, uCtEmb: { value: [2, 2.5, 0.5] },
+      uCtIt: { value: [0.7, 4, 0.5, 1] }, uCtEmb: { value: [2, 2.5, 0.5] },
     });
     // stencil routing: test == 15, every fragment increments (the written texel leaves 15, the next one reaches it)
     this.gridMat = new RawShaderMaterial({
@@ -691,15 +721,25 @@ export class NearContact {
    */
   run(fr: NearContactFrame): boolean {
     this.ran = false;
+    this.idle = '';
     this.frameNo++;
     if (!this.enabled || this.pyr.levels.length === 0) return false;
     const { renderer: r, lod, frame: f } = fr;
     if (fr.layoutChanged) this.stale = true;
     // levels present (classes active this frame) and the grid geometry
-    const ext = fr.quality > 1.5 ? 1.37 : 1.0;   // largest base-shape semi-axis / a (nearShape: <= 1.36)
+    const ext = fr.quality > 1.5 ? SHAPE_EXT_HIGH : 1.0;   // largest base-shape semi-axis / a
+    this.ext = ext;
     let lo = -1, hi = -1, aMax = 0;
-    // (densest column: the max tau of the class boxes x the strongest wake compression)
-    const tauDense = Math.max(lod.tau, lod.tauBoxMax) * ((fr.wakes.uniforms.uWakeOn.value as number) > 0.5 ? (fr.wakes.uniforms.uWakeShape.value as { w: number }).w : 1);
+    // wake-field density bounds (mirrors of wakes.glsl through the WakeField's CPU state): the floor = wakeMinDensity()
+    // (the update pass's culling bound), the cores = 1 / gammaCore^strength (the map's compression, sec. 10.11)
+    const wk = fr.wakes.uniforms;
+    const wakeOn = (wk.uWakeOn.value as number) > 0.5;
+    const wMin = wakeOn ? (wk.uWakeBounds.value as { x: number }).x : 1;
+    const wCore = wakeOn ? Math.pow(fr.wakes.shape.gamma, -fr.wakes.strength) : 1;
+    this.bounds.wakeMin = wMin;
+    this.bounds.wakeCore = wCore;
+    // (densest column: the max tau of the class boxes x the wake cores' compression)
+    const tauDense = Math.max(lod.tau, lod.tauBoxMax) * wCore;
     for (let k = 0; k < LOD_CLASSES; k++) {
       // grid cell of level k: the class's largest diameter, or larger where the class is sparse (mid-plane number
       // density n: cells of ~0.5 particles), so that a search scans few, mostly occupied cells
@@ -718,23 +758,26 @@ export class NearContact {
     this.lvU.value[1] = hi;
     // contact-set selection; the farthest a contact particle can be: the largest radius at rhoLo render px
     const reach = Math.min(aMax / (this.rhoLo * f.pixelAngle), 20_000);
+    // nothing can be resolved: the camera is farther from the layer (about its local mid-plane, which the vertical
+    // relief may tilt across the reach: x2) than the largest particles are resolved at
+    if (Math.abs(f.ring.camLocal.z - f.ring.zMid) - (1.6 * lod.H + 0.5) > 2 * reach) { this.idle = 'nothing resolvable'; return false; }
     const sel = this.selU.value;
     sel[0] = this.rhoLo; sel[1] = this.rhoHi; sel[2] = this.tauVisLo; sel[3] = this.tauVisHi;
-    const wk = fr.wakes.uniforms;
-    const wakeOn = (wk.uWakeOn.value as number) > 0.5;
     this.mwU.value = wakeOn ? (wk.uWakeTile.value as number) / 6 : 0;   // nearUpdate.glsl's out-of-view margin
-    const wMin = wakeOn ? (wk.uWakeShape.value as { z: number }).z : 1;
-    // conservative path tau: the lowest macroscopic tau within the contact range of the camera's radius
+    // conservative path tau, as the update pass's cull (min(tau at the camera incl. its streamline density, the lowest
+    // profile tau within the contact range) x wakeMinDensity() x 0.8); the sub-km texture factor M is left out (a
+    // line of sight crosses many of its 15-500 m cells; the update pass takes the particle's own M)
     let tauPath = 0;
     if (this.occlusion) {
       const rKm = (f.ring.r0 + f.ring.camLocal.x) / 1000, hw = reach / 1000 + 1;
-      let tmin = Infinity;
+      let tmin = fr.tauCam;
       for (let x = -hw; x <= hw + 1e-9; x += 0.25) {
         const l = fr.profile.local((rKm + x) * 1000);
         tmin = Math.min(tmin, l.tau * (1 - l.dust));
       }
       tauPath = Number.isFinite(tmin) ? tmin * wMin * 0.8 : 0;
     }
+    this.bounds.tauPath = tauPath;
     // frustum dilation per particle (units of its radius): two of its own contact distances, + a fade of one
     const vis = this.visU.value;
     vis[0] = tauPath; vis[1] = Math.max(lod.H, 0.5); vis[2] = 4 * ext; vis[3] = 2 * ext;
@@ -742,15 +785,31 @@ export class NearContact {
     if (!this.cRT || (this.count > 0.85 * this.cap && this.cap < CT_MAX)) {
       this.allocate(r, Math.min(CT_MAX, Math.max(this.cap, Math.ceil(this.count * 1.5), CT_MIN_ROWS * CT_W)));
     }
-    const n = this.stale ? this.cap : Math.min(this.cap, Math.max(16384, Math.ceil(1.5 * this.count + 16384)));
+    // an empty contact set (last read-back): only the list compaction runs, every 4th frame, to notice particles
+    // entering it - they enter through the weights' fades (from 0), so a few frames' delay keeps the result continuous;
+    // otherwise the step would be the identity on R0 anyway
+    const empty = !this.stale && this.count === 0;
+    if (empty && this.frameNo % 4 !== 0) { this.idle = 'empty set'; return false; }
+    // entries processed: the read-back size + a margin for growth until the next read-back (whole rows)
+    const n = this.stale ? this.cap : Math.min(this.cap, this.gridFit
+      ? Math.ceil((1.5 * this.count + 8192) / CT_W) * CT_W
+      : Math.max(16384, Math.ceil(1.5 * this.count + 16384)));
     const rows = Math.ceil(n / CT_W);
     this.drawn = n;
+    // hash buckets this frame: the next power of two >= 2 n (mean fill <= 0.5 of 16 entries), within the allocation;
+    // the grid's clears and routing pattern cover only their rows (the fixed cost of a small list)
+    let bf = this.gridFit ? 4096 : this.buckets;
+    while (bf < 2 * n && bf < this.buckets) bf *= 2;
+    this.bucketsUsed = bf;
+    this.maskU.value = bf - 1;
+    const gRows = (bf >> CT_BPR_LOG2) * 4;
 
     // 1. compaction of the contact set (the near field's pyramid, before the draw lists are built from it)
     this.l1Mat.uniformsNeedUpdate = true;
     this.pyr.build(r, this.l1Mat);
     this.readCount(r);
     if (this.stage === 1) return false;
+    if (empty) { this.idle = 'empty set'; return false; }
     // materialize the list
     const mu = this.matMat.uniforms;
     mu.tPyrA.value = this.pyr.atlas[0].texture;
@@ -773,6 +832,7 @@ export class NearContact {
     (iu.uCtEmb.value as number[])[1] = this.embedFade[1];
     (iu.uCtEmb.value as number[])[2] = this.yieldBound;
     (this.gridPts.geometry as BufferGeometry).setDrawRange(0, n);
+    (gu.uGSize.value as number[])[1] = gRows;
     const gl = r.getContext() as WebGL2RenderingContext;
     const g = this.gRT!;
     let src = cRT.textures[0];
@@ -781,7 +841,11 @@ export class NearContact {
     let done = 0, out = 0;
     for (let rd = 0; rd < rounds; rd++) {
       // hash grid of the round's start positions: entries and stencil cleared, the routing pattern (15 - slot) drawn
-      // as 4 bit planes, then one routed point pass
+      // as 4 bit planes, then one routed point pass - all within this frame's bucket rows (viewport + scissor: the
+      // clears obey the scissor, the draws the viewport)
+      g.viewport.set(0, 0, CT_W, gRows);
+      g.scissor.set(0, 0, CT_W, gRows);
+      g.scissorTest = true;
       r.setRenderTarget(g);
       r.state.buffers.color.setMask(true);
       gl.clearBufferuiv(gl.COLOR, 0, this.zero4);
@@ -796,6 +860,9 @@ export class NearContact {
       gu.tCP.value = src;
       this.gridMat.uniformsNeedUpdate = true;
       r.render(this.gridPts, fsCamera);
+      g.viewport.set(0, 0, CT_W, g.height);
+      g.scissor.set(0, 0, CT_W, g.height);
+      g.scissorTest = false;
       if (this.stage === 3) return false;
       su.tCP.value = src;
       this.srMat.uniformsNeedUpdate = true;
@@ -873,7 +940,7 @@ export class NearContact {
 
   stats(): string {
     if (!this.enabled) return 'off';
-    if (!this.ran) return 'idle';
+    if (!this.ran) return this.idle ? `idle (${this.idle})` : 'idle';
     const over = this.count > this.cap ? ` — ${fmtK(this.count - this.cap)} smallest unresolved (list cap ${fmtK(this.cap)})` : '';
     return `${fmtK(this.count)} particles, ${this.rounds} searches, ${this.iterations} iterations${over}`;
   }
