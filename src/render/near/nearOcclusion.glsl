@@ -36,7 +36,10 @@ uniform int uNfWcLevels;             // levels in use (0: none -- the emptiest-g
 uniform vec4 uNfWcInfo;              // (N, node spacing along the line of sight: wake spacing / 8 (m), 1 = the cull's
                                      // path test is on, -)
 #define NF_CULL_NODES 24
-#define NF_CULL_WMAX 1.5
+// the path test runs only where a mean wake density <= this along the line of sight could reach tauCap: a long line of
+// sight averages the wakes to ~1, and the particles that would need denser paths are rarely occluded but cost the whole
+// node loop to keep (skipping the test only ever keeps a particle)
+#define NF_CULL_WMAX 1.1
 
 // The clipmap level for a line of sight ending at local horizontal position xy: the finest usable level covering xy
 // whose texel is at least half the node spacing sp (its box filter ~ the line average between nodes), else the coarsest

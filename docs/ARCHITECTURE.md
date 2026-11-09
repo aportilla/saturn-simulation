@@ -324,7 +324,7 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   the **statistical occlusion cull**: line-of-sight optical depth `nearLosTau(...)` > 5 (`near/nearOcclusion.glsl`, meant
   to be shared with the contact set's fade: the slab model between the camera and the particle's near side with the
   lowest of three τ samples along the path × 0.8, first × the emptiest-gap density `wakeMinDensity()`, then — where that
-  cannot decide and a mean density ≤ 1.5 could — × the line of sight's own wake density: the ring layer's wake clipmap
+  cannot decide and a mean density ≤ 1.1 could — × the line of sight's own wake density: the ring layer's wake clipmap
   (`ctx.wakeClip`) at 4–24 nodes stratified in the column between the two heights, ≤ λ/8 apart, read from the level
   covering the particle, summed until the partial sum decides; since the Nov 2026 wake retune the bound alone (0.055 in
   the B ring) culled almost nothing: b-ring-inside 1.09 M → 0.10 M particles drawn, the image unchanged to 0.1 %,
