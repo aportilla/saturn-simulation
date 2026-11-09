@@ -1509,7 +1509,7 @@ export const REFERENCES: Reference[] = [
     venue: 'ApJL', volume: '765', pages: 'L4',
     doi: '10.1088/2041-8205/765/1/l4',
     topics: ['propellers'],
-    usedFor: "Propeller relief: the moonlet's inclination lifts the stirred material to its height, which then relaxes (rsReliefPropellers in ringPropellers.glsl)",
+    usedFor: "Propeller relief: a non-inclined moonlet heats the gap region, collisions turn that into a thickening (~0.7 r_H, decaying downstream; Earhart's ~120 km equinox shadow) -- its sunlit half is the propellers' part of z0 (rsReliefPropellers in ringPropellers.glsl)",
     verified: true, verifiedBy: CR,
   },
   {

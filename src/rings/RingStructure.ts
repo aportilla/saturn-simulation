@@ -49,10 +49,19 @@ const ZETA_BOUND_PER_Z = 0.15;
 /** radial reach (m) around the camera in which relief sources make the march / near field evaluate z0 per step */
 const RELIEF_NEAR_MARGIN = 70e3;
 /**
- * The propellers' relief in z0 (mirror of RS_PROPELLER_RELIEF in sv_ringStructure): off until it is prefiltered to the
- * footprint and part of the relief bounds and shadows (see ringStructure.glsl ringStructureRelief).
+ * The same for the propellers' relief bound (uRpTF.w, added to uRrCamN.z: the march's slab and the near field's culling
+ * pad): the march's points lie within ~25 km of the camera (rays whose mid-slab distance is within the near-field LOD
+ * range, ~2 a_max / pixel angle ~ 20 km, or the wake-resolving range, ~12 km), drawn particles within ~20 km. Below
+ * NEAR_REACH, so the collected list (reach 70 km) stays complete until the camera has moved 30 km since the last re-fit
+ * (beyond that: the classes' bound, ~330 m in the belts -- with the margin = the reach that fallback was ALWAYS taken,
+ * widening the march's slab by ~330 m: +5-6 ms at a-ring-1km).
  */
-const PROPELLER_RELIEF = false;
+const PROPELLER_RELIEF_MARGIN = 40e3;
+/**
+ * The propellers' relief in z0 (mirror of RS_PROPELLER_RELIEF in sv_ringStructure): prefiltered to the footprint, part
+ * of the relief bounds (reliefBoundCam / uRrCamN, uRpTF.w) and the relief shadows.
+ */
+const PROPELLER_RELIEF = true;
 
 function emptyPoint(): StreamPoint {
   return { da: 0, J: 1, drda: 1, tauMod: 1, tauVar: 0, wakeMod: 1, zeta: 0, slopeR: 0, slopeT: 0 };
@@ -235,6 +244,7 @@ export class RingStructure {
   }
   set reliefScale(v: number) {
     this.relief.scale = v;
+    this.propellers.reliefScale = v;
   }
 
   /**
@@ -304,7 +314,7 @@ export class RingStructure {
     u.uRsIdx0.value.set(i0, idx0 - i0);
     // 2-D optical-depth modulation sources: sub-km texture (flow model at r0) and propellers
     this.texture.update(f.t, this.r0, this.phi0);
-    this.propellers.update(f.t, this.r0, this.phi0);
+    this.propellers.update(f.t, this.r0, this.phi0, f.sunDir.z);
     let on = false;
     const T = this.table;
     for (let k = 0; k < this.moonlets.length; k++) {
@@ -381,7 +391,12 @@ export class RingStructure {
         this.reliefBoundCam += ZETA_BOUND_PER_Z * Math.hypot(p.zCos, p.zSin) * Math.abs(p.amp);
       }
     }
-    this.reliefNear = this.relief.bound(dr, RELIEF_NEAR_MARGIN) > 0;
+    // the propellers' relief near the camera (their amplitudes, from the near-field collection): the march's slab, the
+    // near field's culling pad (uRpTF.w)
+    const propB = PROPELLER_RELIEF ? this.propellers.nearReliefBound(this.r0 + dr, this.phi0 + dth, PROPELLER_RELIEF_MARGIN) : 0;
+    this.propellers.uniforms.uRpTF.value.w = propB;
+    this.reliefBoundCam += propB;
+    this.reliefNear = this.relief.bound(dr, RELIEF_NEAR_MARGIN) > 0 || propB > 0;
     // camera's mid-plane slope in the frame axes (the frame's radial / prograde axes at the camera, |dth| < 2e-4 rad)
     u.uRrCamN.value.set(this.cam.slopeR, this.cam.slopeT, this.reliefBoundCam, this.reliefNear ? 1 : 0);
     this.nearActive = false;
@@ -421,7 +436,7 @@ export class RingStructure {
       o[4] += this._h[1];
       o[5] += this._h[2];
       if (PROPELLER_RELIEF) {
-        this.propellers.reliefAt(aL, dth, this._z);
+        this.propellers.reliefAt(aL, dth, fp, this._z);
         o[3] += this._z[0]; o[4] += this._z[1]; o[5] += this._z[2];
       }
     }
@@ -505,7 +520,7 @@ export class RingStructure {
       Object.assign(out, emptyPoint());
       if (wantZ) {
         this.relief.eval(dr, dth, fp, this._h);
-        if (PROPELLER_RELIEF) this.propellers.reliefAt(dr, dth, this._z);
+        if (PROPELLER_RELIEF) this.propellers.reliefAt(dr, dth, fp, this._z);
         else this._z[0] = this._z[1] = this._z[2] = 0;
         out.zeta = this._h[0] + this._z[0];
         out.slopeR = this._h[1] + this._z[1];

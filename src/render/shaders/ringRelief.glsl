@@ -462,7 +462,7 @@ float rrSourcesSunVisSided(float aL, float dth, float cr, float ct, float tanB, 
       float env = 2.0 * Ar * cos(0.5 * (p0 - p2));
       float pm = 0.5 * (p0 + p2) + (env < 0.0 ? PI : 0.0) + shift;
       float kk = 0.5 * (k0 + k2);
-      float E = rrFpFade(TWO_PI / max(abs(kk), 1e-12), fp) < 0.5 ? 0.0 : abs(env);
+      float E = rrFpFade(TWO_PI / max(abs(kk), 1e-12), fp) * abs(env);
       th = rrSinHorizon(E, pm, kk, cr, 2.0 * E / tanLo, invMu, tanB);
       if (th > -1e8) {
         float v = rrDiskVis(th, tanB, rs);

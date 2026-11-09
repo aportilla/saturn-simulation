@@ -9,7 +9,8 @@
 //   vec2  ringReliefSunMu(n)                       mean solar incidence cosine on the face n points to (x) and the other
 //                                                  face (y): the Sun as a disk of uSunAngRadius (the terminator of a tilt
 //                                                  is soft; the flat ring at equinox gets ~R_sun / 5, not 0)
-//   float ringReliefBound(dr)                      bound of |z0| near the Eulerian offset dr (sources + moonlet zeta)
+//   float ringReliefBound(dr, fp)                  bound of |z0| near the Eulerian offset dr at footprint fp (sources +
+//                                                  moonlet zeta + the propellers' prefiltered relief)
 //   float ringReliefSunVis(aL, dth, hp, tau, fp)   visible fraction of the Sun at a point of the surface (relief shadows)
 //   float ringReliefHit(rd, zc, tP, fp, out st)    first intersection of a camera ray with z = z0 (camera-relative t)
 #ifndef SV_RING_RELIEF_SHADE
@@ -36,12 +37,16 @@ vec2 ringReliefSunMu(vec3 n) {
   return vec2(ringReliefSunMuExt(s, uSunAngRadius), ringReliefSunMuExt(-s, uSunAngRadius));
 }
 
-float ringReliefBound(float dr) {
+// (proc: with the procedural propellers' relief -- the ray-surface search leaves it out: below)
+float ringReliefBound(float dr, float fp, bool proc) {
   float b = rrBound(dr);
   for (int k = 0; k < RS_MOONLETS; k++) {
     vec4 P0 = uRsMl[3 * k], P2 = uRsMl[3 * k + 2];
     if (P0.w != 0.0 && abs(dr - P0.x) < P2.y + 3.0 * P0.z) b += uRrMlEdge[k].z * abs(P0.w);
   }
+#ifdef RS_PROPELLER_RELIEF
+  b += rpReliefBound(dr, fp, proc);
+#endif
   return b;
 }
 
@@ -112,6 +117,9 @@ float ringReliefSunVis(float aL, float dth, float hp, float tau, float fp) {
     vis *= rrSourcesSunVisSided(aL, dth, cr, ct, tanB, rs, tau, vec2(sg * hw.x, hs.x * sg), sg, fp);
   }
   if (uRsOn > 0.5) vis *= rrMoonletSunVis(aL, dth, sg * hp, cr, ct, tanB, rs, tau, sg, fp);
+#ifdef RS_PROPELLER_RELIEF
+  if (gRsPropRelief) vis *= rpReliefSunVis(aL, dth, sg * hp, cr, ct, tanB, rs, sg, fp);
+#endif
   return vis;
 }
 
@@ -125,14 +133,17 @@ float ringReliefHit(vec3 rd, float zc, float tP, float fp, out RingStream st) {
   vec3 l0 = ringLocalFromRel(p0);
   float dr0 = ringDrFromLocal(l0);
   float dth0 = atan(l0.y, uRingR0 + l0.x);
-  st = ringStreamRelief(dr0, dth0, fp);
-  float zB = ringReliefBound(dr0);
+  // The search leaves out the procedural propellers' relief (a hash-grid enumeration per sample, up to ~30 samples per
+  // pixel; <= 160 m high, rare above ~50 m): their hit is the surface without them (a horizontal error <= their height
+  // x tan(zenith)), the shading at the hit includes them.
+  float zB = ringReliefBound(dr0, fp, false);
   float az = max(abs(rd.z), 1e-6);
   float hz = length(rd.xy) / az;            // horizontal shift per metre of height
-  if (zB <= 0.0 || zB * hz < 0.3 * fp) return tP;
+  // (the full state at the plane hit only where it is the answer: the search evaluates its own)
+  if (zB <= 0.0 || zB * hz < 0.3 * fp) { st = ringStreamRelief(dr0, dth0, fp); return tP; }
   float tIn = abs(zc) > zB ? (zc > 0.0 ? zB - zc : -zB - zc) / rd.z : 0.0;
   float tOut = (zc > 0.0 ? -zB - zc : zB - zc) / rd.z;
-  if (!(tOut > tIn)) return tP;
+  if (!(tOut > tIn)) { st = ringStreamRelief(dr0, dth0, fp); return tP; }
   float Lh = (tOut - tIn) * length(rd.xy);
   int n = int(clamp(ceil(Lh / 250.0), 2.0, 24.0));
   float dt = (tOut - tIn) / float(n);
@@ -142,6 +153,9 @@ float ringReliefHit(vec3 rd, float zc, float tP, float fp, out RingStream st) {
   float side = fa >= 0.0 ? 1.0 : -1.0;
   float ta = tIn;
   RingStream sb;
+#ifdef RS_PROPELLER_RELIEF
+  gRpProcRelief = false;
+#endif
   for (int i = 1; i <= 24; i++) {
     if (i > n) break;
     float tb = tIn + dt * float(i);
@@ -162,6 +176,9 @@ float ringReliefHit(vec3 rd, float zc, float tP, float fp, out RingStream st) {
         t1 = tm;
         f1 = fm;
       }
+#ifdef RS_PROPELLER_RELIEF
+      gRpProcRelief = true;
+#endif
       vec3 lh = ringLocalFromRel(rd * t1);
       st = ringStreamRelief(ringDrFromLocal(lh), atan(lh.y, uRingR0 + lh.x), fp);
       return t1;
@@ -169,6 +186,10 @@ float ringReliefHit(vec3 rd, float zc, float tP, float fp, out RingStream st) {
     ta = tb;
     fa = fb;
   }
+#ifdef RS_PROPELLER_RELIEF
+  gRpProcRelief = true;
+#endif
+  st = ringStreamRelief(dr0, dth0, fp);
   return tP;
 }
 

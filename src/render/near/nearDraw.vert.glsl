@@ -46,6 +46,8 @@ void main() {
   ivec2 tc;
   if (!nearListFetch(quad ? 1 : 0, quad ? gl_InstanceID : gl_VertexID, tc)) { reject(); return; }
   int k = nearClassOfRow(tc.y);
+  // the propellers' relief and its shadows only in the size classes a propeller can reach (sv_ringStructure)
+  gRsPropRelief = (uRpNearMask & (1 << k)) != 0;
   vec4 r0 = texelFetch(tR0, tc, 0);
   vec3 c = r0.xyz;
   float a = r0.w;

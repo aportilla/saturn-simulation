@@ -11,20 +11,24 @@
 //     3. region A at the PIA11668 frame time lies inside the frame's ring footprint (165.8..168.4 deg).
 //   GPU vs CPU mirror (looking straight up at the sheet, near field and wakes off, render scale 1; ring-layer debug
 //   views 23 = (r - r0, azimuth - phi0, z of the ray at the hit), 24 = (z0, relief sun visibility, mu0), 26 = (footprint,
-//   slopes)) in five views -- Mimas 5:3 and Titan -1:0 bending waves, the C-ring corrugation, region A at the 2009
-//   equinox, the Keeler gap (Daphnis' edge waves): per pixel the rendered mid-plane height and slopes vs
-//   window.__sv.pipeline.ctx.structure.streamAt(dr, dth, fp, true) at the same point and footprint:
+//   slopes)) in six views -- Mimas 5:3 and Titan -1:0 bending waves, the C-ring corrugation, region A at the 2009
+//   equinox, the Keeler gap (Daphnis' edge waves), the giant propeller Bleriot: per pixel the rendered mid-plane height
+//   and slopes vs window.__sv.pipeline.ctx.structure.streamAt(dr, dth, fp, true) at the same point and footprint:
 //     4. |z0_GPU - z0_CPU| <= 1 m + 1 % of the view's max |z0|; slopes within 0.002 + 2 % of the max slope;
 //     5. ray / height-field intersection: the horizontal error |z0 - z_ray| tan(view zenith angle) at the hit <= 0.3
 //        footprints + 2 m (the search is skipped exactly when the relief moves the hit by less) for >= 99.5 % of pixels;
+//     Bleriot: the relief at the moonlet (CPU) = its Table S3 height (430 m) toward the Sun's side within 1 %, the
+//     rendered max |z0| 80..105 % of it (prefiltered, pixel sampling);
 //   6. equinox shadow: S/2009 S1 (150 m, Spitale & Porco 2010) at its NAC frame time (Sun 0.24 deg): the rendered shadow
 //      (relief visibility < 0.5 along the anti-Sun axis) ends at h / tan B = 35.8 km within 3 %, fully dark halfway;
 //   7. near field inside the Mimas 5:3 wave (30 m above the local mid-plane, which lies hundreds of m off the SEF
 //      plane): drawn particles sit at the local mid-plane (99 % of |z - z0| <= 40 m, the layer's vertical scatter),
 //      the relief varies across them (z0 spread >= 50 m), the HUD height is 30 m above the mid-plane; station keeping:
-//      after ~2 s at warp 3000 (the mid-plane under the camera moves by >= 20 m) the camera is still 30 m above it;
+//      after 6,000 s of simulated time at warp 3000 (the mid-plane under the camera moves by >= 20 m) the camera is still
+//      30 m above it; the same beside Bleriot (2 r_H outside its orbit, 0.3 dB downstream: the propellers' relief in
+//      the near field; z0 spread >= 30 m, no warp);
 //   8. no NaN / negative pixels in sceneRT / hdrRT (normal render), no console / GL errors, passes ok.
-// usage: node scripts/test/relief.mjs [--base URL] [--out DIR] [--only model,gpu,shadow,near] [--views mimas53,titan,cring,region-a,keeler]
+// usage: node scripts/test/relief.mjs [--base URL] [--out DIR] [--only model,gpu,shadow,near] [--views mimas53,titan,cring,region-a,keeler,propeller]
 import { join } from 'node:path';
 import { orbitalFrequencies } from '../../src/core/constants.ts';
 import { BENDING_WAVES, CORRUGATION, REGION_A, RingRelief, buildWaveTable, sampleWave, tFromIso } from '../../src/rings/relief.ts';
@@ -43,6 +47,8 @@ const VIEWS = [
   { id: 'cring', t: T_WAVES, rKm: 80_000, phiDeg: 31, hKm: 20, what: 'C-ring corrugation (m = 1 spiral + m = 0 / 2 ripples)' },
   { id: 'region-a', t: T_PIA11668, rKm: 117_555, phiDeg: 168.22, hKm: 150, what: 'B-ring edge region A (PIA11668 epoch)' },
   { id: 'keeler', t: T_WAVES, moon: 635, hKm: 100, what: 'Keeler gap: Daphnis vertical edge waves' },
+  // the propeller Bleriot at the Tiscareno et al. 2010 Fig. 1b epoch (its relief: 430 m toward the Sun, south then)
+  { id: 'propeller', t: '2008-04-12T08:00:00Z', giant: 'Bleriot', hKm: 25, what: 'giant propeller Bleriot (propellers relief)' },
 ];
 
 await withHarness('relief', { usage: 'node scripts/test/relief.mjs [--base URL] [--out DIR] [--only model,gpu,shadow,near] [--views id,..]' }, async ({ args, out, rep, base, browser }) => {
@@ -115,6 +121,20 @@ await withHarness('relief', { usage: 'node scripts/test/relief.mjs [--base URL] 
         rC = moons[v.moon].r;
         phi = moons[v.moon].phi;
       }
+      if (v.giant) {
+        const probe = await openApp(browser, base, { ...common, t: v.t, preset: 'overview' }, { settle: 300 });
+        const g = await probe.page.evaluate((n) => {
+          const sv = window.__sv, st = sv.pipeline.ctx.structure, m = st.propellers.giant(n);
+          return { r: m.a, phi: m.theta, Z: m.Z, zc: st.midPlaneAtSEF(m.a, m.theta), sun: Math.sign(sv.frame.sunDir.z) };
+        }, v.giant);
+        await probe.page.close();
+        rC = g.r;
+        phi = g.phi;
+        v.g = g;
+        // the relief at the moonlet (CPU, unfiltered) = its Table S3 height toward the Sun's side (the sunlit half of
+        // the stirred region's thickening)
+        rep.range(`${v.id}: relief at the moonlet (CPU) x sign(Sun's elevation) / Z (Table S3)`, (g.zc * g.sun) / g.Z, 0.99, 1.01);
+      }
       const params = { ...common, t: v.t, cam: 'ring', r: rC.toFixed(1), phi: (phi / DEG).toFixed(7), z: (-v.hKm * 1e3).toFixed(0), yaw: 90, pitch: 89.5, fov: 50 };
       const { page, errs } = await openApp(browser, base, params, { settle: 2500 });
       try {
@@ -131,6 +151,8 @@ await withHarness('relief', { usage: 'node scripts/test/relief.mjs [--base URL] 
         rep.range(`${v.id}: pixels whose hit is off by > 0.3 footprints + 2 m`, res.hitBadFrac, 0, 0.005);
         if (v.id === 'mimas53' || v.id === 'titan') rep.range(`${v.id}: relief in view (max |z0|)`, res.zAbsMax, 100, 2000, ' m');
         if (v.id === 'region-a') rep.range(`${v.id}: relief in view (max |z0|)`, res.zAbsMax, 300, 3600, ' m');
+        // (the giant's Table S3 height, prefiltered and sampled by the pixels: >= 80 %)
+        if (v.giant) rep.range(`${v.id}: relief in view (max |z0|) / Z (Tiscareno et al. 2010 Table S3)`, res.zAbsMax / v.g.Z, 0.8, 1.05);
         rows.push([v.id, res.n, fmt(res.fpMed, 1), fmt(res.zAbsMax, 1), fmt(res.dzMax, 3), fmt(res.dzRms, 3), fmt(res.sAbsMax, 4), fmt(res.dsMax, 5), fmt(res.hitErrMax, 2), fmt(res.hitBadFrac * 100, 3)]);
         if (res.worst) console.log(`  ${v.id}: largest height difference at pixel (${res.worst.x}, ${res.worst.y}): dr ${fmt(res.worst.dr, 1)} m, dth ${fmt(res.worst.dth, 7)}, z0 GPU ${fmt(res.worst.z0GPU, 2)} / CPU ${fmt(res.worst.z0CPU, 2)} m (CPU a' - r ${fmt(res.worst.da, 1)} m, J ${fmt(res.worst.J, 3)}, footprint ${fmt(res.worst.fp, 1)} m)`);
         rep.data[v.id] = { params, what: v.what, ...res };
@@ -179,6 +201,29 @@ await withHarness('relief', { usage: 'node scripts/test/relief.mjs [--base URL] 
       rep.data.near = res;
     } finally {
       await page.close();
+    }
+    // beside Bleriot (the propellers' relief in the near field: hash-grid classes' mask, the presence / relief pass):
+    // 30 m above the local mid-plane, 2 r_H outside the moonlet's orbit, 0.3 dB downstream (z0 there ~0.55 Z, falling
+    // off radially by ~120 m per km)
+    const tP = VIEWS.find((x) => x.id === 'propeller').t;
+    const probe = await openApp(browser, base, { ...common, t: tP, preset: 'overview' }, { settle: 300 });
+    const g = await probe.page.evaluate(() => { const m = window.__sv.pipeline.ctx.structure.propellers.giant('Bleriot'); return { a: m.a, theta: m.theta, h: m.h, dB: m.dB, Z: m.Z }; });
+    await probe.page.close();
+    const pP = { t: tP, paused: 1, hud: 0, labels: 0, astronaut: 0, scale: 1, fps: 0, cam: 'ring', r: (g.a + 2 * g.h).toFixed(1), phi: ((g.theta - (0.3 * g.dB) / g.a) / DEG).toFixed(7), z: '30', yaw: 0, pitch: -10, fov: 60 };
+    const pg = await openApp(browser, base, pP, { settle: 3500 });
+    try {
+      const res = await pg.page.evaluate(nearProfile, false);
+      await pg.page.screenshot({ path: join(out, 'near-bleriot.png') });
+      const pr = await problems(pg.page, pg.errs);
+      rep.check('near-propeller: clean (errors, GL, passes)', pr.length === 0, pr.slice(0, 3).join(' | ') || 'none');
+      console.log(`  near (beside Bleriot, Z ${fmt(g.Z, 0)} m, 30 m above the local mid-plane at ${fmt(res.zMid, 1)} m): ${res.n} drawn particles sampled, z0 under them ${fmt(res.z0Lo, 1)} .. ${fmt(res.z0Hi, 1)} m, |z - z0| median ${fmt(res.dMed, 2)} m, 99 % ${fmt(res.d99, 2)} m (|z - zMid(camera)| 99 %: ${fmt(res.dFlat99, 1)} m); HUD z ${fmt(res.hudZ, 2)} m`);
+      rep.range('near-propeller: drawn particles sampled', res.n, 1000, 1e9);
+      rep.range('near-propeller: 99 % of |z_particle - z0(x, y)|', res.d99, 0, 40, ' m');
+      rep.range('near-propeller: spread of z0 under the drawn particles', res.z0Hi - res.z0Lo, 30, 1000, ' m');
+      rep.range('near-propeller: HUD height above the local mid-plane', res.hudZ, 29.5, 30.5, ' m');
+      rep.data.nearPropeller = { params: pP, ...res };
+    } finally {
+      await pg.page.close();
     }
   }
 });
@@ -295,8 +340,8 @@ async function shadowProfile() {
   return { h: pk.h, Bdeg: (Math.atan(tanB) * 180) / Math.PI, Lexp, L, n, fp: fpS / Math.max(n, 1), visHalf: half.length ? Math.max(...half) : NaN, profile: prof.filter((_, j) => j % 10 === 0) };
 }
 
-/** Near-field particle heights vs the local mid-plane; HUD height; station keeping under time warp. */
-async function nearProfile() {
+/** Near-field particle heights vs the local mid-plane; HUD height; (warp) station keeping under time warp. */
+async function nearProfile(warp = true) {
   const sv = window.__sv;
   const frames = (n) => new Promise((res) => { let k = 0; const f = () => (++k >= n ? res() : requestAnimationFrame(f)); requestAnimationFrame(f); });
   const st = sv.pipeline.ctx.structure;
@@ -324,9 +369,12 @@ async function nearProfile() {
   dFlat.sort((p, q) => p - q);
   const q = (a, p) => (a.length ? a[Math.min(a.length - 1, Math.floor(p * a.length))] : NaN);
   const hudZ = sv.info().z;
-  // station keeping: let the material (and the wave pattern) move for ~2 s at warp 3000, pause, settle
+  if (!warp) return { n, zMid, z0Lo, z0Hi, dMed: q(d, 0.5), d99: q(d, 0.99), dFlat99: q(dFlat, 0.99), hudZ };
+  // station keeping: let the material (and the wave pattern) move for 6,000 s of simulated time at warp 3000 (however
+  // long that takes at the current frame rate, at most 20 s), pause, settle
+  const t0 = sv.frame.t;
   sv.setWarp(3000);
-  await new Promise((r) => setTimeout(r, 2000));
+  for (let k = 0; k < 200 && sv.frame.t - t0 < 6000; k++) await new Promise((r) => setTimeout(r, 100));
   sv.setWarp(0);
   await frames(6);
   const zMid2 = sv.frame.ring.zMid;

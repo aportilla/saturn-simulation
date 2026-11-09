@@ -8,7 +8,9 @@
 //   vec3 rsPropellersMod(aL, dth, fp)      (mean tau factor at the footprint, sub-footprint variance, self-gravity-
 //                                           wake strength factor: the stirred material carries no wakes)
 //   vec2 rsTauModPropellers(aL, dth, fp)   (.xy of the above)
-//   vec3 rsReliefPropellers(aL, dth)       (height (m), d/da', d/dS)
+//   vec3 rsReliefPropellers(aL, dth, fp)   (height (m), d/da', d/dS) prefiltered to fp -- part of z0
+//   float rpReliefBound(aL, fp, proc)      upper bound of |height| near aL (giants; + procedural classes if proc)
+//   float rpReliefSunVis(aL, dth, hs, cr, ct, tanB, rs, sg, fp)   sun visibility after the relief's shadows
 //
 // Structure of one propeller (moonlet Hill radius h; x = radial offset of the point from the moonlet's orbit, s = its
 // arc from the moonlet, prograde > 0; the disturbance is carried downstream: d = -s on the outer side, +s on the
@@ -31,13 +33,13 @@
 #define RP_CLASSES 5
 #define RP_D0 0.6
 uniform vec4 uRpCtl;             // (on: 1 / 0, K_N = n-units per rad/s, n0 - n_ref (frame origin's rate), f = day fraction)
-uniform ivec4 uRpT;              // (k = whole days since J2000, n_ref, P (frame origin's phase in orbit n_ref, 2^-32 turns), dnu)
+uniform ivec4 uRpT;              // (k = whole days since J2000, n_ref, P (frame origin's phase in orbit n_ref, 2^-32 turns), -)
 uniform vec4 uRpTF;              // (P residual (turns, < 2^-32), procedural range lo [m], hi [m] (incl. reach), -)
 uniform vec4 uRpG0[RP_GIANTS];   // (a_p - r0 [m], s0 = arc of the frame origin from the moonlet [m], h [m], dB [m])
-uniform vec4 uRpG1[RP_GIANTS];   // (gap depth, current height z_m [m], azimuthal reach [m], dD [m])
+uniform vec4 uRpG1[RP_GIANTS];   // (gap depth, relief height z_m [m] (signed: the Sun's side), azimuthal reach [m], dD [m])
 uniform int uRpGiantN;
 uniform vec4 uRpC0[RP_CLASSES];  // (dr_lo [m], 1 - (hi/lo)^-Q, -1/Q, h per dr)
-uniform vec4 uRpC1[RP_CLASSES];  // (dB per dr, dD per dr, number density [1/m^2], Z / h)
+uniform vec4 uRpC1[RP_CLASSES];  // (dB per dr, dD per dr, number density [1/m^2], Z / h x the Sun's side x relief scale)
 uniform vec4 uRpC2[RP_CLASSES];  // region: (lo1, hi1, lo2, hi2) [m]
 uniform vec4 uRpC3[RP_CLASSES];  // region: (lo3, hi3, edge width [m], h_max [m])
 uniform ivec4 uRpCI[RP_CLASSES]; // (N cell [n-units], B (2^B azimuthal cells per orbit), I = floor(n_ref / N), n_ref - I N)
@@ -103,25 +105,58 @@ vec3 rpStructure(float x, float s, float fp, float h, float dB, float dD, float 
   }
   return vec3(m, v, 1.0 - 0.9 * dist);
 }
-// Vertical relief: the excited material follows the moonlet's height z_m (Hoffmann et al. 2013, 2015), decaying away
-// from it (radially over 2.5 h, downstream over dB, upstream over 2 h). (height, d/dx, d/ds)
-vec3 rpRelief(float x, float s, float h, float dB, float zm) {
+// Vertical relief: the moonlet's gravity pulls the stirred material out of the ring plane (Tiscareno et al. 2010: the
+// equinox shadows are cast by the structure as a whole, at the same height on three epochs for Bleriot; a thickening
+// of the layer that decays downstream, Hoffmann et al. 2013). Of that symmetric thickening the single mid-plane height
+// carries the sunlit half (as region A, sv_ringRelief): z_m = sign(Sun's elevation) Z (uRpG1.y, uRpC1.w h), decaying
+// away from the moonlet (radially over 2.5 h, downstream over dB, upstream over 2 h). Prefiltered to the footprint fp like the lobes:
+// the radial Gaussian convolved with the footprint kernel (std sf = fp / 2, mean preserving: sigma^2 -> sigma^2 + sf^2,
+// amplitude x sigma / sqrt(..)), the along-orbit profile damped by dB / sqrt(dB^2 + fp^2) (rpStructure's gaz).
+// rpReliefAmp = the amplitude factor (<= 1); rpRelief = (height, d/dx, d/ds).
+float rpReliefAmp(float h, float dB, float fp) {
+  float sr = 2.5 * h, sf = 0.5 * fp;
+  return sr * inversesqrt(sr * sr + sf * sf) * dB * inversesqrt(dB * dB + fp * fp);
+}
+vec3 rpRelief(float x, float s, float h, float dB, float zm, float fp) {
   if (zm == 0.0) return vec3(0.0);
-  float sr = 2.5 * h;
-  float G = exp(-0.5 * x * x / (sr * sr));
-  float wo = smoothstep(-0.5 * h, 0.5 * h, x);
-  float dwo = (abs(x) < 0.5 * h) ? 6.0 * (x / h + 0.5) * (0.5 - x / h) / h : 0.0;
+  float sr = 2.5 * h, sf = 0.5 * fp;
+  float s2 = sr * sr + sf * sf;
+  float A = zm * rpReliefAmp(h, dB, fp);
+  float G = exp(-0.5 * x * x / s2);
+  // the blend of the two sides across the horseshoe zone (|x| < 2 h: that material turns around in front of / behind
+  // the moonlet, so the stirred side meets the undisturbed one without a step; the tau structure's S keeps its h / 2)
+  // and the short upstream rise (2 h), both widened with the footprint (no sub-pixel kinks: they aliased into dotted
+  // lines at a few km per pixel and steps narrower than the sheet's 250 m hit-search spacing were missed)
+  float wb = sqrt(4.0 * h * h + sf * sf), up = sqrt(4.0 * h * h + fp * fp);
+  float wo = smoothstep(-wb, wb, x);
+  float dwo = (abs(x) < wb) ? 0.75 * (x / wb + 1.0) * (1.0 - x / wb) / wb : 0.0;
   // Lz(d) and dLz/dd for the outer side (d = -s) and the inner side (d = s)
   float dO = -s, dI = s;
-  float LO = dO >= 0.0 ? exp(-dO / dB) : exp(dO / (2.0 * h));
-  float LI = dI >= 0.0 ? exp(-dI / dB) : exp(dI / (2.0 * h));
-  float LOd = dO >= 0.0 ? -LO / dB : LO / (2.0 * h);
-  float LId = dI >= 0.0 ? -LI / dB : LI / (2.0 * h);
+  float LO = dO >= 0.0 ? exp(-dO / dB) : exp(dO / up);
+  float LI = dI >= 0.0 ? exp(-dI / dB) : exp(dI / up);
+  float LOd = dO >= 0.0 ? -LO / dB : LO / up;
+  float LId = dI >= 0.0 ? -LI / dB : LI / up;
   float L = wo * LO + (1.0 - wo) * LI;
-  float z = zm * G * L;
-  float dzdx = zm * (-x / (sr * sr) * G * L + G * dwo * (LO - LI));
-  float dzds = zm * G * (-wo * LOd + (1.0 - wo) * LId);
+  float z = A * G * L;
+  float dzdx = A * (-x / s2 * G * L + G * dwo * (LO - LI));
+  float dzds = A * G * (-wo * LOd + (1.0 - wo) * LId);
   return vec3(z, dzdx, dzds);
+}
+// Relief shadows (mode 2 of rpEnumerate): one propeller's excited region as an opaque Gaussian ridge (radial sigma of
+// the prefiltered relief, 0.6 dB along the orbit -- the half-height length of its downstream decay; symmetric about the
+// moonlet: the S shape is not resolved by the shadow) at its sun-side height. Inputs set by rpReliefSunVis:
+// gRpSun0 = (cos, sin of the sun's horizontal direction in the point's radial / azimuthal axes, elevation, angular
+// radius), gRpSun1 = (lowest limb's slope, the point's sun-side height, the sign of the Sun's elevation, radius of the
+// point).
+vec4 gRpSun0 = vec4(0.0), gRpSun1 = vec4(0.0);
+// the procedural propellers' relief in mode 1 (off: the giants' only)
+bool gRpProcRelief = true;
+float rpShadowVis(float x, float s, float a, float h, float dB, float zm, float fp) {
+  float hz = gRpSun1.z * zm * rpReliefAmp(h, dB, fp);
+  if (hz <= gRpSun1.y) return 1.0;
+  float sr = 2.5 * h, sf = 0.5 * fp;
+  return 1.0 - rrPeakOcc(-x, -s / a, hz, sqrt(sr * sr + sf * sf), 0.6 * dB, gRpSun1.w, gRpSun1.y, gRpSun0.x, gRpSun0.y,
+                         gRpSun0.z, gRpSun0.w, gRpSun1.x, fp);
 }
 
 // smooth radial window of a procedural class (its propeller belts / region), 0..1
@@ -134,12 +169,33 @@ float rpRegion(int c, float a) {
   return min(w, 1.0);
 }
 
+// The procedural propellers whose relief a lookup (modes 1 / 3) found at the point gRpListKey = (aL, dth): their
+// shadows on that point (rpReliefSunVis, at its own footprint) need no second enumeration. (x, s, orbit radius, h),
+// (dB, zm at the lookup's footprint); -1: overflow.
+#define RP_LIST_MAX 6
+vec4 gRpList0[RP_LIST_MAX];
+vec2 gRpList1[RP_LIST_MAX];
+int gRpListN = -1;
+vec2 gRpListKey = vec2(1e30);
+// mode 3 (the tau factor and the relief in one pass): the relief, for rsReliefPropellers at gRpRelKey
+vec3 gRpRel = vec3(0.0);
+vec3 gRpRelKey = vec3(1e30);
+bool gRpAlsoRelief = false;
+// the propellers' relief is on (propellers on and the relief multiplier, which scales every class's Z / h, not 0)
+bool rpReliefOn() { return uRpCtl.x > 0.0 && uRpC1[0].w != 0.0; }
+
 // Enumerate the propellers near (aL, dth): mode 0 accumulates the tau factor and the wake factor (acc.xyz = mean,
-// variance, wake-strength factor), mode 1 the relief (acc.xyz = height, d/da', d/dS).
+// variance, wake-strength factor), mode 1 the relief (acc.xyz = height, d/da', d/dS), mode 2 the sun visibility after
+// the procedural propellers' relief shadows (acc.x; the giants' shadows: rpReliefSunVis, with a longer reach), mode 3
+// modes 0 and 1 in one pass (the relief into gRpRel). Modes 1 and 3 also list the procedural propellers they find.
 void rpEnumerate(float aL, float dth, float fp, int mode, inout vec4 acc) {
+  bool doMod = mode == 0 || mode == 3, doRel = mode == 1 || mode == 3;
+  // (a lookup without the procedural propellers -- the ray-surface search -- leaves no list: -1 = enumerate)
+  if (doRel) { gRpListN = (mode == 1 && !gRpProcRelief) ? -1 : 0; gRpListKey = vec2(aL, dth); }
+  bool overflow = false;
   // ---- named giants (positions from the CPU, double precision)
   for (int k = 0; k < RP_GIANTS; k++) {
-    if (k >= uRpGiantN) break;
+    if (mode == 2 || k >= uRpGiantN) break;
     vec4 G0 = uRpG0[k], G1 = uRpG1[k];
     float h = G0.z;
     float x = aL - G0.x;
@@ -149,18 +205,19 @@ void rpEnumerate(float aL, float dth, float fp, int mode, inout vec4 acc) {
     float hc = PI * ap;
     if (abs(s) > hc) s -= 2.0 * hc * floor(s / (2.0 * hc) + 0.5);
     if (abs(s) > G1.z) continue;
-    if (mode == 0) {
+    if (doMod) {
       vec3 p = rpStructure(x, s, fp, h, G0.w, G1.w, G1.x);
       acc.y = acc.y * p.x * p.x + p.y * acc.x * acc.x + acc.y * p.y;
       acc.x *= p.x;
       acc.z = min(acc.z, p.z);
-    } else {
-      acc.xyz += rpRelief(x, s, h, G0.w, G1.y);
     }
+    if (mode == 1) acc.xyz += rpRelief(x, s, h, G0.w, G1.y, fp);
+    else if (mode == 3) gRpRel += rpRelief(x, s, h, G0.w, G1.y, fp);
   }
-  // ---- procedural populations: hash grid co-moving with each orbit
+  // ---- procedural populations: hash grid co-moving with each orbit (the relief: unless gRpProcRelief is off -- the
+  // sheet's ray-surface search, sv_ringReliefShade)
   float a = uRingR0 + aL;
-  if (!(a > uRpTF.y && a < uRpTF.z)) return;
+  if (!(a > uRpTF.y && a < uRpTF.z) || (mode == 1 && !gRpProcRelief)) return;
   float dnq = uRpCtl.z + uRpCtl.y * rtDeltaOmega(aL);       // rate of the query's orbit - n_ref (n-units)
   float dnda = uRpCtl.y * rtOmegaSlope(aL);                  // |dn/da| (n-units per m)
   uint kday = uint(uRpT.x);
@@ -171,6 +228,14 @@ void rpEnumerate(float aL, float dth, float fp, int mode, inout vec4 acc) {
     float hmax = C3.w;
     float cf = 1.0 - smoothstep(8.0 * hmax, 16.0 * hmax, fp);  // whole class below the footprint
     if (cf <= 0.0) continue;
+    // the class's largest prefiltered relief: below 0.5 m it is left out of z0 (CPU mirror: the same rule); its
+    // shadows where even the longest is shorter than half the footprint
+    bool relC = false;
+    if (mode != 0) {
+      float zc = cf * abs(C1.w) * hmax * rpReliefAmp(hmax, C1.x * hmax / C0.w, fp);
+      relC = zc >= 0.5 && (mode != 2 || zc >= 0.5 * fp * gRpSun1.x);
+      if (!relC && mode != 3) continue;
+    }
     // no orbit of this class within reach has region weight > 0 (windows are >> the reach wide)
     float reachR = 13.5 * hmax;
     if (rpRegion(c, a - reachR) <= 0.0 && rpRegion(c, a) <= 0.0 && rpRegion(c, a + reachR) <= 0.0) continue;
@@ -210,38 +275,130 @@ void rpEnumerate(float aL, float dth, float fp, int mode, inout vec4 acc) {
         if (abs(x) > 13.5 * h) continue;
         float dB = dr * C1.x, dD = dr * C1.y;
         if (abs(s) > 6.0 * dD) continue;
-        if (mode == 0) {
+        if (doMod) {
           vec3 p = rpStructure(x, s, fp, h, dB, dD, RP_D0);
           p = vec3(1.0 + cf * (p.x - 1.0), cf * cf * p.y, 1.0 + cf * (p.z - 1.0));
           acc.y = acc.y * p.x * p.x + p.y * acc.x * acc.x + acc.y * p.y;
           acc.x *= p.x;
           acc.z = min(acc.z, p.z);
-        } else {
-          // the moonlet's height: vertical phase advancing at its vertical frequency
-          uint nz = uint(uRpT.y + dni + uRpT.w);
-          float ph = rpU24(pcgHash(hC ^ 0xB55A4F09u)) + float((nz * kday) & 0xFFFFFFu) * (1.0 / 16777216.0)
-            + float(nz) * (1.0 / 16777216.0) * uRpCtl.w;
-          float zm = C1.w * h * cos(TWO_PI * fract(ph));
-          acc.xyz += rpRelief(x, s, h, dB, zm);
+        }
+        if (relC) {
+          // the excited region's height (its sunlit half: C1.w carries the Sun's side; faded with the class)
+          float zm = cf * C1.w * h;
+          if (mode == 2) acc.x *= rpShadowVis(x, s, ai, h, dB, zm, fp);
+          else {
+            vec3 rv = rpRelief(x, s, h, dB, zm, fp);
+            if (mode == 1) acc.xyz += rv;
+            else gRpRel += rv;
+            if (gRpListN < RP_LIST_MAX) {
+              gRpList0[gRpListN] = vec4(x, s, ai, h);
+              gRpList1[gRpListN] = vec2(dB, zm);
+              gRpListN++;
+            } else overflow = true;
+          }
         }
       }
     }
   }
+  if (overflow) gRpListN = -1;
 }
 
-// (mean tau factor, its sub-footprint variance, self-gravity-wake strength factor)
+// (mean tau factor, its sub-footprint variance, self-gravity-wake strength factor); with gRpAlsoRelief (set by
+// sv_ringStructure rsInvert when it needs the relief at the same point) the relief in the same pass (gRpRel)
 vec3 rsPropellersMod(float aL, float dth, float fp) {
   if (uRpCtl.x <= 0.0) return vec3(1.0, 0.0, 1.0);
   vec4 acc = vec4(1.0, 0.0, 1.0, 0.0);
+  if (gRpAlsoRelief && rpReliefOn()) {
+    gRpRel = vec3(0.0);
+    rpEnumerate(aL, dth, fp, 3, acc);
+    gRpRelKey = vec3(aL, dth, fp);
+    return acc.xyz;
+  }
   rpEnumerate(aL, dth, fp, 0, acc);
   return acc.xyz;
 }
 vec2 rsTauModPropellers(float aL, float dth, float fp) { return rsPropellersMod(aL, dth, fp).xy; }
-vec3 rsReliefPropellers(float aL, float dth) {
-  if (uRpCtl.x <= 0.0) return vec3(0.0);
+// (height, d/da', d/dS) of the propellers' relief at the footprint fp (part of z0: sv_ringStructure ringStructureRelief)
+vec3 rsReliefPropellers(float aL, float dth, float fp) {
+  if (!rpReliefOn()) return vec3(0.0);
+  if (gRpRelKey == vec3(aL, dth, fp) && gRpProcRelief) return gRpRel;   // computed with the tau factor (mode 3)
   vec4 acc = vec4(0.0);
-  rpEnumerate(aL, dth, 0.0, 1, acc);
+  rpEnumerate(aL, dth, fp, 1, acc);
   return acc.xyz;
+}
+// Upper bound of |height| of the propellers' relief near the offset aL (m) at footprint fp: the giants within their
+// radial reach (+ 3 km: Pan's streamline map may move the material near Earhart / Post), plus (proc) each procedural
+// class whose region is within reach (its largest moonlet's amplitude, prefiltered).
+float rpReliefBound(float aL, float fp, bool proc) {
+  if (!rpReliefOn()) return 0.0;
+  float bg = 0.0;
+  for (int k = 0; k < RP_GIANTS; k++) {
+    if (k >= uRpGiantN) break;
+    vec4 G0 = uRpG0[k];
+    if (abs(aL - G0.x) > 13.5 * G0.z + 3000.0) continue;
+    bg = max(bg, abs(uRpG1[k].y) * rpReliefAmp(G0.z, G0.w, fp));
+  }
+  float bc = 0.0;
+  float a = uRingR0 + aL;
+  if (proc && a > uRpTF.y && a < uRpTF.z) {
+    for (int c = 0; c < RP_CLASSES; c++) {
+      if (uRpCI[c].x <= 0) continue;
+      float hmax = uRpC3[c].w;
+      float cf = 1.0 - smoothstep(8.0 * hmax, 16.0 * hmax, fp);
+      if (cf <= 0.0) continue;
+      float reachR = 13.5 * hmax;
+      if (rpRegion(c, a - reachR) <= 0.0 && rpRegion(c, a) <= 0.0 && rpRegion(c, a + reachR) <= 0.0) continue;
+      bc += cf * abs(uRpC1[c].w) * hmax * rpReliefAmp(hmax, uRpC1[c].x * hmax / uRpC0[c].w, fp);
+    }
+  }
+  return bg + bc;
+}
+// Sun visibility at a point (Lagrangian offset aL, azimuth offset dth, sun-side height hs) after the propellers'
+// relief shadows; (cr, ct) = the sun's horizontal direction in the point's radial / azimuthal axes, tanB its elevation
+// tangent (mirrored to the lit side: sg = sign of the Sun's elevation), rs its angular radius, fp the footprint. The
+// giants with a reach extended by their shadow length; the procedural propellers whose structure reaches the point
+// (their 3 x 3 hash cells; shadows longer than ~13 r_H -- the Sun within ~2 deg of the ring plane -- are cut there).
+float rpReliefSunVis(float aL, float dth, float hs, float cr, float ct, float tanB, float rs, float sg, float fp) {
+  if (!rpReliefOn()) return 1.0;
+  float tanLo = max(tan(atan(tanB) - rs), 2e-5);
+  float a = uRingR0 + aL;
+  gRpSun0 = vec4(cr, ct, atan(tanB), rs);
+  gRpSun1 = vec4(tanLo, hs, sg, a);
+  float vis = 1.0;
+  for (int k = 0; k < RP_GIANTS; k++) {
+    if (k >= uRpGiantN) break;
+    vec4 G0 = uRpG0[k], G1 = uRpG1[k];
+    float h = G0.z, zm = G1.y;
+    if (sg * zm <= hs) continue;
+    float L = (sg * zm - hs) / tanLo;                     // the longest shadow
+    float x = aL - G0.x;
+    if (abs(x) > 7.5 * h + 0.5 * fp + L) continue;
+    float ap = uRingR0 + G0.x;
+    float s = G0.y + ap * dth;
+    float hc = PI * ap;
+    if (abs(s) > hc) s -= 2.0 * hc * floor(s / (2.0 * hc) + 0.5);
+    if (abs(s) > 2.0 * G0.w + L) continue;
+    vis *= rpShadowVis(x, s, ap, h, G0.w, zm, fp);
+  }
+  if (a > uRpTF.y && a < uRpTF.z) {
+    if (gRpListN >= 0 && abs(aL - gRpListKey.x) < 0.01 && abs(dth - gRpListKey.y) < 1e-10) {
+      // the propellers the relief lookup at this very point found (rsReliefPropellers): no second enumeration (the
+      // callers recompute (aL, dth) from the same position: equal up to rounding -- 1 cm / 1e-10 rad tolerance; the
+      // list's membership changes only at the reach, where a propeller's shadow is ~0)
+      for (int j = 0; j < RP_LIST_MAX; j++) {
+        if (j >= gRpListN) break;
+        vec4 P = gRpList0[j];
+        vec2 Q = gRpList1[j];
+        if (gRpSun1.z * Q.y * rpReliefAmp(P.w, Q.x, fp) < 0.5 * fp * tanLo) continue;   // shadow below half a footprint
+        vis *= rpShadowVis(P.x, P.y, P.z, P.w, Q.x, Q.y, fp);
+      }
+    } else {
+      vec4 acc = vec4(1.0, 0.0, 0.0, 0.0);
+      rpEnumerate(aL, dth, fp, 2, acc);
+      vis *= acc.x;
+    }
+  }
+  return vis;
 }
 
 #endif
