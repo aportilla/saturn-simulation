@@ -172,6 +172,14 @@ mode, exposure EV, …). Passes are wrapped: `__sv.pipeline.passes.{far,near,bod
   take the min over trials (`costInPage` / `frameCostInPage` in `scripts/test/contact.mjs`).
 - On ANGLE/Metal a stencil `blitFramebuffer` silently leaves the following stencil-tested draws without any output
   (no GL error): draw stencil patterns in place instead (`NearContact`'s grid routing).
+- A program may bind at most 16 samplers (ANGLE/Metal, vertex + fragment counted together by three.js). The
+  near-field draw program is AT the limit (16), the ring layer near it (15): a new sampler there needs another freed
+  first. Count a program's active samplers with `gl.getActiveUniform` over `renderer.info.programs`; a sampler only
+  counts if the code can reach it, so `#define RS_LIGHT_ONLY` (ringStructure.glsl) keeps the 2-D modulation out of
+  lighting-only programs. Overflow shows only as three.js's "Trying to use 17 texture units" warning (test:smoke
+  fails on it) and silently wrong textures.
+- Merging work that changes a shared uniform's layout (e.g. `uWakeShape`'s fields) compiles fine everywhere: grep
+  every reader of the uniform (NearContact read stale fields after the wake retune and its contact set collapsed).
 - Vite reloads the page when a GLSL/TS file changes, so screenshots taken while files are being edited can catch
   the loading screen.
 - `data-raw/` is git-ignored and not needed at runtime (only by `scripts/data/**`); `public/data/` is committed.
