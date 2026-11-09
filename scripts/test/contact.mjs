@@ -46,8 +46,16 @@ const VIEWS = {
   'a-30m': { preset: 'a-ring-30m', scale: 1, what: '30 m above the lit A ring (wake crests from above)', resid: 0.12, free: 0.012, pops: 1e-4 },
   // the preset itself (fov 60: other particle boxes than at fov 35): the camera lies inside a 1.8 m boulder there
   'b-preset': { preset: 'b-ring-inside', scale: 1, what: 'B ring preset, fov 60 (the camera inside a boulder)', resid: 0.2, free: 0.012, pops: 2e-4, temporal: false },
+  // vertical relief: inside the layer, on the local mid-plane (cam=ring heights are relative to it) of the Mimas 5:3
+  // bending wave (A ring, slopes up to ~9 deg) and of the Titan -1:0 wave (C ring, up to 45 deg; scripts/test/relief.mjs).
+  // mimas53 lies in a dense zone (tau 0.92, a_max 5 m: 15 % of the resolved particles crowded, vs 6 % in a-inside), so
+  // its residual (jammed clusters) is higher: 0.22; flat (relief=0) the same within 0.01 - the relief is not the cause
+  'mimas53': { params: { cam: 'ring', r: 131850000, phi: 31, z: 0, yaw: 0, pitch: -10 }, fov: 35, scale: 1, what: 'Mimas 5:3 bending wave, inside the layer on the tilted mid-plane', resid: 0.3, free: 0.012, pops: 1e-4 },
+  'titan': { params: { cam: 'ring', r: 77545500, phi: 31, z: 0, yaw: 0, pitch: -10 }, fov: 35, scale: 1, what: 'Titan -1:0 bending wave (C ring), inside the layer on the tilted mid-plane', resid: 0.12, free: 0.012, pops: 1e-4 },
 };
 const BASE = { t: '2026-11-08T12:00:00Z', hud: 0, labels: 0, paused: 1, astronaut: 0 };
+/** URL parameters of a view: its preset (or explicit camera parameters), fov, render scale */
+const viewParams = (v) => ({ ...(v.params ?? { preset: v.preset }), fov: v.fov, scale: v.scale });
 
 // ------------------------------------------------------------------------------------------------ in page
 /** Read the last contact run (list, result, bound) and evaluate it on the CPU. Runs inside the page. */
@@ -81,7 +89,8 @@ export function analyzeInPage() {
     DB[j * 4] = Q1[j * 4 + 3];
   }
   const f = sv.frame, pa = f.pixelAngle, lod = sv.pipeline.ctx.lod;
-  const ext = f.settings.particleQuality === 'high' ? 1.37 : 1;
+  // largest base-shape semi-axis / a: the value the step used (NearContact SHAPE_EXT_HIGH at high quality)
+  const ext = C.ext ?? (f.settings.particleQuality === 'high' ? 1.37 : 1);
   const lvl = (a) => Math.min(13, Math.max(0, Math.floor(Math.log2(a * 1000))));
   const aHi = (L) => Math.max(lod.aHi[L], 1e-3 * 2 ** (L + 1));
   const ids = [];
@@ -200,7 +209,7 @@ export function analyzeInPage() {
     const w = Math.imul(((st >>> ((st >>> 28) + 4)) ^ st) >>> 0, 277803737) >>> 0;
     return ((w >>> 22) ^ w) >>> 0;
   };
-  const K = C.slotsPerBucket, mask = C.buckets - 1, fill = new Map(), invCell = C.invCellU.value;
+  const K = C.slotsPerBucket, mask = (C.bucketsUsed || C.buckets) - 1, fill = new Map(), invCell = C.invCellU.value;
   let overflow = 0, maxFill = 0;
   for (const j of ids) {
     const a = Math.abs(P0[j * 4 + 3]), L = Math.min(13, Math.max(0, Math.floor(Math.log2(Math.fround(a * 1000))))), ic = invCell[L];
@@ -236,10 +245,14 @@ export function analyzeInPage() {
     }
   }
   return {
-    n: ids.length, count: C.count, cap: C.cap, buckets: C.buckets, iterations: C.iterations, resolved, crowded: crowdedN, nan, camInside, camInsideW,
+    n: ids.length, count: C.count, cap: C.cap, buckets: C.bucketsUsed || C.buckets, iterations: C.iterations, resolved, crowded: crowdedN, nan, camInside, camInsideW,
     before: summarize(before), after: summarize(after), pairsBefore: before.i.length, pairsAfter: after.i.length,
     moved, maxDispA, maxDispBound, missed, withD, overflow, maxFill, wbBad, flipped, checked,
     pixelAngle: pa, ext,
+    // the wake-field bounds the step mirrors (wakeMinDensity(), the cores' compression) and whether the wakes are on
+    bounds: { ...C.bounds }, wakeOn: sv.pipeline.ctx.wakes.uniforms.uWakeOn.value > 0.5,
+    // slope of the local mid-plane at the camera (vertical relief), deg
+    slopeDeg: (() => { const c = sv.pipeline.ctx.structure?.cam; return c ? (Math.atan(Math.hypot(c.slopeR ?? 0, c.slopeT ?? 0)) * 180) / Math.PI : 0; })(),
   };
 }
 
@@ -295,8 +308,8 @@ export function fieldInPage() {
 /**
  * GPU time (ms) of the contact step alone for each configuration (contact properties, e.g. { stage: 1 } = up to the
  * list compaction): the frame's arguments are captured, the step is re-run `reps` times between synchronous 1-pixel
- * read-backs (gl.finish does not wait in Chrome), min over `trials`. Runs in the page; the app's own contact step is
- * held meanwhile.
+ * read-backs (gl.finish does not wait in Chrome), the configurations interleaved within every trial, min over
+ * `trials`. Runs in the page; the app's own contact step is held meanwhile.
  */
 export async function costInPage(confs, reps, trials) {
   const sv = window.__sv, C = (sv.pipeline.passes.near?.inner ?? sv.pipeline.passes.near)?.contact;
@@ -308,23 +321,28 @@ export async function costInPage(confs, reps, trials) {
   if (!args) { C.run = orig; return { error: 'the contact step did not run' }; }
   const fr = { ...args, layoutChanged: false }, px = new Float32Array(4);
   const sync = () => sv.renderer.readRenderTargetPixels(fr.r0RT, 0, 0, 1, 1, px);
-  const keys = ['stage', 'rounds', 'iterations'], keep = Object.fromEntries(keys.map((k) => [k, C[k]]));
+  // every key a configuration may set is restored before each one (configurations are partial)
+  const keys = [...new Set(['stage', 'rounds', 'iterations', ...confs.flatMap((c) => Object.keys(c))])];
+  const keep = Object.fromEntries(keys.map((k) => [k, C[k]]));
   hold = true;
-  const times = [];
+  const times = confs.map(() => Infinity);
   try {
     for (const c of confs) {
       Object.assign(C, keep, c);
-      for (let i = 0; i < 6; i++) { orig(fr); sync(); await new Promise((r) => setTimeout(r, 20)); }
-      let best = Infinity;
-      for (let t = 0; t < trials; t++) {
+      for (let i = 0; i < 4; i++) { orig(fr); sync(); await new Promise((r) => setTimeout(r, 20)); }
+    }
+    // configurations interleaved within each trial: a busy stretch of a shared GPU hits all of them alike
+    for (let t = 0; t < trials; t++) {
+      for (let k = 0; k < confs.length; k++) {
+        Object.assign(C, keep, confs[k]);
+        orig(fr);
         sync();
         const t0 = performance.now();
         for (let i = 0; i < reps; i++) orig(fr);
         sync();
-        best = Math.min(best, (performance.now() - t0) / reps);
-        await new Promise((r) => setTimeout(r, 15));
+        times[k] = Math.min(times[k], (performance.now() - t0) / reps);
       }
-      times.push(best);
+      await new Promise((r) => setTimeout(r, 15));
     }
   } finally {
     Object.assign(C, keep);
@@ -410,7 +428,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await withHar
     const v = VIEWS[id];
     if (!v) { rep.check(`${id}: known view`, false, `unknown view (${Object.keys(VIEWS).join(', ')})`); continue; }
     console.log(`\n[contact] ${id}: ${v.what}`);
-    const { page } = await openApp(browser, base, { ...BASE, preset: v.preset, fov: v.fov, scale: v.scale }, { settle: 3500 });
+    const { page } = await openApp(browser, base, { ...BASE, ...viewParams(v) }, { settle: 3500 });
     try {
       // contact off: the analytic frame (R0 digest), then on
       await setContact(page, false);
@@ -423,7 +441,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await withHar
       if (s.error) { rep.check(`${id}: analysis`, false, s.error); continue; }
       const b = s.before, a = s.after;
       rows.push([id, s.n, s.resolved, s.crowded, b.overlapping, a.overlapping, `${b.hidden} / ${a.hidden}`, b.beyondTol, a.beyondTol, a.beyondTolCrowded, fmt(b.maxRel, 3), fmt(a.maxRel, 3), fmt(a.maxPx, 2), s.moved, fmt(s.maxDispA, 2), s.overflow]);
-      console.log(`  list ${s.n} (read-back ${s.count}, cap ${s.cap}, ${s.buckets} buckets, max bucket fill ${s.maxFill}), resolved ${s.resolved}, crowded ${s.crowded}`);
+      console.log(`  list ${s.n} (read-back ${s.count}, cap ${s.cap}, ${s.buckets} buckets, max bucket fill ${s.maxFill}), resolved ${s.resolved}, crowded ${s.crowded}${s.slopeDeg > 0.01 ? `; local mid-plane slope ${fmt(s.slopeDeg, 2)} deg` : ''}`);
       console.log(`  overlapping resolved pairs ${b.overlapping} -> ${a.overlapping} (hidden: the smaller one entirely inside, ${b.hidden} -> ${a.hidden}); visible beyond tolerance ${b.beyondTol} -> ${a.beyondTol} (${a.beyondTolCrowded} at crowded particles); deepest ${fmt(b.maxRel, 3)} -> ${fmt(a.maxRel, 3)} of the contact distance (uncrowded ${fmt(a.maxRelUncrowded, 3)}), ${fmt(a.maxPx, 2)} px`);
       console.log(`  moved ${s.moved}, max displacement ${fmt(s.maxDispA, 3)} a, ${fmt(s.maxDispBound, 4)} of the bound; GPU bound below CPU for ${s.missed} of ${s.withD}; bucket overflow ${s.overflow}`);
       console.log(`  R0: ${s.checked} list slots checked, ${s.wbBad} mismatches, ${s.flipped} set drawn (moved into view); drawn ${off.drawn} -> ${on.drawn}, present ${off.present} -> ${on.present}, >= 1 px list ${off.listDrawn} -> ${on.listDrawn}`);
@@ -437,6 +455,11 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await withHar
       rep.check(`${id}: R0 write-back = resolved positions`, s.wbBad === 0 && s.checked >= s.n, `${s.wbBad} mismatches in ${s.checked} slots`);
       rep.check(`${id}: present particles unchanged`, off.present === on.present, `${off.present} -> ${on.present}`);
       rep.check(`${id}: bodies around the camera take no part (weight 0)`, s.camInsideW === 0, `${s.camInside} around the camera, ${s.camInsideW} with weight > 0`);
+      // the step's mirrors of the wake field (a re-parameterized uniform once fed it 1/Rc^2 as the density floor):
+      // with wakes on 0 < floor <= 1 <= cores, else both 1
+      const wb = s.bounds;
+      rep.check(`${id}: wake-density bounds of the contact set (0 < floor <= 1 <= cores)`, s.wakeOn ? wb.wakeMin > 0 && wb.wakeMin <= 1 && wb.wakeCore >= 1 : wb.wakeMin === 1 && wb.wakeCore === 1,
+        `floor ${fmt(wb.wakeMin, 4)}, cores ${fmt(wb.wakeCore, 3)}, path tau ${fmt(wb.tauPath, 4)}${s.wakeOn ? '' : ' (wakes off)'}`);
       rep.check(`${id}: drawn (R0) change = particles moved into view`, on.drawn - off.drawn === s.flipped, `${on.drawn - off.drawn} vs ${s.flipped}`);
       rep.range(`${id}: drawn change / drawn`, Math.abs(on.drawn - off.drawn) / Math.max(off.drawn, 1), 0, 0.001);
       if (off.listDrawn !== null) rep.range(`${id}: HUD >= 1 px count change / count`, Math.abs(on.listDrawn - off.listDrawn) / Math.max(off.listDrawn, 1), 0, 0.001);
@@ -483,32 +506,39 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await withHar
   if (args.flag('cost')) {
     const crows = [];
     // (b-fov12: the B ring through a narrow field of view at render scale 1 - particles resolved farther away, the
-    // largest contact set of the places; not in the default list)
-    const costViews = { ...VIEWS, 'b-default': { preset: 'b-ring-inside' }, 'a-default': { preset: 'a-ring-inside' }, 'b-fov12': { preset: 'b-ring-inside', fov: 12, scale: 1 } };
+    // largest contact set of the places; a-1km: 1 km above the A ring, an empty set - the step idles; not in the
+    // default list)
+    const costViews = {
+      ...VIEWS, 'b-default': { preset: 'b-ring-inside' }, 'a-default': { preset: 'a-ring-inside' },
+      'b-fov12': { preset: 'b-ring-inside', fov: 12, scale: 1 }, 'a-1km': { preset: 'a-ring-1km' },
+    };
     for (const id of args.list('cost-views', ['b-default', 'a-default', 'b-inside', 'a-inside'])) {
       const v = costViews[id];
       if (!v) continue;
-      const { page } = await openApp(browser, base, { ...BASE, preset: v.preset, fov: v.fov, scale: v.scale }, { settle: 3500 });
+      const { page } = await openApp(browser, base, { ...BASE, ...viewParams(v) }, { settle: 3500 });
       try {
-        const st = await page.evaluate(costInPage, [{ stage: 1 }, { stage: 2 }, { stage: 4, rounds: 1 }, {}], args.num('reps', 3), args.num('trials', 12));
+        // (the last configuration: the step as of 2026-11-08 - fade-in 3 -> 6 px, the whole grid allocation, 12 undamped
+        // iterations - interleaved with the current one: a before / after on the same GPU load)
+        const before = { rhoLo: 3, gridFit: false, iterations: 12, omega: 1 };
+        const st = await page.evaluate(costInPage, [{ stage: 1 }, { stage: 2 }, { stage: 4, rounds: 1 }, {}, before], args.num('reps', 3), args.num('trials', 12));
         if (st.error) { rep.check(`${id}: cost`, false, st.error); continue; }
         const fc = await page.evaluate(frameCostInPage, args.num('reps', 3), args.num('trials', 12));
         if (fc.error) { rep.check(`${id}: frame cost`, false, fc.error); continue; }
-        const [l, m, s1, full] = st.times;
-        crows.push([id, st.count, fmt(l, 2), fmt(m - l, 2), fmt(s1 - m, 2), fmt(full, 2), fmt(fc.off, 2), fmt(fc.on, 2), fmt(fc.on - fc.off, 2)]);
+        const [l, m, s1, full, prev] = st.times;
+        crows.push([id, st.count, fmt(l, 2), fmt(m - l, 2), fmt(s1 - m, 2), fmt(full, 2), fmt(prev, 2), fmt(fc.off, 2), fmt(fc.on, 2), fmt(fc.on - fc.off, 2)]);
         rep.data[`cost-${id}`] = { ...st, frame: fc };
       } finally {
         await page.close();
       }
     }
-    console.log(`\n[cost] ms, min over trials of repeated runs between synchronous 1-px read-backs: the contact step alone (cumulative stages), and whole frames with the step off / on (interleaved):\n${table(['view', 'list', 'list compaction', 'materialize', 'first grid + search', 'whole step', 'frame off', 'frame on', 'frame diff'], crows)}`);
+    console.log(`\n[cost] ms, min over trials of repeated runs between synchronous 1-px read-backs: the contact step alone (cumulative stages; 'step before' = the 2026-11-08 configuration, interleaved), and whole frames with the step off / on (interleaved):\n${table(['view', 'list', 'list compaction', 'materialize', 'first grid + search', 'whole step', 'step before', 'frame off', 'frame on', 'frame diff'], crows)}`);
     rep.data.cost = crows;
     // frame-rate A/B in one page (uncapped app; the browser may still sync to the display - informational)
     const frows = [];
     for (const id of args.list('cost-views', ['b-default', 'a-default'])) {
       const v = costViews[id];
       if (!v) continue;
-      const { page } = await openApp(browser, base, { ...BASE, preset: v.preset, fov: v.fov, scale: v.scale, fps: 0 }, { settle: 3000 });
+      const { page } = await openApp(browser, base, { ...BASE, ...viewParams(v), fps: 0 }, { settle: 3000 });
       try {
         const fps = { on: [], off: [] };
         for (let k = 0; k < 8; k++) {
