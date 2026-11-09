@@ -421,12 +421,14 @@ no temporal part), and on a mid-plane tilted by the vertical relief (`cam=ring`,
 weights, contact shapes), the result, the bound D_i and R0 are read back and evaluated on the CPU in the page:
 1. **overlaps**: all pairs closer than their contact distance (the shader's ρ_i + ρ_j along the centre line), by a CPU
    multi-level grid search over the list, at the analytic and at the resolved positions. *Resolved pair* = both at
-   weight 1 (≥ 6 render px radius, not occluded); *hidden* = the smaller one entirely inside the larger (left alone by
-   design); *visible beyond tolerance* = a visible overlap deeper than max(2 % of the contact distance, 1 render px);
-   *crowded* = a particle with ≥ 3 initial resolved overlaps (clusters / wake cores whose analytic packing is too dense
-   to resolve locally). Limits: residual / visible-before ≤ 0.2 (B) / 0.12 (A) / 0.3 (mimas53: its dense zone has 15 %
-   of the resolved particles crowded vs 6 % in a-inside; flat, `relief=0`, it measures the same within 0.02); uncrowded
-   residual / resolved particles ≤ 0.012.
+   weight 1 (≥ 6 render px radius, not occluded) and both drawn (R0 w > 0: an overlap with a particle out of view or
+   culled behind the layer by the update pass cannot be seen); *hidden* = the smaller one entirely inside the larger
+   (left alone by design); *visible beyond tolerance* = a visible overlap deeper than max(2 % of the contact distance,
+   1 render px); *crowded* = a particle with ≥ 3 initial overlaps with listed particles of any weight (clusters, wake
+   cores and the B ring's jammed mid-plane, whose analytic packing is too dense to resolve locally: the solver resolves
+   every listed particle, so neighbours in the weights' fades jam a particle as much as resolved ones). Limits:
+   residual / visible-before ≤ 0.2 (B) / 0.12 (A); uncrowded residual / resolved particles ≤ 0.012 (isolated pairs left
+   unresolved: a solver fault, not jamming).
 2. **bound**: max |x − x_analytic| / (clampK D_i) ≤ 1.0001 (float32: 4 ulps of the coordinates); D_i(GPU) ≥ D_i(CPU,
    first iteration) for ≥ 99.8 % of the particles with overlaps (the GPU search missed nothing that matters); hash
    bucket overflow (CPU simulation of the grid) ≤ 0.1 % of the list.
@@ -446,35 +448,52 @@ weights, contact shapes), the result, the bound D_i and R0 are read back and eva
    presets at the default render scale 0.5; optional views `b-fov12` (the B ring through a 12° fov at render scale 1,
    the largest contact set) and `a-1km` (an empty set: the step idles).
 
-Measured on the re-calibrated wake field (ring-morphology b9dab72 + the Nov 2026 contact update; deterministic, identical
-in every run):
+Measured with the size rules of the contract physics (ring-morphology a7e56a7: wake participation, τ_dyn, per-zone
+vertical laws, the packing ceiling) + the contact update of Nov 2026 (fade-in 5 → 6 px, 48 iterations at ω 0.6;
+deterministic, identical in every run):
 
 | view | list | resolved | visible overlaps beyond tol. before → after (crowded) | deepest (× contact distance) | max displacement | moved into view | frame + 1/30 s pops (max px) |
 |---|---|---|---|---|---|---|---|
-| b-inside | 35.7k | 16.0k | 5272 → 541 (481): 0.103 | 0.914 → 0.539 | 5.4 a (bound 1.0000) | 31 | 3 (1.5 px) |
-| a-inside | 6.9k | 2.9k | 728 → 33 (32): 0.045 | 0.956 → 0.418 | 5.7 a | 4 | 0 (0.53 px) |
-| a-30m | 2.2k | 0.86k | 238 → 8 (5): 0.034 | 0.887 → 0.642 | 2.9 a | 2 | 0 (0.06 px) |
-| b-preset | 20.1k | 8.2k | 2939 → 273 (236): 0.093 | 0.932 → 0.529 | 5.8 a | 27 | — |
-| mimas53 | 15.7k | 7.3k | 2906 → 651 (605): 0.224 | 0.886 → 0.835 | 9.0 a | 8 | 0 (0.20 px) |
-| titan | 0.81k | 0.34k | 6 → 0: 0 | 0.546 → 0.000 | 2.0 a | 0 | 0 (0.00 px) |
+| b-inside | 45.9k | 27.0k | 16308 → 2979 (2741): 0.183 | 0.925 → 0.872 | 8.9 a (bound 1.0000) | 104 | 7 (6.9 px) |
+| a-inside | 4.3k | 2.5k | 480 → 7 (4): 0.015 | 0.936 → 0.664 | 3.0 a | 1 | 0 (0.13 px) |
+| a-30m | 1.4k | 0.81k | 156 → 1 (0): 0.006 | 0.762 → 0.034 | 2.5 a | 0 | 0 (0.02 px) |
+| b-preset | 25.2k | 14.1k | 9276 → 1292 (1190): 0.139 | 0.922 → 0.824 | 7.2 a | 65 | — |
+| mimas53 | 6.9k | 4.2k | 1159 → 90 (85): 0.078 | 0.823 → 0.487 | 5.0 a | 4 | 0 (0.34 px) |
+| titan | 0.49k | 0.32k | 5 → 0: 0 | 0.567 → 0.000 | 1.9 a | 0 | 0 (0.00 px) |
 
-All overlapping resolved pairs (incl. shallow ones within the tolerance — damped iterations approach contact from the
-overlapping side — and hidden ones): b-inside 6639 → 5265 (hidden 646 → 377), a-inside 1009 → 669, mimas53 6303 → 3993
-(hidden 2974 → 1691). GPU-missed 0, bucket overflow 0 (max bucket fill 3–13 of 16). Temporal, + 1 s / + 10 s: b-inside
-30 / 41 pops (max 30 / 41 px: mostly small particles emerging from a boulder through the embedding fade, and boulders
-next to the camera sliding in jammed clusters), a-inside 0 / 2, a-30m 1 / 1, mimas53 12 / 31, titan 0 / 0; warp +1000 /
-−1000 residual ratios 0.11 / 0.10 (b-inside), 0.05 / 0.05 (a-inside), 0.03 / 0.03 (a-30m), 0.22 / 0.22 (mimas53), 0 / 0
-(titan). Relief on / flat (`relief=0`, same views): mimas53 0.224 / 0.242, titan 0 / 0 — the tilted mid-plane changes
+Uncrowded residual / resolved particles: b-inside 0.0088, b-preset 0.0073, a-inside / a-30m / mimas53 0.0012, titan 0.
+GPU-missed 0, bucket overflow 0 (max bucket fill 3–13 of 16). Temporal, + 1 s / + 10 s: b-inside 476 / 330 pops (p99
+1.5 / 8.9 px), a-inside 0 / 0, a-30m 1 / 2, mimas53 29 / 7, titan 0 / 0; warp +1000 / −1000 residual ratios 0.16 / 0.17
+(b-inside), 0.03 / 0.01 (a-inside), 0.02 / 0.01 (a-30m), 0.07 / 0.08 (mimas53), 0 / 0 (titan). Relief on / flat
+(`relief=0`, measured before the contract physics): mimas53 0.224 / 0.242, titan 0 / 0 — the tilted mid-plane changes
 nothing (the grid, the contact distance and the camera fade are 3-D; the occlusion slab takes heights above the
 camera's local mid-plane).
+
+**The B ring at the packing limit.** With the packing ceiling binding, the B-ring mid-plane sits at a filling factor of
+≈ 0.65 — random close packing — and the analytic (independent-orbit) positions overlap twice as much as before: 0.81
+overlapping resolved pairs per resolved particle in b-inside (0.41 on b9dab72), 28 % of them crowded by the definition
+above. On a7e56a7 as merged the check failed (residual 0.267 / 0.215, uncrowded 0.018 / 0.015 in b-inside / b-preset).
+Of the uncrowded residual pairs then, 74 % had been created by the step itself (a particle pushed out of one overlap into a
+neighbour: chains through the packing), 34 % had ≥ 3 overlaps with partial-weight neighbours (the resolved-only crowding
+count missed them) and 17 % involved a particle the update pass does not draw (its cull now uses τ_dyn, the contact
+bound still the photometric τ: mirror fixed, and such overlaps are invisible). The crowded residual is a trade-off, not
+a floor: a looser, longer projection resolves more but jumps more, because at jamming the nearest non-overlapping
+configuration changes discontinuously as the analytic one moves (b-inside, fade-in 4 → 6 px, residual / pops per frame /
+pops per s): the setting as merged on a7e56a7 (24 iterations at ω 0.7) 0.272 / 12 / 458; clampK 8, yield 1.5 0.231 /
+16 / 506; 48 iterations, 6 rounds 0.169 / 24 / 647; both 0.103 / 31 / 736; clampK 30, yield 5, 96 iterations, 8 rounds
+0.047 / 26 (17.9 px) / 1084. The production setting (48 iterations at ω 0.6, fade-in 5 → 6 px) keeps the per-frame
+jumps at the stable level (7) with residual 0.183; the per-second count (476, was 30 before the packing ceiling) is
+informational.
+
 Before the wake-mirror fix (b9dab72 as merged) the lists had collapsed to 1.4k (b-inside) / 2.5k (a-inside) and the
 check failed on 3 pops in 1430 (0.0021) and 4 residual overlaps of 26 (0.154); with the fix alone (3 → 6 px, 12
 iterations) b-inside listed 60.7k: residual 0.140, pops 6.6e-5; a-inside 0.068.
-Cost (`--cost`, a GPU shared with other agents), ms — step now / step before (interleaved) / whole frame off → on:
-b-default (4.8k list) 2.1 / 2.4 / 36.9 → 38.5, a-default (0.8k) 1.0 / 0.9 / 17.2 → 18.0, b-inside (35.7k) 4.5 / 9.2 /
-70.3 → 73.7, a-inside (6.9k) 1.8 / 1.9 / 43.8 → 44.9, b-fov12 (58k) 7.6 / 9.7, a-1km (idle) 0.2. The search (~0.05 µs
-per listed particle and round, ~100 cells per particle over its own and the larger size levels) dominates large lists,
-the list compaction (a full R0 scan, 0.4–0.8) small ones.
+Cost (`--cost`, on a heavily shared GPU — b-inside frames of 134 ms without the step during the run), ms — step now /
+step with the 2026-11-08 configuration (3 → 6 px, whole grid, 12 undamped iterations; interleaved): b-default (6.4k
+list) 3.6 / 5.3, a-default (0.5k) 1.4 / 0.9, b-inside (45.9k) 14.7 / 18.0, a-inside (4.3k) 1.6 / 1.8; against the
+setting as merged on a7e56a7 (24 iterations, 4 → 6 px) b-inside 16.2 / 17.7 (another interleaved run). The contract
+physics doubled the B-ring contact list (τ_dyn: +25 % particles; the jammed mid-plane) and the search through it
+(~100 cells per particle and round) dominates; the list compaction (a full R0 scan, 0.4–0.8) dominates small lists.
 
 ### wakecost — `scripts/test/wakecost.mjs` (`--preset id`, `--size N`, `--k K`, `--reps R`, `--trials T`, `--async D`)
 In-page micro-benchmark of the shared self-gravity-wake functions on the real app state (the place's wake set and

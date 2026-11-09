@@ -12,11 +12,14 @@
 // 1. overlaps: every pair of list particles closer than its contact distance (sum of the two base shapes' radial
 //    extents along the centre line, as the shader), found by a CPU multi-level grid search, at the analytic and at the
 //    resolved positions. "Resolved pairs" = both fully in the contact set (weight 1: >= 6 render px radius, not
-//    occluded). Visible overlap = the smaller particle sticks out of the larger one (hidden ones - the smaller entirely
-//    inside - are left alone by design and counted separately); residual = a visible overlap deeper than max(2% of the
-//    contact distance, 1 render px) after resolution. Crowded = a particle with >= 3 initial resolved overlaps (dense
-//    clusters, wake cores: where the analytic packing is too dense to resolve locally). Limits per view (VIEWS): the
-//    residual / visible overlaps before, and the uncrowded residual / resolved particles.
+//    occluded) and both drawn (R0 w > 0: an overlap with a particle that is out of view or culled behind the layer by
+//    the update pass cannot be seen). Visible overlap = the smaller particle sticks out of the larger one (hidden ones -
+//    the smaller entirely inside - are left alone by design and counted separately); residual = a visible overlap
+//    deeper than max(2% of the contact distance, 1 render px) after resolution. Crowded = a particle with >= 3 initial
+//    overlaps with listed particles of any weight (dense clusters, wake cores, the B ring's jammed mid-plane: where the
+//    analytic packing is too dense to resolve locally; the solver resolves every listed particle, so neighbours in the
+//    weights' fades jam as much as resolved ones). Limits per view (VIEWS): the residual / visible overlaps before, and
+//    the uncrowded residual / resolved particles (isolated pairs left unresolved: a solver fault, not jamming).
 // 2. displacement bound: |x - x_analytic| <= clampK x D_i (the shader's bound, read back) for every particle, and
 //    D_i(GPU) >= D_i(CPU, the first iteration's pair corrections) for >= 99.8 % of the particles with overlaps (the GPU's
 //    neighbour search missed nothing that matters). Hash-grid bucket overflow (CPU simulation of the GPU hash) <= 0.1 %.
@@ -48,9 +51,8 @@ const VIEWS = {
   'b-preset': { preset: 'b-ring-inside', scale: 1, what: 'B ring preset, fov 60 (the camera inside a boulder)', resid: 0.2, free: 0.012, pops: 2e-4, temporal: false },
   // vertical relief: inside the layer, on the local mid-plane (cam=ring heights are relative to it) of the Mimas 5:3
   // bending wave (A ring, slopes up to ~9 deg) and of the Titan -1:0 wave (C ring, up to 45 deg; scripts/test/relief.mjs).
-  // mimas53 lies in a dense zone (tau 0.92, a_max 5 m: 15 % of the resolved particles crowded, vs 6 % in a-inside), so
-  // its residual (jammed clusters) is higher: 0.22; flat (relief=0) the same within 0.01 - the relief is not the cause
-  'mimas53': { params: { cam: 'ring', r: 131850000, phi: 31, z: 0, yaw: 0, pitch: -10 }, fov: 35, scale: 1, what: 'Mimas 5:3 bending wave, inside the layer on the tilted mid-plane', resid: 0.3, free: 0.012, pops: 1e-4 },
+  // (mimas53 lies in a dense zone, tau 0.92; with the per-zone vertical laws its residual is 0.08 - the A-ring limit)
+  'mimas53': { params: { cam: 'ring', r: 131850000, phi: 31, z: 0, yaw: 0, pitch: -10 }, fov: 35, scale: 1, what: 'Mimas 5:3 bending wave, inside the layer on the tilted mid-plane', resid: 0.12, free: 0.012, pops: 1e-4 },
   'titan': { params: { cam: 'ring', r: 77545500, phi: 31, z: 0, yaw: 0, pitch: -10 }, fov: 35, scale: 1, what: 'Titan -1:0 bending wave (C ring), inside the layer on the tilted mid-plane', resid: 0.12, free: 0.012, pops: 1e-4 },
 };
 const BASE = { t: '2026-11-08T12:00:00Z', hud: 0, labels: 0, paused: 1, astronaut: 0 };
@@ -113,7 +115,7 @@ export function analyzeInPage() {
       const l = g.get(k);
       if (l) l.push(j); else g.set(k, [j]);
     }
-    const out = { i: [], j: [], delta: [], D: [], rmin: [], e: [], s: [], si: [], sj: [] };
+    const out = { i: [], j: [], delta: [], D: [], rmin: [], e: [], vis: [], s: [], si: [], sj: [] };
     for (const i of ids) {
       const ai = Math.abs(X[i * 4 + 3]), Li = lvl(ai), xi = X[i * 4], yi = X[i * 4 + 1], zi = X[i * 4 + 2];
       for (const [L, g] of grids) {
@@ -136,6 +138,9 @@ export function analyzeInPage() {
                 const e = Math.min(M[i * 4 + 1], M[j * 4 + 1]);
                 const same = L === Li, m3 = ai ** 3 + aj ** 3;
                 out.i.push(i); out.j.push(j); out.delta.push(D - d); out.D.push(D); out.rmin.push(Math.min(ri, rj)); out.e.push(e);
+                // both drawn (R0 w > 0): an overlap with a particle that is not drawn (out of view, or culled behind the
+                // layer by the update pass) cannot be seen
+                out.vis.push(M[i * 4] > 0 && M[j * 4] > 0);
                 out.s.push(Math.hypot(xi - 0.5 * dx, yi - 0.5 * dy, zi - 0.5 * dz));
                 out.si.push(same ? aj ** 3 / m3 : 1); out.sj.push(same ? ai ** 3 / m3 : 0);
               }
@@ -148,10 +153,12 @@ export function analyzeInPage() {
   // per-particle: initial resolved overlaps (crowding) and the CPU's displacement bound D_i (the shader's first-iteration
   // pair correction: weight x share x delta, faded out where the smaller particle lies entirely inside the larger one)
   const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  // crowding: initial overlaps with listed particles of ANY weight - the solver resolves all of them, and at the packing
+  // limit (B-ring mid-plane, filling 0.65) a resolved particle is jammed mostly by neighbours in the weights' fades
   const n0 = new Map(), dCpu = new Map();
   for (let p = 0; p < before.i.length; p++) {
     const e = before.e[p], i = before.i[p], j = before.j[p];
-    if (e >= 0.999) { n0.set(i, (n0.get(i) ?? 0) + 1); n0.set(j, (n0.get(j) ?? 0) + 1); }
+    if (e > 0) { n0.set(i, (n0.get(i) ?? 0) + 1); n0.set(j, (n0.get(j) ?? 0) + 1); }
     const ee = e * (1 - smooth(2, 2.5, before.delta[p] / before.rmin[p]));
     if (ee > 0) {
       dCpu.set(i, Math.max(dCpu.get(i) ?? 0, ee * before.si[p] * before.delta[p]));
@@ -163,9 +170,12 @@ export function analyzeInPage() {
   // visible overlap: the smaller particle sticks out of the larger one (delta < its diameter along the centre line);
   // hidden: it lies entirely inside (invisible, deliberately left alone)
   const summarize = (P) => {
-    let ov = 0, hidden = 0, resid = 0, residCrowd = 0, maxRel = 0, maxRelFree = 0, maxPx = 0, sumDelta = 0;
+    let ov = 0, hidden = 0, resid = 0, residCrowd = 0, maxRel = 0, maxRelFree = 0, maxPx = 0, sumDelta = 0, residAnyDrawn = 0;
     for (let p = 0; p < P.i.length; p++) {
       if (P.e[p] < 0.999) continue;
+      // (the same count without the drawn condition, for comparison)
+      if (P.delta[p] < 2 * P.rmin[p] && P.delta[p] > tolOf(P, p)) residAnyDrawn++;
+      if (!P.vis[p]) continue;
       ov++;
       if (P.delta[p] >= 2 * P.rmin[p]) { hidden++; continue; }
       const rel = P.delta[p] / P.D[p], px = P.delta[p] / (P.s[p] * pa);
@@ -179,10 +189,11 @@ export function analyzeInPage() {
       maxRel = Math.max(maxRel, rel);
       maxPx = Math.max(maxPx, px);
     }
-    return { overlapping: ov, hidden, beyondTol: resid, beyondTolCrowded: residCrowd, maxRel, maxRelUncrowded: maxRelFree, maxPx, sumDelta };
+    return { overlapping: ov, hidden, beyondTol: resid, beyondTolCrowded: residCrowd, maxRel, maxRelUncrowded: maxRelFree, maxPx, sumDelta, beyondTolAnyDrawn: residAnyDrawn };
   };
+  // resolved: in the contact set at full weight and drawn
   let resolved = 0, crowdedN = 0;
-  for (const j of ids) { if (M[j * 4 + 1] >= 0.999) resolved++; if (crowded(j)) crowdedN++; }
+  for (const j of ids) { if (M[j * 4 + 1] >= 0.999 && M[j * 4] > 0) resolved++; if (crowded(j)) crowdedN++; }
   // bodies around the camera (not drawn: the camera is a ghost) must take no part in contacts
   let camInside = 0, camInsideW = 0;
   for (const j of ids) {
@@ -442,7 +453,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) await withHar
       const b = s.before, a = s.after;
       rows.push([id, s.n, s.resolved, s.crowded, b.overlapping, a.overlapping, `${b.hidden} / ${a.hidden}`, b.beyondTol, a.beyondTol, a.beyondTolCrowded, fmt(b.maxRel, 3), fmt(a.maxRel, 3), fmt(a.maxPx, 2), s.moved, fmt(s.maxDispA, 2), s.overflow]);
       console.log(`  list ${s.n} (read-back ${s.count}, cap ${s.cap}, ${s.buckets} buckets, max bucket fill ${s.maxFill}), resolved ${s.resolved}, crowded ${s.crowded}${s.slopeDeg > 0.01 ? `; local mid-plane slope ${fmt(s.slopeDeg, 2)} deg` : ''}`);
-      console.log(`  overlapping resolved pairs ${b.overlapping} -> ${a.overlapping} (hidden: the smaller one entirely inside, ${b.hidden} -> ${a.hidden}); visible beyond tolerance ${b.beyondTol} -> ${a.beyondTol} (${a.beyondTolCrowded} at crowded particles); deepest ${fmt(b.maxRel, 3)} -> ${fmt(a.maxRel, 3)} of the contact distance (uncrowded ${fmt(a.maxRelUncrowded, 3)}), ${fmt(a.maxPx, 2)} px`);
+      console.log(`  overlapping resolved pairs ${b.overlapping} -> ${a.overlapping} (hidden: the smaller one entirely inside, ${b.hidden} -> ${a.hidden}); visible beyond tolerance ${b.beyondTol} -> ${a.beyondTol} (${a.beyondTolCrowded} at crowded particles; not requiring both drawn: ${b.beyondTolAnyDrawn} -> ${a.beyondTolAnyDrawn}); deepest ${fmt(b.maxRel, 3)} -> ${fmt(a.maxRel, 3)} of the contact distance (uncrowded ${fmt(a.maxRelUncrowded, 3)}), ${fmt(a.maxPx, 2)} px`);
       console.log(`  moved ${s.moved}, max displacement ${fmt(s.maxDispA, 3)} a, ${fmt(s.maxDispBound, 4)} of the bound; GPU bound below CPU for ${s.missed} of ${s.withD}; bucket overflow ${s.overflow}`);
       console.log(`  R0: ${s.checked} list slots checked, ${s.wbBad} mismatches, ${s.flipped} set drawn (moved into view); drawn ${off.drawn} -> ${on.drawn}, present ${off.present} -> ${on.present}, >= 1 px list ${off.listDrawn} -> ${on.listDrawn}`);
       rep.data[id] = { ...s, r0off: off, r0on: on };
