@@ -160,8 +160,10 @@ function freePort() {
  * (no HMR, no file watching: the code is fixed for the run; deps cache in
  * <os tmp>/space-viz-test-vite-cache/<hash of this checkout's path>, one per checkout / git worktree, so runs
  * from parallel worktrees never share Vite's dependency optimizer state). Returns { base, own, close() }.
+ * `root`: serve another checkout of the app instead of this one (e.g. an older revision extracted with
+ * `git archive`, with a node_modules symlink; fps.mjs --compare).
  */
-export async function startServer({ base, log = console.log } = {}) {
+export async function startServer({ base, root = REPO, log = console.log } = {}) {
   if (base) {
     const b = base.endsWith('/') ? base : `${base}/`;
     if (await isReachable(b)) return { base: b, own: false, close: async () => {} };
@@ -170,16 +172,16 @@ export async function startServer({ base, log = console.log } = {}) {
   const { createServer } = await import('vite');
   const port = await freePort();
   const server = await createServer({
-    configFile: join(REPO, 'vite.config.ts'),
-    root: REPO,
+    configFile: join(root, 'vite.config.ts'),
+    root,
     logLevel: 'warn',
     clearScreen: false,
-    cacheDir: join(tmpdir(), 'space-viz-test-vite-cache', createHash('sha1').update(REPO).digest('hex').slice(0, 12)),
+    cacheDir: join(tmpdir(), 'space-viz-test-vite-cache', createHash('sha1').update(root).digest('hex').slice(0, 12)),
     server: { host: '127.0.0.1', port, strictPort: true, hmr: false, watch: { ignored: ['**/*'] } },
   });
   await server.listen();
   const url = `http://127.0.0.1:${port}/`;
-  log(`[server] private Vite dev server at ${url} (no HMR / file watching)`);
+  log(`[server] private Vite dev server at ${url} (no HMR / file watching)${root !== REPO ? ` for ${root}` : ''}`);
   return { base: url, own: true, close: () => server.close() };
 }
 

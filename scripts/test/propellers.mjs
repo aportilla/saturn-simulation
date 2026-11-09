@@ -4,7 +4,7 @@
 // docs/ring-physics.md sections 10-11). CPU mirrors in the page (window.__sv.pipeline.ctx.structure), GLSL through the
 // ring-layer readback.
 //
-// usage: node scripts/test/propellers.mjs [--base URL] [--out DIR] [--only positions,texture,prefilter,structure,presence,bodies]
+// usage: node scripts/test/propellers.mjs [--base URL] [--out DIR] [--only positions,texture,prefilter,structure,presence,cache,bodies]
 //                                         [--w 1280 --h 720]
 //
 // 1. positions  named giants (Tiscareno et al. 2010 Table 1, epoch 2007-01-01 12:00 UTC = 220,924,865.184 s TDB):
@@ -41,6 +41,11 @@
 //               mirror on a 40 x 40 grid --, radii, frustum, >= 1 px): within 1 +- max(0.08, 4/sqrt(n)).
 //               Cost gate: the present particles (count, position checksum) with the CPU class mask uRpNearMask are
 //               identical to those with the propeller enumeration forced for every class (presence view, a-ring-30m).
+// 5b. cache     the modulation cache the presence test reads (src/render/rings/ModClipmap.ts, sv_ringModClip) at the
+//               propeller-belt and a-ring-1km presets: every level's texels = the CPU mirror at the level's prefilter
+//               footprint (fp = its radial texel; max |diff| <= 4e-3, rms <= 1e-3: float32), levels with texels <= 4 m =
+//               M at fp = 0 (max |diff| <= 4e-3); drawn particles whose presence differs between the cache and the
+//               direct evaluation (same frame, same particles) <= 2 % (the coarser levels smooth sub-texel structure).
 // 6. bodies     the propeller presets draw their moonlet (moonlet pass stats), the body's projected centre pixel holds
 //               an opaque distance within [d - 1.4 R, d + 0.1 R]; no NaN / negative pixels, no console / GL errors,
 //               all passes ok (presets, structure views).
@@ -59,8 +64,8 @@ const TABLE1 = [
 const wrap = (a) => a - 2 * Math.PI * Math.floor((a + Math.PI) / (2 * Math.PI));
 const COMMON = { hud: 0, labels: 0, paused: 1, astronaut: 0 };
 
-await withHarness('propellers', { usage: 'node scripts/test/propellers.mjs [--base URL] [--out DIR] [--only positions,texture,prefilter,structure,presence,bodies]' }, async ({ args, out, rep, base, browser }) => {
-  const only = args.list('only', ['positions', 'texture', 'prefilter', 'structure', 'presence', 'bodies']);
+await withHarness('propellers', { usage: 'node scripts/test/propellers.mjs [--base URL] [--out DIR] [--only positions,texture,prefilter,structure,presence,cache,bodies]' }, async ({ args, out, rep, base, browser }) => {
+  const only = args.list('only', ['positions', 'texture', 'prefilter', 'structure', 'presence', 'cache', 'bodies']);
   const want = (k) => only.includes(k);
 
   // ------------------------------------------------------------------ 1. positions + longitude convention
@@ -484,6 +489,92 @@ await withHarness('propellers', { usage: 'node scripts/test/propellers.mjs [--ba
     rep.check(`gate ${label}: identical particles with the enumeration forced for every class`, res.a.n === res.b.n && Math.abs(res.a.sum - res.b.sum) <= 1e-6 * Math.abs(res.b.sum), `${res.a.n} vs ${res.b.n} present, ${res.gated} of ${res.classes} classes gated`);
     if (mixed) rep.check(`gate ${label}: the mask is exercised (some classes gated, some not)`, res.gated > 0 && res.gated < res.classes, `${res.gated} of ${res.classes}`);
     rep.data[`gate-${label}`] = res;
+  }
+
+  // ------------------------------------------------------------------ 5b. the modulation cache (ModClipmap)
+  // the near field's presence (and the march near the camera) read M from a clipmap of ringStructureMod around the camera:
+  // every level's texels = the CPU mirror at the level's prefilter footprint (fp = its radial texel), the levels with
+  // texels <= 4 m = M at fp = 0 (every texture octave resolved); presence with the cache vs direct evaluation in the same
+  // frame (same particles)
+  if (want('cache')) {
+    const rows = [];
+    for (const preset of ['propeller-belt', 'a-ring-1km']) {
+      const { page, errs } = await openApp(browser, base, { ...COMMON, preset, t: '2026-11-08T12:00:00Z' }, { settle: 3000 });
+      try {
+        const res = await page.evaluate(async () => {
+          const sv = window.__sv, near = sv.pipeline.passes.near?.inner, mc = sv.pipeline.ctx.modClip, st = sv.pipeline.ctx.structure;
+          if (!near || !mc) return { error: 'near field / modClip not found' };
+          const frames = (n) => new Promise((r) => { let k = 0; const f = () => (++k >= n ? r() : requestAnimationFrame(f)); requestAnimationFrame(f); });
+          const NR = 512, NS = 128, AS = 4, L = 9;
+          const atlas = new Float32Array(NR * NS * L * 4);   // (M, wake factor, tau0 tau_dyn / tau0 x M, -)
+          sv.renderer.readRenderTargetPixels(mc.rt, 0, 0, NR, NS * L, atlas);
+          const lev = mc.uniforms.uMcLev.value, n = mc.uniforms.uMcInfo.value.x, r0 = sv.frame.ring.r0;
+          const levels = [];
+          let seed = 12345;
+          const rnd = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
+          for (let k = 0; k < n; k++) {
+            if (lev[k].w < 0.5) continue;
+            const d = 1 / lev[k].z;
+            let e1 = 0, m1 = 0, e0 = 0, m0 = 0, cnt = 0, pLow = 0;
+            for (let t = 0; t < 300; t++) {
+              const i = Math.floor(rnd() * NR), j = Math.floor(rnd() * NS);
+              const aL = lev[k].x + (i + 0.5 - NR / 2) * d, S = lev[k].y + (j + 0.5 - NS / 2) * d * AS;
+              const g = atlas[((k * NS + j) * NR + i) * 4], gp = atlas[((k * NS + j) * NR + i) * 4 + 2];
+              // the joint channel: (largest particle optical depth tau0 tau_dyn(tau0) / tau0 over the texel's support) x M
+              // >= the same at the centre x M (the presence test's tau)
+              const tp = sv.pipeline.ctx.profile.tauAtKm((r0 + aL) / 1000), t0 = tp * sv.pipeline.ctx.lod.tauDynFactor(tp);
+              if (gp < t0 * g * (1 - 1e-4) - 1e-6) pLow++;
+              const c1 = st.tauModAt(aL, S / r0, d)[0], c0 = st.tauModAt(aL, S / r0, 0)[0];
+              e1 += (g - c1) ** 2; m1 = Math.max(m1, Math.abs(g - c1)); e0 += (g - c0) ** 2; m0 = Math.max(m0, Math.abs(g - c0)); cnt++;
+            }
+            levels.push({ k, d, rms1: Math.sqrt(e1 / cnt), max1: m1, rms0: Math.sqrt(e0 / cnt), max0: m0, pLow });
+          }
+          const grab = () => {
+            const out = [];
+            for (const c of near.classes) {
+              if (!(c.slots > 0) || !c.active) continue;
+              const b = new Float32Array(2048 * c.rows * 4);
+              sv.renderer.readRenderTargetPixels(near.r0RT, 0, c.row0, 2048, c.rows, b);
+              out.push({ n: c.slots, b });
+            }
+            return out;
+          };
+          near.cullEnabled = false;
+          await frames(8);
+          const A = grab();
+          mc.useInShaders = false; await frames(8);
+          const B = grab();
+          mc.useInShaders = true; await frames(8);
+          near.cullEnabled = true;
+          let drawn = 0, flipD = 0, present = 0, flip = 0;
+          for (let c = 0; c < A.length; c++) {
+            for (let i = 0; i < A[c].n; i++) {
+              const wa = A[c].b[i * 4 + 3], wb = B[c].b[i * 4 + 3];
+              if (wb !== 0) present++;
+              if (wb > 0) drawn++;
+              if ((wa !== 0) !== (wb !== 0)) { flip++; if (wa > 0 || wb > 0) flipD++; }
+            }
+          }
+          return { levels, present, flip, drawn, flipD, stats: mc.stats() };
+        });
+        if (res.error) { rep.check(`cache ${preset}: setup`, false, res.error); continue; }
+        const max1 = Math.max(...res.levels.map((l) => l.max1)), rms1 = Math.max(...res.levels.map((l) => l.rms1));
+        const fine = res.levels.filter((l) => l.d <= 4), max0 = Math.max(...fine.map((l) => l.max0));
+        rep.range(`cache ${preset}: max |M cache - M CPU (at the level's prefilter)| over the levels`, max1, 0, 4e-3);
+        rep.range(`cache ${preset}: rms of the same (worst level)`, rms1, 0, 1e-3);
+        rep.range(`cache ${preset}: levels with texels <= 4 m: max |M cache - M CPU (fp = 0)|`, max0, 0, 4e-3);
+        rep.check(`cache ${preset}: the joint channel (presence bound) >= tau_dyn x M at every sampled texel`, res.levels.every((l) => l.pLow === 0), res.levels.map((l) => l.pLow).join(","));
+        rep.range(`cache ${preset}: drawn particles whose presence differs from the direct evaluation`, res.flipD / Math.max(res.drawn, 1), 0, 0.02);
+        for (const l of res.levels) rows.push([preset, l.k, l.d, l.rms1.toExponential(2), l.max1.toExponential(2), l.rms0.toExponential(2), l.max0.toExponential(2)]);
+        console.log(`  cache ${preset}: ${res.stats}; presence flips (cache vs direct): ${res.flip} of ${res.present} present, ${res.flipD} of ${res.drawn} drawn`);
+        rep.data[`cache-${preset}`] = res;
+        const pr = await problems(page, errs);
+        rep.check(`cache ${preset}: clean`, pr.length === 0, pr.slice(0, 3).join(' | ') || 'none');
+      } finally {
+        await page.close();
+      }
+    }
+    console.log(`\n${table(['view', 'level', 'texel m', 'rms vs fp=dr', 'max', 'rms vs fp=0', 'max'], rows)}`);
   }
 
   // ------------------------------------------------------------------ 6. bodies + presets

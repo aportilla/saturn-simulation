@@ -48,6 +48,7 @@ import { LOD_CLASSES, LOD_PIECES, type RingLod } from '../../rings/RingLod';
 import { SATURN } from '../../core/constants';
 import nearCommon from '../near/nearCommon.glsl?raw';
 import nearUpdate from '../near/nearUpdate.glsl?raw';
+import nearOcclusion from '../near/nearOcclusion.glsl?raw';
 import nearState from '../near/nearState.glsl?raw';
 import nearDrawVert from '../near/nearDraw.vert.glsl?raw';
 import nearDrawFrag from '../near/nearDraw.frag.glsl?raw';
@@ -67,6 +68,8 @@ import {
 
 const TEX_W = 2048;
 const TWO_PI = Math.PI * 2;
+/** levels of the ring layer's wake clipmap (WAKE_CLIP_MAX_LEVELS; NF_WC_LEVELS in nearOcclusion.glsl) */
+const NF_WC_LEVELS = 6;
 /** largest sprite radius (px) handled by the point pass (GL max point size is 511 here) */
 const PT_MAX_PX = 180;
 /** quads are only needed for the few particles within a few radii of the camera */
@@ -156,6 +159,11 @@ interface ClassState {
   cur: number;
   needsInit: boolean;
   active: boolean;
+  /**
+   * rows of R0 the update pass wrote last frame (the rows below the presence bound's tail; the rows beyond hold
+   * zeros: absent)
+   */
+  updRows: number;
 }
 
 function hashSeed(a: number, b: number): number {
@@ -188,6 +196,31 @@ export class NearFieldPass implements RenderPass {
    * (visibility e^-5 = 0.7%); tighter than the shared uLodCullTau because it bounds the overdraw
    */
   cullTau = 5;
+  /**
+   * where the emptiest-gap bound cannot decide, the cull integrates the actual self-gravity-wake density along the line
+   * of sight (the ring layer's wake clipmap, ctx.wakeClip; nearOcclusion.glsl nearLosTau); false: the bound alone
+   */
+  cullPathWakes = true;
+  /**
+   * uniforms of the statistical-occlusion bound (nearOcclusion.glsl nearLosTau: the ring layer's wake clipmap), one
+   * shared object set updated in render() before the update pass -- spread into any material that includes
+   * nearOcclusion.glsl (the update pass; the contact step's contact set)
+   */
+  readonly occlusionUniforms = {
+    uNfWc: { value: null as unknown },
+    uNfWcLev: { value: Array.from({ length: NF_WC_LEVELS }, () => new Vector4(0, 0, 1, 0)) },
+    uNfWcLevels: { value: 0 },
+    uNfWcInfo: { value: new Vector4(1024, 5, 1, 0) },
+    // (smallest, largest) wake participation p_k over the classes in the column (0: the sub-class particles)
+    uNfPart: { value: new Vector2(1, 1) },
+  };
+  /** the particles' sun-path wake density from the ring layer's wake clipmap where it covers them (nearDraw.vert.glsl) */
+  sunPathClip = true;
+  /**
+   * the update pass skips the slots whose presence threshold lies above this frame's bound of tau0 M over their class's
+   * box (ctx.presenceBound, from the modulation cache) before evaluating them (cost only; false: every slot evaluated)
+   */
+  presenceSkip = true;
   /** near-field sun shadow map (crisp shadows from nearby particles) */
   shadowsEnabled = true;
   /** debugging / profiling: skip sub-passes */
@@ -291,7 +324,7 @@ export class NearFieldPass implements RenderPass {
     this.updMat = new RawShaderMaterial({
       glslVersion: GLSL3,
       vertexShader: FS_VERT,
-      fragmentShader: common + nearUpdate,
+      fragmentShader: common + nearOcclusion + nearUpdate,
       uniforms: {
         ...sh,
         tState: { value: null },
@@ -307,8 +340,11 @@ export class NearFieldPass implements RenderPass {
         uKin: { value: new Vector4() },
         uShear: { value: new Vector4() },
         uTauBoxMax: { value: 1 },
+        uTauPres: { value: 1 },
         uTauCam: { value: 0 },
         uCull: { value: 1 },
+        // the occlusion bound's line-of-sight wake density (nearOcclusion.glsl; set in render() from ctx.wakeClip)
+        ...this.occlusionUniforms,
       },
       depthTest: false,
       depthWrite: false,
@@ -348,7 +384,9 @@ export class NearFieldPass implements RenderPass {
     // RS_LIGHT_ONLY: the draw only does lighting lookups (sv_ringStructure LIGHT modulation), so the modulation's code
     // and sampler stay out of this program, which is at the 16 texture units ANGLE/Metal allows
     const lightOnly = '#define RS_LIGHT_ONLY\n';
-    const vs = lightOnly + common + listGlsl + NEAR_SHADOW_PROFILE_GLSL + NEAR_SHADOW_LOOKUP_GLSL + nearDrawVert;
+    // (nearOcclusion: the wake clipmap for the particles' sun-path nodes, one more sampler -- the draw is at 15 since the
+    // asynchrony field moved into the wake texture array)
+    const vs = lightOnly + common + listGlsl + NEAR_SHADOW_PROFILE_GLSL + NEAR_SHADOW_LOOKUP_GLSL + nearOcclusion + nearDrawVert;
     const fs = lightOnly + common + NEAR_SHADOW_PROFILE_GLSL + NEAR_SHADOW_LOOKUP_GLSL + nearDrawFrag;
     const drawMat = (quad: number) =>
       new RawShaderMaterial({
@@ -367,6 +405,7 @@ export class NearFieldPass implements RenderPass {
           uNearSatDir: this.satDirU,
           uNearAllocD: this.allocDU,
           uDebug: { value: 0 },
+          ...this.occlusionUniforms,
         },
         depthTest: true,
         depthWrite: true,
@@ -403,7 +442,7 @@ export class NearFieldPass implements RenderPass {
       this.classes.push({
         k, slots: 0, row0: 0, rows: 0, seed: 1, D: 1, cBox: 1, aHi: 0.02, tauMax: 1,
         pieceP: new Float32Array(LOD_PIECES * 4), pieceB: new Float32Array(LOD_PIECES * 4),
-        c0x: 0, c0y: 0, tRef: 0, tE: 0, cur: 0, needsInit: true, active: false,
+        c0x: 0, c0y: 0, tRef: 0, tE: 0, cur: 0, needsInit: true, active: false, updRows: 0,
       });
     }
   }
@@ -447,6 +486,8 @@ export class NearFieldPass implements RenderPass {
       this.allocDU.value[k] = slots > 0 ? Math.min(lod.boxOf(k, lod.aEff[k]), c.D) : 0;
       c.seed = seed;
       if (!same) c.needsInit = true;
+      // (the rows may have held another class: the next update writes all of them)
+      c.updRows = c.rows;
     }
     this.totalSlots = total;
     const need = Math.max(row, 1);
@@ -528,7 +569,9 @@ export class NearFieldPass implements RenderPass {
     // --- class activity, init and re-base
     for (const c of this.classes) {
       // active while the camera is within the class's 3-D reach of the layer (its box may be clipped horizontally)
+      const was = c.active;
       c.active = c.slots > 0 && Math.abs(camZ) - slab < Math.min(lod.options.rMax, c.cBox * c.aHi);
+      if (c.active && !was) c.updRows = c.rows;
       this.clsRow0.value[c.k] = c.row0;
       this.clsRows.value[c.k] = c.active ? c.rows : 0;
       this.clsSeed.value[c.k] = c.seed;
@@ -567,6 +610,38 @@ export class NearFieldPass implements RenderPass {
     // (the particle population's optical depth: tau_dyn, RingLod.tauDynFactor as the shader's lodTauDyn)
     const tauCam = ctx.profile.tauAtKm((ring.r0 + cam.x + st.da) / 1000);
     u.uTauCam.value = tauCam * lod.tauDynFactor(tauCam) * st.J;
+    // the ring layer's wake clipmap as rendered so far (its level states describe the texture's content until the ring
+    // layer refreshes levels later in this frame): the cull's line-of-sight wake density, the particles' sun-path nodes
+    const wc = ctx.wakeClip, ou = this.occlusionUniforms;
+    const lam = ctx.wakes.lambda;
+    const nWc = wc && (ctx.wakes.uniforms.uWakeOn.value as number) > 0.5 && Number.isFinite(lam) && lam > 0
+      ? Math.min(wc.levelCount, NF_WC_LEVELS) : 0;
+    ou.uNfWcLevels.value = nWc;
+    if (wc && nWc > 0) {
+      ou.uNfWc.value = wc.texture;
+      for (let k = 0; k < NF_WC_LEVELS; k++) {
+        const s = wc.levels[k];
+        if (s) ou.uNfWcLev.value[k].set(s.x, s.y, s.z, s.w); else ou.uNfWcLev.value[k].set(0, 0, 1, 0);
+      }
+    }
+    // node spacing along the line of sight: an eighth of the wake spacing (resolves the wake profile); the cull's path
+    // test on / off -- off at |warp| > 200, where the clipmap (<= 2 levels re-rendered per frame, stale after 0.003 rad of
+    // orbital phase) lags the live pattern the particles follow: the conservative bound alone then; the particles' sun
+    // path from the clipmap on / off (w; the medium reads the same, lagging or not)
+    const pathOn = this.cullEnabled && this.cullPathWakes && Math.abs(f.timeWarp) <= 200;
+    ou.uNfWcInfo.value.set(wc ? wc.n : 1024, Math.max(Number.isFinite(lam) ? lam : 60, 20) / 8, pathOn ? 1 : 0, this.sunPathClip ? 1 : 0);
+    // the participation mixture's range over the column (sv_ringLod lodClassP; the sub-class particles: 0)
+    {
+      let pMin = lod.tauSub > 0 ? 0 : 1, pMax = 0, any = false;
+      for (let k = 0; k < LOD_CLASSES; k++) {
+        if (!(lod.tauFrac[k] > 0)) continue;
+        any = true;
+        pMin = Math.min(pMin, lod.partP[k]);
+        pMax = Math.max(pMax, lod.partP[k]);
+      }
+      if (!any) { pMin = 1; pMax = 1; }
+      ou.uNfPart.value.set(pMin, Math.max(pMax, pMin));
+    }
     this.fsMesh.material = this.updMat;
     for (const c of this.classes) {
       if (!c.active || this.skip.update) continue;
@@ -578,6 +653,16 @@ export class NearFieldPass implements RenderPass {
       u.uClass.value = k;
       u.uSeed.value = c.seed;
       u.uTauBoxMax.value = c.tauMax;
+      // this frame's bound of the presence test's tau0 M over the class's box (the modulation cache: Pipeline), <= tauMax:
+      // the slots' presence thresholds rise with their index (nearUpdate.glsl), so slots i >= N tauPres / tauMax are
+      // absent -- only the rows below them are evaluated (and, after the bound fell, last frame's rows once more: zeroed)
+      const pb = ctx.presenceBound[k];
+      const tauPres = this.presenceSkip && pb > 0 && pb < c.tauMax ? pb : c.tauMax;
+      u.uTauPres.value = tauPres;
+      const nAct = tauPres < c.tauMax ? Math.min(c.slots, Math.ceil((c.slots * tauPres) / c.tauMax) + 1) : c.slots;
+      const rowsAct = Math.ceil(nAct / TEX_W);
+      const rowsUpd = Math.min(c.rows, Math.max(rowsAct, c.updRows));
+      c.updRows = rowsAct;
       u.uRadP.value = c.pieceP;
       u.uRadB.value = c.pieceB;
       (u.uSig.value as Vector2).set(lod.sigX(k), lod.sigZ(k));
@@ -588,8 +673,9 @@ export class NearFieldPass implements RenderPass {
       (u.uKin.value as Vector4).set(modTwoPi(ring.kappa * dtRef), modTwoPi(ring.nu * dtRef), ring.omega / ring.kappa, 0);
       (u.uShear.value as Vector4).set(qO * dtE, qO * c.c0x * dtE, frac(qO * dtRef), 0);
       this.updMat.uniformsNeedUpdate = true;
+      if (rowsUpd <= 0) continue;
       const rt = this.r0RT;
-      rt.viewport.set(0, c.row0, TEX_W, c.rows);
+      rt.viewport.set(0, c.row0, TEX_W, rowsUpd);
       r.setRenderTarget(rt);
       r.render(this.fsMesh, fsCamera);
     }

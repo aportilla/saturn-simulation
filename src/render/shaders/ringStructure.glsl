@@ -434,6 +434,9 @@ RingSample ringSampleLocalRelief(vec3 l, float fp, out vec4 rel) {
 // Height of the camera above the local mid-plane (m).
 float ringCamHeight() { return uRingCamLocal.z - uRsCam.y; }
 
+// the cache of the 2-D modulation around the camera (rsModCached; src/render/rings/ModClipmap.ts)
+#include <sv_ringModClip>
+
 // ringSunTransmission (sv_ringProfile) through the 2-D structure: direct-sunlight transmission of the main rings
 // (thin sheet) for a camera-relative point p
 float ringSunTransmissionStream(vec3 p, float footprint) {

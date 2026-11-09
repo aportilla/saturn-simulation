@@ -52,6 +52,9 @@ uniform vec4 uRlColTot;             // column totals (z -> -inf) of (QS, QSP, QP
 // march always carries the FULL explicit field, statistically equivalent to the sheet's two-column model.
 #define RL_WFADE0 0.4
 #define RL_WFADE1 0.67
+// the march takes the 2-D modulation from the cache around the camera where its footprint and the cache's texels are
+// both at most this (m): every texture octave resolved (the finest, 15.6 m, fades above 5.2 m)
+#define RL_MC_FP 4.0
 #define RL_RELIEF_CACHE 15.0   // horizontal distance (m) between relief evaluations along a march ray
 
 // vertical-structure LUT, band 0 participating / 1 all particles / 2 along the Sun, at height u = z / H, distance s
@@ -410,17 +413,28 @@ void rlMarch(vec3 rd, float sA, float sB, float jitter, out vec3 Lout, out float
       // step (its finest octave is 16 m radially), the propellers (costly hash-grid enumeration) re-evaluated after 4 m radially / 16 m along the orbit.
       // Only the resolved mean is used: at the march's footprints (< ~1 wake spacing) the texture's unresolved
       // variance is < 5 % of its total (the 16-31 m octaves), a < 0.3 % effect on the mean transmission.
+      // Near the camera, where both the step's footprint and the modulation cache's texels are <= RL_MC_FP (every
+      // texture octave resolved, the propellers' smallest lobes widened by < 1 %: M at the footprint ~ M at 0), the cache
+      // (sv_ringModClip: one or two bilinear lookups) replaces both.
       float fpM = fpR * Jst;
-      float mt = rsTauModTexture(drL, dthL, fpM).x;
-      if (abs(drL - prDr) > 4.0 || abs(dthL - prDth) * uRingR0 > 16.0 || fpM > 2.0 * prFp || fpM < 0.5 * prFp) {
-        vec3 pm = rsPropellersMod(drL, dthL, fpM);
-        prM = pm.x;
-        prW = pm.z;
-        prDr = drL;
-        prDth = dthL;
-        prFp = fpM;
+      vec2 mcw;
+      float mtp;
+      if (fpM <= RL_MC_FP && rsModCachedFine(drL, uRingR0 * dthL, RL_MC_FP, mcw)) {
+        mtp = mcw.x;
+        prW = mcw.y;
+      } else {
+        float mt = rsTauModTexture(drL, dthL, fpM).x;
+        if (abs(drL - prDr) > 4.0 || abs(dthL - prDth) * uRingR0 > 16.0 || fpM > 2.0 * prFp || fpM < 0.5 * prFp) {
+          vec3 pm = rsPropellersMod(drL, dthL, fpM);
+          prM = pm.x;
+          prW = pm.z;
+          prDr = drL;
+          prDth = dthL;
+          prFp = fpM;
+        }
+        mtp = mt * prM;
       }
-      tau = tau0 * Jst * mt * prM;
+      tau = tau0 * Jst * mtp;
       if (abs(zrM) < zRefW) { zRefW = abs(zrM); prWRef = prW; }   // nearest the local mid-plane (relief)
     }
     // two-stream solutions (the homogeneous tau_iso layer): the multiply-scattered field is smooth -> refresh only on a

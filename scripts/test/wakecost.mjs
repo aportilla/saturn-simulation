@@ -93,11 +93,39 @@ void main() {
     out.wakeDensity = time(passes.wakeDensity, 'wakeDensity');
     out.wakeDisplacement = time(passes.wakeDisplacement, 'wakeDisplacement');
     out.baseline1 = time(passes.baseline, 'baseline');
+    // the per-frame skips (uWakeOpt: work the cycle phase makes redundant) must not change a result: both functions on a
+    // grid with the flags as set and with every path forced on, compared bit for bit; and their cost with all paths on
+    const opt = wakes.uniforms.uWakeOpt?.value;
+    let exact = null;
+    if (opt) {
+      const flags = [opt.x, opt.y, opt.z, opt.w];
+      const grid = new FullscreenPass({
+        fragmentShader: `${SV_HEADER_ALL}
+uniform vec4 uP;
+layout(location = 0) out vec4 outColor;
+void main() {
+  vec2 q = uP.xy + gl_FragCoord.xy * (uP.z * 3.1);
+  outColor = vec4(wakeDensity(q), wakeDisplacement(q), 1.0);
+}`,
+        uniforms: { ...p.ctx.shared.u, uP: { value: uP } },
+      });
+      const read = () => { grid.render(r, rt); const b = new Float32Array(size * size * 4); r.readRenderTargetPixels(rt, 0, 0, size, size, b); return b; };
+      const a = read();
+      opt.set(1, 1, 1, 0);
+      const b = read();
+      out.wakeDensityAllOn = time(passes.wakeDensity, 'wakeDensityAllOn');
+      out.wakeDisplacementAllOn = time(passes.wakeDisplacement, 'wakeDisplacementAllOn');
+      opt.set(flags[0], flags[1], flags[2], flags[3]);
+      let diff = 0, n = 0;
+      for (let i = 0; i < a.length; i++) { if (i % 4 === 3) continue; diff = Math.max(diff, Math.abs(a[i] - b[i])); n++; }
+      exact = { flags, maxDiff: diff, values: n };
+      grid.dispose?.();
+    }
     const glErr = r.getContext().getError();
     for (const k of Object.keys(passes)) passes[k].dispose?.();
     rt.dispose();
     const st = p.stats();
-    return { ms: out, probe, glErr, wakeOn: wakes.uniforms.uWakeOn.value, strength: wakes.strength, shape: wakes.shape, stats: { mean: st['rings.wakeMean'] ?? st['rings.wakeMassK'] } };
+    return { ms: out, probe, glErr, exact, phase: wakes.uniforms.uWakeClock.value.x, wakeOn: wakes.uniforms.uWakeOn.value, strength: wakes.strength, shape: wakes.shape, stats: { mean: st['rings.wakeMean'] ?? st['rings.wakeMassK'] } };
   }, size, K, reps, trials, step, asyncD, scatter);
   const calls = size * size * K * reps;
   const b = 0.5 * (res.ms.baseline0 + res.ms.baseline1);
@@ -107,6 +135,10 @@ void main() {
     ['wakeDensity', res.ms.wakeDensity.toFixed(1), (1000 * ns(res.ms.wakeDensity)).toFixed(1)],
     ['wakeDisplacement', res.ms.wakeDisplacement.toFixed(1), (1000 * ns(res.ms.wakeDisplacement)).toFixed(1)],
   ];
+  if (res.exact) {
+    rows.push(['wakeDensity, every path on', res.ms.wakeDensityAllOn.toFixed(1), (1000 * ns(res.ms.wakeDensityAllOn)).toFixed(1)]);
+    rows.push(['wakeDisplacement, every path on', res.ms.wakeDisplacementAllOn.toFixed(1), (1000 * ns(res.ms.wakeDisplacementAllOn)).toFixed(1)]);
+  }
   console.log(`\n${preset}: wakes ${res.wakeOn ? 'on' : 'OFF'}, strength ${res.strength.toFixed(3)}, ${size}^2 px x ${K} calls x ${reps} reps, median of ${trials}` +
     (res.shape && 'asyncD' in res.shape ? `, asyncD ${res.shape.asyncD}` : '') + (scatter > 0 ? `, scattered within +-${scatter} m` : ', coherent grid'));
   console.log(table(['variant', 'median ms', 'ps / call (GPU throughput)'], rows));
@@ -116,5 +148,10 @@ void main() {
   JSON.stringify(res.probe));
   rep.data = { preset, size, K, reps, trials, scatter, ms: res.ms, nsPerCall: { wakeDensity: ns(res.ms.wakeDensity), wakeDisplacement: ns(res.ms.wakeDisplacement) }, shape: res.shape, strength: res.strength };
   rep.check('wakes are on at the benchmark place', res.wakeOn > 0.5, `strength ${res.strength.toFixed(3)}`);
+  if (res.exact) {
+    console.log(`cycle phase ${res.phase.toFixed(3)}, skip flags uWakeOpt = ${JSON.stringify(res.exact.flags)} (1 = needed)`);
+    rep.check('the per-frame skips change no result (wakeDensity, wakeDisplacement on a grid: flags as set vs every path on)', res.exact.maxDiff === 0,
+      `max |diff| ${res.exact.maxDiff} over ${res.exact.values} values`);
+  }
   await page.close();
 });

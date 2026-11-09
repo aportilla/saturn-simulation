@@ -19,6 +19,8 @@
 //               sin(kappa dt/2)| sigX (the shear is removed at the instantaneous x; it acts on the guiding centre)
 //               (ratios 0.95 .. 1.05; measured 0.994 .. 1.002). Particles whose box copy switched are skipped; for |q Omega dt| > 0.25 the azimuthal
 //               shear wraps the boxes, so only dx and dz are checked (default dts include 20000 s for that).
+//               The near-field allocation must not change between the snapshots (lod.allocVersion: a re-fit re-seeds
+//               every particle -- a time-dependent allocation bound did, Nov 2026).
 import { fmt, openApp, retry, setSimTime, sleep, table, withHarness } from './lib.mjs';
 
 // ---- independent statement of the physics (Iess et al. 2019 gravity field; JPL small-body mean elements)
@@ -137,7 +139,7 @@ await withHarness('physics', { usage: 'node scripts/test/physics.mjs [--base URL
       window.__kin[store] = { t: f.t, anchor: r.anchorId, cam: [r.camLocal.x, r.camLocal.y, r.camLocal.z], omega: r.omega, kappa: r.kappa, nu: r.nu, q: r.qShear, data: out };
       let present = 0;
       for (let i = 0; i < n; i++) if (out[i * 4 + 3] !== 0) present++;
-      return { t: f.t, anchor: r.anchorId, present };
+      return { t: f.t, anchor: r.anchorId, present, alloc: sv.pipeline.ctx.lod.allocVersion };
     }, t, pick.k, store);
     const compare = () => page.evaluate((D, sigX, sigZ) => {
       const A = window.__kin.A, B = window.__kin.B;
@@ -168,6 +170,9 @@ await withHarness('physics', { usage: 'node scripts/test/physics.mjs [--base URL
     for (const dt of dts) {
       const b = await retry(() => snap(t0 + dt, 'B'), { label: `snapshot dt=${dt}` });
       if (b.anchor !== a.anchor) { rep.check(`kinematics dt=${dt}`, false, 'the frame anchor changed between the snapshots'); continue; }
+      // the same particles: a time step must not re-fit the near-field allocation (a re-fit re-seeds every particle)
+      rep.check(`kinematics dt=${dt}: same allocation (no re-seed)`, b.alloc === a.alloc, `allocVersion ${a.alloc} -> ${b.alloc}`);
+      if (b.alloc !== a.alloc) continue;
       const s = await compare();
       const short = Math.abs(s.slope0) <= 0.25;
       rows.push([fmt(s.T, 0), s.n, s.wraps, short ? fmt(s.slope / s.slope0, 5) : 'n/a', fmt(s.rmsX / s.expX, 3), fmt(s.rmsZ / s.expZ, 3), short ? fmt(s.rmsY / s.expY, 3) : 'n/a', `${fmt(s.rmsX, 4)} / ${fmt(s.expX, 4)}`, `${fmt(s.rmsZ, 4)} / ${fmt(s.expZ, 4)}`]);

@@ -22,8 +22,9 @@
 #ifndef SV_WAKES
 #define SV_WAKES
 
-uniform highp sampler2DArray uWakeTex;  // 2 layers (envelope fields A, B): (Re W, Im W, G_u, G_v), periodic, <|W|^2> = 1
-uniform sampler2D uWakeDTex;  // asynchrony field: (delta in [0, 1), d delta/du, d delta/dv, 0), periodic
+uniform highp sampler2DArray uWakeTex;  // layers 0, 1 (envelope fields A, B): (Re W, Im W, G_u, G_v), periodic, <|W|^2> = 1;
+                                        // layer 2: the asynchrony field (delta in [0, 1), d delta/du, d delta/dv, 0), its
+                                        // 64^2 tile repeated 4 x 4 (WakeField.ts): sampled at the tile coordinate / 4
 uniform float uWakeTile;      // tile size L (m)
 uniform vec4 uWakeGen[2];     // [0] older, [1] younger generation: (shear S_g, offsetU, offsetV, texture layer)
 uniform vec4 uWakeClock;      // (cycle phase phi, asyncD, 2 envW (0: sin^2 handover), strength)
@@ -33,6 +34,8 @@ uniform vec2 uWakeM0;         // central mode (m0x, m0y)
 uniform vec4 uWakeBounds;     // (lower clamp of wakeDensity, upper clamp, max displacement per generation (m), 0)
 uniform float uWakeOn;        // 0 / 1
 uniform float uWakePartTau;   // tau-weighted mean wake participation of the medium (hook; 1 = every size follows)
+uniform vec4 uWakeOpt;        // per frame (WakeField.update): (1 = the asynchrony phase can change an envelope, generation
+                              // 0 can be non-zero, generation 1 can be non-zero, -): skips that change no result
 
 #define WAKE_FD_H 1.5         // central-difference step along the wave normal (m)
 #define WAKE_K_SOFT 0.1       // softness of the local wave number's lower clamp
@@ -50,11 +53,12 @@ vec2 wakeUV(int g, vec2 p) {
   vec4 G = uWakeGen[g];
   return vec2(p.x, p.y + G.x * p.x) / uWakeTile + G.yz;
 }
-// Asynchrony phase delta at p and its gradient (per m); 0 without asynchrony.
+// Asynchrony phase delta at p and its gradient (per m); 0 without asynchrony, or while no envelope depends on it
+// (uWakeOpt.x: the handover is complete for every delta -- wakeEnvYoung is then the same at delta = 0).
 vec3 wakeDelta(vec2 p) {
-  if (uWakeClock.y <= 0.0) return vec3(0.0);
+  if (uWakeClock.y <= 0.0 || uWakeOpt.x < 0.5) return vec3(0.0);
   float sd = uWakeDelta.w;
-  vec4 t = texture(uWakeDTex, vec2(p.x, p.y + uWakeDelta.z * p.x) * sd + uWakeDelta.xy);
+  vec4 t = texture(uWakeTex, vec3((vec2(p.x, p.y + uWakeDelta.z * p.x) * sd + uWakeDelta.xy) * 0.25, 2.0));
   return vec3(t.x, sd * (t.y + uWakeDelta.z * t.z), sd * t.z);
 }
 // Envelope of the younger generation at asynchrony phase delta (the older one has 1 - e).
@@ -132,8 +136,9 @@ float wakeJac(vec3 v, vec3 d) {
   return 1.0 + ((c.y - 1.0) * d.x + Ca * d.y) / v.z - (c.x - v.x) * d.z / (v.z * v.z);
 }
 
-// Displacement of one generation at Lagrangian position p.
+// Displacement of one generation at Lagrangian position p (none while its envelope is zero everywhere: uWakeOpt).
 vec2 wakeGenDisp(int g, vec2 p) {
+  if ((g == 0 ? uWakeOpt.y : uWakeOpt.z) < 0.5) return vec2(0.0);
   vec3 geo = wakeGeo(g);
   vec3 v = wakeGenEval(g, p, geo);
   if (v.y < 1e-4) return vec2(0.0);
@@ -154,9 +159,11 @@ vec2 wakeDisplacement(vec2 q) {
 // asynchrony phase is sampled at every Newton point: it is sheared with the flow, so extrapolating it from x with its
 // gradient put 2-15 % of the particles > 20 % off.)
 vec2 wakeGenInverse(int g, vec2 x, out float J) {
+  J = 1.0;
+  // (a generation whose envelope is zero everywhere: identical to the strength test below)
+  if ((g == 0 ? uWakeOpt.y : uWakeOpt.z) < 0.5) return x;
   vec3 geo = wakeGeo(g);
   vec3 v = wakeGenEval(g, x, geo);
-  J = 1.0;
   if (v.y < 1e-4) return x;
   float tmax = uWakeBounds.z;
   float t = clamp((v.x - wakeCInv(v.x, v.y)) / v.z, -tmax, tmax);
@@ -208,6 +215,8 @@ vec2 wakeDisplacementJ(vec2 q, out float Df) {
   vec2 d = vec2(0.0);
   float J = 1.0;
   for (int g = 0; g < 2; g++) {
+    // (a generation whose envelope is zero everywhere this frame contributes nothing: uWakeOpt, bit-exact)
+    if ((g == 0 ? uWakeOpt.y : uWakeOpt.z) < 0.5) continue;
     vec2 p = q + d;
     vec3 geo = wakeGeo(g);
     vec3 dl = wakeDelta(p);

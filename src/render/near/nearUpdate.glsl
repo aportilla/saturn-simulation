@@ -45,8 +45,12 @@ uniform vec2 uCamOff;       // camera position - box reference c0 (local frame, 
 uniform vec4 uKin;          // (kappa phase, nu phase, Omega/kappa, 0)
 uniform vec4 uShear;        // (q Omega (t - t_e), q Omega c0x (t - t_e) (m), F = frac(q Omega (t - tRef)), 0)
 uniform float uTauBoxMax;
+// this frame's upper bound of the presence test's tau0 M over the class's box (<= uTauBoxMax; the modulation cache's
+// block maxima, Pipeline ctx.presenceBound): a slot whose presence threshold lies above it is absent wherever it is
+uniform float uTauPres;
 uniform float uTauCam;      // macroscopic tau at the camera's radius
 uniform float uCull;        // > 0: statistical occlusion culling beyond this line-of-sight optical depth
+// (the occlusion bound nearLosTau and its uniforms: nearOcclusion.glsl, included before this file)
 
 layout(location = 0) out vec4 o;
 
@@ -55,6 +59,13 @@ void main() {
   int i = (tc.y - uRow0) * uTexW + tc.x;
   if (i >= uCount) { o = vec4(0.0); return; }
   uint idx = uint(i), seed = uint(uSeed);
+  // presence threshold (tested below at the guiding centre: absent if uPr uTauBoxMax >= tau0 M there), stratified by
+  // the slot index -- uniform over the slots and independent of every other attribute (their own hash streams), so
+  // the present particles are the same random sample -- and therefore increasing with it: the slots are allocated at
+  // the bound of tau0 M for all times, and those above this frame's bound (uTauPres) form one contiguous tail that the
+  // pass need not evaluate (NearFieldPass renders only the rows below it; the tail's first rows are zeroed here)
+  float uPr = (float(i) + nearU(idx, seed, NS_PRES)) / float(uCount);
+  if (uPr * uTauBoxMax >= uTauPres) { o = vec4(0.0); return; }
   float a, D;
   nearRadiusBox(nearU(idx, seed, NS_RAD), a, D);
   float D2 = 2.0 * D;
@@ -132,16 +143,24 @@ void main() {
   // gaps; tau_dyn = the photometric profile x lodTauDyn) times the 2-D modulation there (sv_ringStructure: sub-km
   // texture, propellers -- the medium carries the same tau0 J M)
   RingSample rs = ringSampleLagrangian(aL, 0.0);
-  // (tau factor, -, self-gravity-wake strength factor). The propellers' hash-grid enumeration is costly: it runs for
-  // particles that may be drawn, in the classes a propeller can reach this frame (CPU mask uRpNearMask; elsewhere
-  // their factor is exactly 1). Shadow casters outside the view take the texture only: a shadow-fidelity reduction
-  // (their density inside a propeller's gaps / lobes is the undisturbed one), the drawn particles are exact.
-  bool rpEval = cand && (uRpNearMask & (1 << uClass)) != 0;
-  gRpAlsoRelief = rpZ && rpEval;   // the propellers' relief in the same enumeration (sv_ringPropellers mode 3)
-  vec3 smod = rpEval ? ringStructureMod(aL, dthP, 0.0) : ringStructureModNoPropellers(aL, dthP, 0.0);
-  gRpAlsoRelief = false;
+  // (tau factor, -, self-gravity-wake strength factor) from the cache around the camera (sv_ringModClip: one bilinear
+  // lookup; exact to its texels, which resolve every texture octave and propeller lobe within ~1 km of the camera and
+  // prefilter the sub-texel structure mean-preservingly beyond). Where no valid level covers the guiding centre (the
+  // frames after re-anchoring, beyond the coverage) it is evaluated directly: the propellers' hash-grid enumeration
+  // only for particles that may be drawn, in the classes a propeller can reach this frame (CPU mask uRpNearMask;
+  // elsewhere their factor is exactly 1); shadow casters outside the view take the texture only (a shadow-fidelity
+  // reduction: their density inside a propeller's gaps / lobes is the undisturbed one), the drawn particles are exact.
+  vec3 smod;
+  vec2 mcw;
+  if (rsModCached(aL, uRingR0 * dthP, mcw)) smod = vec3(mcw.x, 0.0, mcw.y);
+  else {
+    bool rpEval = cand && (uRpNearMask & (1 << uClass)) != 0;
+    gRpAlsoRelief = rpZ && rpEval;   // the propellers' relief in the same enumeration (sv_ringPropellers mode 3)
+    smod = rpEval ? ringStructureMod(aL, dthP, 0.0) : ringStructureModNoPropellers(aL, dthP, 0.0);
+    gRpAlsoRelief = false;
+  }
   float tauM = rs.tau * lodTauDyn(rs.tau) * (1.0 - rs.dust) * smod.x;
-  if (nearU(idx, seed, NS_PRES) * uTauBoxMax >= tauM) { o = vec4(0.0); return; }
+  if (uPr * uTauBoxMax >= tauM) { o = vec4(0.0); return; }
   // the propellers' relief at the guiding centre (present particles only; shadow casters outside the view: its own
   // enumeration -- their heights stay exact)
   if (rpZ) z0p += rsReliefPropellers(aL, dthP, 0.0).x;
@@ -177,16 +196,14 @@ void main() {
     if (w < -rb || abs(v.x) > w * tx + rb * sqrt(1.0 + tx * tx) || abs(v.y) > w * ty + rb * sqrt(1.0 + ty * ty)) drawn = false;
   }
   if (drawn && uCull > 0.0) {
-    // statistical occlusion: optical depth of the slab between the camera and the near side of the particle,
-    // using the lowest tau along the path and the emptiest wake-gap density (conservative)
-    float d = max(length(pl.xy) - rb, 0.0);
-    // heights relative to the particle's local mid-plane
+    // statistical occlusion: line-of-sight optical depth of the slab between the camera and the near side of the
+    // particle (nearOcclusion.glsl nearLosTau: the emptiest-gap bound, then the line of sight's own wake density), with
+    // the lowest tau of three samples along the path x the 0.8 margin; heights relative to the particle's local mid-plane
     float zc = uRingCamLocal.z - z0p;
     float zt = z + clamp(zc - z, -rb, rb);
     RingSample rm = ringSampleLocal(vec3(uRingCamLocal.x + 0.5 * pl.x, uRingCamLocal.y + 0.5 * pl.y, 0.0), 0.0);
-    float tauPath = min(min(uTauCam, tauM * Jp), rm.tau * lodTauDyn(rm.tau) * (1.0 - rm.dust)) * wakeMinDensity() * 0.8;
-    float tl = ringLayerSegmentTau(zc, zt, d, tauPath, rs.H);
-    if (tl > uCull) drawn = false;
+    float tauP = min(min(uTauCam, tauM * Jp), rm.tau * lodTauDyn(rm.tau) * (1.0 - rm.dust)) * 0.8;
+    if (nearLosTau(uRingCamLocal.xy, pl.xy, rb, zc, zt, tauP, rs.H, uCull) > uCull) drawn = false;
   }
   o = vec4(p, drawn ? a : -a);
 }

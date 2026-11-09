@@ -63,7 +63,8 @@ Implications:
 ## Frame flow
 `SimClock.tick` → `World.update(frame)` (Sun, Saturn W, moons) → camera rig sets `camPos/camQuat/fovY` and
 `RingAnchor.fill(frame.ring, …)` → `updateCameraDerived(frame)` → `Pipeline.render(frame)` (first
-`RingStructure.update`: moonlet states, the camera's streamline state; then the local LOD, shared uniforms, passes) → HUD.
+`RingStructure.update`: moonlet states, the camera's streamline state; then the local LOD, shared uniforms, the
+modulation cache `ModClipmap` (stale levels re-rendered), passes) → HUD.
 
 ## Render pipeline (`src/render/Pipeline.ts`)
 | step | pass (file, class) | reads | writes |
@@ -140,7 +141,8 @@ Implications:
   its statistical branch and the sheet (two wake columns fB/Wb/Wg; ≤ 2.5 px), blended over 5 → 2.5 px. The sun
   path's wake density is the mean at the shared stratified column nodes (`ringSunNodeRise`); the statistical
   transmission is a per-column Gamma model of the path density with class means/variances/floors measured on the
-  live field (path-statistics probe, `uRlKerT/F` vs χ = H|dir·n|/(|dir_z| λ)); the explicit transmission is
+  live field (path-statistics probe every 60 frames and on re-anchoring, `uRlKerT/F` vs χ = H|dir·n|/(|dir_z| λ); read
+  back asynchronously through pixel-pack buffers + a fence, applied a frame or two later); the explicit transmission is
   corrected for the clipmap's density prefilter (χ_eff = √(χ² + (0.5 d/λσ̄)²), contrast fade); Saturnshine uses the
   same two columns. `npm run test:seam -- --only base` checks the two representations' base radiative transfer with
   the wakes off. Known residuals (scripts/test/README.md): the prefilter correction overshoots the B ring's
@@ -158,10 +160,13 @@ Implications:
 * `renderer.autoClear = false`. Passes render with `RawShaderMaterial` + `glslVersion: GLSL3`.
 * Pass interface: `RenderPass { name, enabled, init(ctx), resize?(ctx), update?(frame, ctx), render(frame, ctx), stats?(), dispose? }`.
   Keep each pass's **file path and class name** stable — the app imports them.
-* `PipelineContext`: `{ renderer, shared, profile, lod, wakes, structure, sceneRT, hdrRT, width, height }`, plus optional
-  shares set by passes for later ones: `nearShadow` (NearFieldPass's sun shadow map: uniforms, the frame it was
-  last rendered, `prepare()`), `ringshineTable` (FarFieldPass's ringshine-on-Saturn texture) and `meterMask`
-  (AstronautPass's visible pixels for PostPass: texture, frame, screen columns).
+* `PipelineContext`: `{ renderer, shared, profile, lod, wakes, structure, modClip, sceneRT, hdrRT, width, height }`, plus
+  optional shares set by passes for later ones: `nearShadow` (NearFieldPass's sun shadow map: uniforms, the frame it was
+  last rendered, `prepare()`), `ringshineTable` (FarFieldPass's ringshine-on-Saturn texture), `meterMask`
+  (AstronautPass's visible pixels for PostPass: texture, frame, screen columns) and `wakeClip` (RingLayerPass's wake-density
+  clipmap: texture, level states as rendered, level count — read by the near field before the ring layer refreshes it:
+  the occlusion cull's line-of-sight wake density and the particles' sun-path nodes). `modClip` (`ModClipmap`, owned by
+  the pipeline, rendered before any pass): the cache of the 2-D modulation around the camera (`sv_ringModClip`, below).
 
 ### Shared uniforms & GLSL (`src/render/SharedUniforms.ts`, `src/render/shaders/*.glsl`)
 Spread `ctx.shared.u` into your material's uniforms; start shaders with `SV_HEADER_ALL` (from `chunks.ts`) or
@@ -226,9 +231,28 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   ray / surface hit iterations, object heights), and `ringSampleStream` / `ringSampleLocal` / `ringSampleLocalRelief`
   (lighting and occlusion lookups, called per vertex by the particles, the astronaut and the moonlet bodies) LIGHT =
   none by default (`#define RS_LIGHT_TEXTURE` adds the texture at ≥ 64 m): the particles' number follows M, their
-  lighting column is the undisturbed one. In `nearUpdate.glsl` the propellers are enumerated only for particles that
-  may be drawn and in the size classes a propeller can reach this frame (`uRpNearMask`,
-  `PropellerSystem.nearClassMask`, exact); shadow casters outside the view take the texture only (shadow fidelity).
+  lighting column is the undisturbed one. **Modulation cache** (`sv_ringModClip`, included at the end of
+  `sv_ringStructure`; `src/render/rings/ModClipmap.ts`, `ctx.modClip`): (M, wake factor) = `ringStructureMod(aL, dth,
+  fp).xz` on a camera-centred clipmap in Lagrangian polar coordinates (aL, S = r0 dth): levels of 512 × 128 texels of
+  dr × 4 dr (the texture's and the propellers' structures are 5–10× longer along the orbit), dr = 1 m · 2^k, centred on
+  the camera's Lagrangian position, up to 9 levels (the largest particle box × 1.5 + 600 m), RGBA32F, bilinear; texels
+  prefiltered at fp = dr (identical to M at fp = 0 for dr ≤ 4 m — every texture octave resolved, the finest fades above
+  5.2 m — a mean-preserving smoothing of sub-texel structure beyond); a point blends into the next level over the outer
+  20 % of its level. Refreshed incrementally like the wake clipmap (anchor, model switches `texture.amp` /
+  `propellers.scale`, recentring by 1/16 of a level, the pattern's drift of 1/8 azimuthal texel: shear up to the level's
+  edge, propellers 4.7 km beyond; ≤ 3 levels per frame). `rsModCached(aL, S, out mw)` (false where no valid level
+  covers the point: evaluate directly), `rsModCachedFine(aL, S, fpMax, out mw)` (only levels with texels ≤ fpMax). The
+  near field's presence reads it (one bilinear lookup instead of the texture's 12 noise lookups + the propellers'
+  enumeration per candidate slot — the candidates are a few % of the slots, scattered at random, so most SIMD groups paid
+  the full evaluation); where no level covers a guiding centre it is evaluated directly, the propellers only for
+  particles that may be drawn and in the size classes a propeller can reach this frame (`uRpNearMask`,
+  `PropellerSystem.nearClassMask`, exact); shadow casters outside the view then take the texture only (shadow fidelity).
+  The march reads it where its footprint and the cache's texels are ≤ 4 m (`RL_MC_FP`, near the camera). Its block
+  maxima (16 × 16 texels + a one-texel ring, read back asynchronously; a third channel holds the presence test's whole
+  optical depth, the largest τ0 τ_dyn/τ0 over each texel's support × M) bound the presence factor over a particle box
+  (`ModClipmap.maxNear`): the near field's presence skip and the march's slab (below). Measured (test:propellers, cache
+  section): texels = the CPU mirror to ≤ 1e-3 (float32), ~0.9 % of the drawn particles' presence differs from the direct
+  evaluation (the prefiltered coarse levels).
   Sources of ξ / ζ: the
   moonlets Pan and Daphnis (Hill-problem response table, `public/data/rings/moonlet_response.*`) and the normal modes
   of eccentric edges (`src/rings/ringModes.ts` `EDGE_FEATURES`: the B-ring outer edge's four modes; uniforms
@@ -287,7 +311,11 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   `RingLod.anisoAt`), `lodTauDyn(tau)` (`uLodTauDyn`: τ_dyn/τ_profile vs τ at the anchor; the particles' presence
   and the medium follow τ_dyn), `lodPackM(tau, W)` (`uLodPack`: the packing ceiling's thickening of the participating
   classes at density W), `uLodTidal` = (tidally locked share, p̄, f̄, 1/g1), `ringSlabHalfThickness(H)` = `uLodSlabK`·H
-  + 0.5 (the slab holds the layer thickened to the density cap), and `ringLodChannels(s, z, dz, H, Gs, out Bp, out Bt,
+  + 0.5 (the slab holds the layer: RingLod.configure sets 4 σ of the thickest class, thickened to the density cap at the
+  worst τ near the camera; `Pipeline.updateSlab` lowers it every 10 frames to the layer's own 2 Q(4) = 6.3e-5 column tail
+  — the class mixture, the participating share at the wake field's density distribution `WAKE_D_BINS` with its packing
+  at the modulation cache's current maximum of τ_dyn × M over ±5 km; 41 m instead of 85 m at a-ring-30m), and
+  `ringLodChannels(s, z, dz, H, Gs, out Bp, out Bt,
   out Bs)` — the three bands of the ring layer's LUT. σ_z per class from the zone's `sigZLaw` (`zoneSigZ`).
 * `sv_wakes` (mirror of `src/rings/WakeField.ts`; Python port with a bit-exact `--verify`:
   `scripts/data/nbody/procedural.py`): `wakeDisplacement(q)` (particles, at their epicyclic position), `wakeDensity(x)`
@@ -300,8 +328,12 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   (`test:lod`) and the port (`--verify`). Two transient sheared
   generations half a lifetime apart (`uWakeGen[0..1]` = shear, offsets, texture layer); plateau handover within each
   half-cycle at the local phase φ − d·δ(x) (`uWakeClock`; δ an advected smooth random field re-drawn every cycle,
-  `uWakeDTex`/`uWakeDelta`: local asynchrony); narrow-band random envelopes W with dislocations (`uWakeTex`, a 2-layer
-  RGBA32F array: Re W, Im W and the regularised phase gradient). Each generation's map displaces along its wave normal by
+  `uWakeDelta` + layer 2 of `uWakeTex`: its 64² tile repeated 4 × 4, sampled at the tile coordinate / 4 — the same texels
+  and filter weights as a texture of its own, one sampler unit fewer; local asynchrony); narrow-band random envelopes W
+  with dislocations (`uWakeTex` layers 0, 1, RGBA32F: Re W, Im W and the regularised phase gradient). `uWakeOpt` (per frame,
+  `WakeField.update`): once φ − d ≥ 2 envW the handover is complete for every δ (55 % of each cycle with the A set, 60 %
+  with B) — the δ fetches and the zero (old) generation are skipped, bit-identical results (`npm run test:wakecost` checks
+  it). Each generation's map displaces along its wave normal by
   (C(Θ) − Θ)/K with the LOCAL wave number K (≥ 0.65 of the mean: both generations together move ≤ tile/6, the near
   field's culling margin) and the composite circle map C = G_g∘M_γ (core density 1/γ_core, gap γ_gap); this map does
   not fold (the old one, with the mean wave number, folded where the local one exceeded it). The inverse: closed-form
@@ -323,13 +355,24 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   cosine-weighted (a near-isotropic field, as in the medium). Multiple scattering by the same two-stream solution
   as the medium with `phaseTables(1)` back-scatter fractions; shadow hiding exp(b·min(τ_sun, τ_view)) on the
   statistical part of the sun path; the sun path through the layer samples the wake density at the same stratified
-  nodes the medium uses (over the participating column, thickened by the packing ceiling; the other classes are
-  uniform); a 2048×1024 sun-aligned shadow map resolves particle-on-particle shadows near the camera (the
+  nodes the medium uses (`ringSunNodeRise`, over the participating column, thickened by the packing ceiling; the
+  other classes are uniform), read from the ring layer's wake clipmap at the level the medium's march reads at the
+  particle (`nfWakeLevelFor`: texels ≥ the display-pixel footprint / 1.5; near the camera its finest, 0.25–0.5 m
+  texels) — one fetch per node and the medium's own sun-path field at the handover — and from `wakeDensity` outside
+  the clipmap; a 2048×1024 sun-aligned shadow map resolves particle-on-particle shadows near the camera (the
   statistical transmission keeps only what the map cannot resolve). `scripts/test/particles.mjs` checks the GLSL
   against the CPU mirrors and the LUT / relief contracts.
 * **Near-field frame and contact contract** (`NearFieldPass`, `near/NearContact.ts`). Steps: (1) the update pass
   writes every particle's analytic position (exact Hill-frame orbit + wake + streamline displacement) and flag into
-  R0 (RGBA32F per slot: camera-relative xyz, w = +a drawn / −a present but not drawn / 0 absent); (1b) **contact
+  R0 (RGBA32F per slot: camera-relative xyz, w = +a drawn / −a present but not drawn / 0 absent; "not drawn" also covers
+  the **statistical occlusion cull**: line-of-sight optical depth `nearLosTau(...)` > 5 (`near/nearOcclusion.glsl`, meant
+  to be shared with the contact set's fade: the slab model between the camera and the particle's near side with the
+  lowest of three τ samples along the path × 0.8, first × the emptiest-gap density `wakeMinDensity()`, then — where that
+  cannot decide and a mean density ≤ 1.1 could — × the line of sight's own wake density: the ring layer's wake clipmap
+  (`ctx.wakeClip`) at 4–24 nodes stratified in the column between the two heights, ≤ λ/8 apart, read from the level
+  covering the particle, summed until the partial sum decides; since the Nov 2026 wake retune the bound alone (0.055 in
+  the B ring) culled almost nothing: b-ring-inside 1.09 M → 0.10 M particles drawn, the image unchanged to 0.1 %,
+  `npm run test:counts` section 4); (1b) **contact
   resolution** pushes the visibly resolved particles out of each other's overlaps and writes their positions back
   into R0; (2) HistoPyramid compaction of R0 into the point / quad / caster lists; (3) the sun shadow map (shared
   as `ctx.nearShadow`); (4) the draw. Everything after 1b sees the same positions. The contract of 1b:
@@ -421,18 +464,28 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   which it falls below the handover band (with zoom headroom) from the lowest camera height served (dz above
   the slab; 0 normally), so nothing is simulated where it could not be drawn; radii within a class are sampled
   from n(a)·D(a)² (≤ 6 power-law pieces, box a power of a on each: ~1% over the exact D), boxes up to 60 km
-  (10 m boulders are ≥ 1 px out to ~20 km at 1080p), each class generated at the max τ over its own box times the
-  bound of the 2-D modulation there (`RingStructure.maxTauModNear`: texture 1 + 0.70 A, i.e. 1.22 in the A ring and
-  1.43 in the B-ring core; a propeller's lobe factor 1.27 × its wake bound only where a propeller's band crosses the
-  box — `prepareNear` / `nearBoundKey`, re-checked every 60 frames, re-fit when the key changes). Presence then
-  accepts τ0 J M / bound.
+  (10 m boulders are ≥ 1 px out to ~20 km at 1080p), each class generated at the largest presence factor over its own
+  box (+ 500 m) AT ANY TIME: max τ_dyn × the analytic bound of M (`RingStructure.maxTauModNear`: texture 1 + 0.70 A,
+  i.e. 1.22 in the A ring and 1.43 in the B-ring core; a propeller's lobe factor 1.27 × its wake bound only where a
+  propeller's band crosses the box — `prepareNear` / `nearBoundKey`, re-checked every 60 frames). (A bound that followed
+  M's current local maximum — the modulation cache's — re-fitted, i.e. re-seeded every particle, whenever the evolving,
+  shearing texture raised it: it varies by ±15 % within a day; test:physics now checks the allocation across time
+  steps.) Presence then accepts τ_dyn J M / bound with a threshold **stratified by the slot index** — slot i's is
+  (i + u_i)/N, u_i its hash: uniform over the slots and independent of every other attribute (their own hash streams), so
+  the present particles are the same random sample — which makes it increase along the class's rows: the slots above
+  this frame's local maximum of τ_dyn × M over the box (`ModClipmap.maxNear(…, 1)` × 1.02, `ctx.presenceBound`; each
+  cache texel holds the largest τ0 τ_dyn/τ0 over its bilinear support × its M, so the block maxima bound exactly what the
+  presence test reads) form one contiguous tail that the update pass does not evaluate (`NearFieldPass`: only the rows
+  below it, the tail zeroed once when the bound falls; bit-identical particle field: test:counts §5). The bound is used
+  only while the cache's read-back describes the levels the shaders read (same centres, drift ≤ ½ azimuthal texel).
   Independent of the camera position (particles persist while flying) unless the total exceeds the 12M-slot
   cap (dense B ring, ~46M): then it is fitted to the camera height h (valid for [h/1.5, 1.5h], re-fit
   outside); above the layer the zoom-in margin and the band below h are given up first (down to 1.07× / 1.13×:
   they hold nothing drawn now, but re-fits come sooner), only then are the largest boxes clipped at a common
   radius; the stats report the visibility-weighted deficit (~0 inside the B ring, where the layer hides
-  everything farther; B ring at 1080p: complete from ≥ 700 m above, ~3–30% short at 50–500 m; the texture's
-  allocation bound 1.43 raised the 1280×720 deficit at 100 m from 0.3 % to 9.2 %, `npm run test:counts`). Vertical
+  everything farther; B ring at 1080p: complete from ≥ 700 m above, ~3–30% short at 50–500 m; the texture's global
+  allocation bound 1.43 raised the 1280×720 deficit at 100 m from 0.3 % to 9.2 %, the size rules' τ_dyn ≈ 2.2 τ_profile
+  to 38 %, boxes clipped at 118 m, `npm run test:counts`). Vertical
   visibility is not used to thin it: every particle crosses the mid-plane, and wake gaps leave even the B ring
   at τ ~ 1. The near field is active while the camera is within the largest particles' reach. Seeds depend on
   the anchor id and class only; classes whose allocation is unchanged keep their particles across re-fits.

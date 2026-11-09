@@ -33,7 +33,7 @@ import { DEG, orbitalFrequencies } from '../../core/constants';
 import { OUTER_RINGS } from '../../rings/ringRegions';
 import { phaseTables, PHASE_POWER_N } from '../rings/phase';
 import { TauPyramid } from '../rings/TauPyramid';
-import { WakeClipmap, WAKE_CLIP_N } from '../rings/WakeClipmap';
+import { WakeClipmap, WAKE_CLIP_MAX_LEVELS, WAKE_CLIP_N } from '../rings/WakeClipmap';
 import type { RingStructure } from '../../rings/RingStructure';
 import rlOptics from '../rings/rlOptics.glsl?raw';
 import rlSheet from '../rings/rlSheet.glsl?raw';
@@ -71,6 +71,9 @@ void main() {
 // window mean (stats `wakeMean`) is 1 within the window's sampling noise (~+-2 % over one tile). wakeDensity inverts
 // the particles' map (sv_wakes), so no correction is applied (the former single-branch inverse lacked ~10 % of the
 // mass, restored by a measured factor uWakeMassK ~ 1.24 on the dense part; removed Nov 2026).
+// The read-back is asynchronous (pixel-pack buffers + a fence, polled every frame): the statistics apply a frame or
+// two after the probe ran (they describe a slowly varying ensemble), and the frame never waits for the GPU (a
+// synchronous read-back of the 260 KB stalled the CPU until all queued GPU work was done, every STAT_EVERY frames).
 const STAT_N = 64, STAT_EVERY = 60;
 const STAT_FRAG = /* glsl */ `
 ${SV_HEADER_ALL}
@@ -197,6 +200,9 @@ export class RingLayerPass implements RenderPass {
     this.structure = ctx.structure;
     this.pyr = new TauPyramid(ctx.profile);
     this.wake = new WakeClipmap(ctx);
+    // shared with the near field (its statistical occlusion cull reads the wake density along lines of sight)
+    const wk = this.wake;
+    ctx.wakeClip = { texture: wk.rt.texture, levels: wk.levels, get levelCount() { return wk.levelCount; }, n: WAKE_CLIP_N, maxLevels: WAKE_CLIP_MAX_LEVELS };
     this.lutRT = new WebGLRenderTarget(LUT_NU, 3 * LUT_NS, {
       type: FloatType, format: RGBAFormat, minFilter: LinearFilter, magFilter: LinearFilter,
       wrapS: ClampToEdgeWrapping, wrapT: ClampToEdgeWrapping, depthBuffer: false, stencilBuffer: false, generateMipmaps: false,
@@ -394,7 +400,8 @@ export class RingLayerPass implements RenderPass {
     (u.uRlWakeLamRef.value as Vector2).set(lambda, wf.strength > 1e-3 && Number.isFinite(sigA) ? sigA : 0);
     const wakeRef = ia >= 0 && ia < prof.n ? prof.wake[ia] : 0;
     const live = wakesOn && wf.strength > 1e-3 && wakeRef > 1e-3;
-    if (live && (this.statFrame++ % STAT_EVERY === 0 || f.ring.anchorId !== this.statAnchor)) {
+    this.pollWakeStats(ctx);
+    if (live && !this.statPending && (this.statFrame++ % STAT_EVERY === 0 || f.ring.anchorId !== this.statAnchor)) {
       (this.statFs.material.uniforms.uP.value as Vector4).set(f.ring.camLocal.x, f.ring.camLocal.y, wf.tile / STAT_N, 0);
       (this.kerFs.material.uniforms.uP.value as Vector4).set(f.ring.camLocal.x, f.ring.camLocal.y, wf.tile / KER_N, lambda);
       (this.kerFs.material.uniforms.uN.value as Vector2).copy(u.uRlWakeNrm.value as Vector2);
@@ -463,11 +470,58 @@ export class RingLayerPass implements RenderPass {
 
   /**
    * Measure the live wake field (GPU probe of wakeDensity over one wake tile + read-back): its window mean (check) and
-   * the two-column summary fB, Wb, Wg of the sheet.
+   * the two-column summary fB, Wb, Wg of the sheet. Starts the probe and an asynchronous read-back of both targets
+   * (pollWakeStats evaluates them once the GPU is done).
    */
   private measureWakeStats(ctx: PipelineContext, wakeRef: number): void {
-    this.statFs.render(ctx.renderer, this.statRT);
-    ctx.renderer.readRenderTargetPixels(this.statRT, 0, 0, STAT_N, STAT_N, this.statBuf);
+    const r = ctx.renderer, gl = r.getContext() as WebGL2RenderingContext;
+    this.statFs.render(r, this.statRT);
+    this.kerFs.render(r, this.kerRT);
+    const read = (rt: WebGLRenderTarget, w: number, h: number, bytes: number): WebGLBuffer | null => {
+      const pbo = gl.createBuffer();
+      if (!pbo) return null;
+      r.setRenderTarget(rt);
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo);
+      gl.bufferData(gl.PIXEL_PACK_BUFFER, bytes, gl.STREAM_READ);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, 0);
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      return pbo;
+    };
+    const pStat = read(this.statRT, STAT_N, STAT_N, this.statBuf.byteLength);
+    const pKer = read(this.kerRT, KER_N * KER_X.length, KER_N, this.kerBuf.byteLength);
+    r.setRenderTarget(null);
+    const fence = pStat && pKer ? gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) : null;
+    if (!fence) {
+      if (pStat) gl.deleteBuffer(pStat);
+      if (pKer) gl.deleteBuffer(pKer);
+      return;
+    }
+    gl.flush();
+    this.statPending = { pStat: pStat!, pKer: pKer!, fence, wakeRef };
+  }
+  /** in-flight probe read-back (measureWakeStats) */
+  private statPending: { pStat: WebGLBuffer; pKer: WebGLBuffer; fence: WebGLSync; wakeRef: number } | null = null;
+
+  /** Evaluate the probe's read-back once its fence has signalled (called every frame; never waits). */
+  private pollWakeStats(ctx: PipelineContext): void {
+    const p = this.statPending;
+    if (!p) return;
+    const gl = ctx.renderer.getContext() as WebGL2RenderingContext;
+    if (gl.getSyncParameter(p.fence, gl.SYNC_STATUS) !== gl.SIGNALED) return;
+    gl.deleteSync(p.fence);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, p.pStat);
+    gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, this.statBuf);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, p.pKer);
+    gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, this.kerBuf);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    gl.deleteBuffer(p.pStat);
+    gl.deleteBuffer(p.pKer);
+    this.statPending = null;
+    this.evalWakeStats(p.wakeRef);
+  }
+
+  /** The probe's statistics from the read-back buffers (statBuf, kerBuf). */
+  private evalWakeStats(wakeRef: number): void {
     const buf = this.statBuf, n = STAT_N * STAT_N;
     let s = 0, m = 0;
     for (let i = 0; i < n; i++) {
@@ -494,9 +548,7 @@ export class RingLayerPass implements RenderPass {
     (this.u.uRlWakeStat.value as Vector4).copy(this.wakeStat);
 
     // path statistics through the layer
-    this.kerFs.render(ctx.renderer, this.kerRT);
     const kb = this.kerBuf, NX = KER_X.length, W = KER_N * NX;
-    ctx.renderer.readRenderTargetPixels(this.kerRT, 0, 0, W, KER_N, kb);
     for (let i = 0; i < NX; i++) {
       let s0 = 0, n0 = 0, sb1 = 0, sb2 = 0, cb = 0, sg1 = 0, sg2 = 0, cg = 0, fb = Infinity, fg = Infinity;
       for (let y = 0; y < KER_N; y++) {
@@ -537,6 +589,7 @@ export class RingLayerPass implements RenderPass {
   }
 
   dispose(): void {
+    this.statPending = null;
     this.fs.dispose();
     this.lowFs.dispose();
     this.lowRT.dispose();

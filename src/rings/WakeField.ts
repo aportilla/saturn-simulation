@@ -34,7 +34,7 @@
 //    a locally linear phase + 2 Newton steps): the medium's density factor is that of the drawn particles (within
 //    20 % for 99.4 % (A set) / 97.4 % (B set) of the particles, area mean 0.998 / 0.997; procedural.py check-inverse,
 //    docs/ring-physics.md 10.8, 10.11).
-import { DataArrayTexture, DataTexture, FloatType, LinearFilter, RGBAFormat, RepeatWrapping, Vector2, Vector4 } from 'three';
+import { DataArrayTexture, FloatType, LinearFilter, RGBAFormat, RepeatWrapping, Vector2, Vector4 } from 'three';
 import { G } from '../core/constants';
 import type { RingFrame } from '../core/FrameState';
 import type { RingLocal } from './RingProfile';
@@ -135,10 +135,13 @@ export class WakeField {
   readonly DN = 64;
   /** set to override the zone-derived wake shape (testing / tuning) */
   shapeOverride: Partial<WakeShape> | null = null;
-  /** two layers (envelope fields A, B): (Re W, Im W, G_u, G_v) */
+  /**
+   * layers 0, 1 (envelope fields A, B): (Re W, Im W, G_u, G_v); layer 2: the asynchrony field (delta, d delta/du,
+   * d delta/dv, 0) of one DN x DN delta tile repeated (N / DN)^2 times -- sampled at the delta-tile coordinate / (N / DN),
+   * it is the same texels with the same filter weights as a DN x DN texture of its own, one sampler unit fewer in every
+   * program (the near-field draw is at the 16 units ANGLE/Metal allows)
+   */
   readonly texture: DataArrayTexture;
-  /** asynchrony field: (delta, d delta/du, d delta/dv, 0) over one delta tile */
-  readonly deltaTexture: DataTexture;
   /** tile size (m) */
   tile = 1000;
   /** local Toomre wavelength (m) */
@@ -159,7 +162,6 @@ export class WakeField {
 
   readonly uniforms = {
     uWakeTex: { value: null as DataArrayTexture | null },
-    uWakeDTex: { value: null as DataTexture | null },
     uWakeTile: { value: 1000 },
     // per generation (0 = older, 1 = younger): (shear S_g, offsetU, offsetV, texture layer)
     uWakeGen: { value: [new Vector4(), new Vector4()] },
@@ -175,12 +177,15 @@ export class WakeField {
     uWakeOn: { value: 0 },
     // hook (next work package): tau-weighted mean participation of the medium in the wakes (wakeDensityTau); 1 now
     uWakePartTau: { value: 1 },
+    // work the current cycle phase makes redundant (update(); exact: the results do not change): (1 = the asynchrony
+    // phase delta can change an envelope, generation 0 can be non-zero, generation 1 can be non-zero, 0)
+    uWakeOpt: { value: new Vector4(1, 1, 1, 0) },
   };
 
   constructor(seed = 12345) {
     this.seed = seed;
-    this.data = new Float32Array(this.N * this.N * 4 * 2);
-    const t = new DataArrayTexture(this.data, this.N, this.N, 2);
+    this.data = new Float32Array(this.N * this.N * 4 * 3);
+    const t = new DataArrayTexture(this.data, this.N, this.N, 3);
     t.format = RGBAFormat;
     t.type = FloatType;
     t.wrapS = RepeatWrapping;
@@ -190,15 +195,7 @@ export class WakeField {
     t.generateMipmaps = false;
     this.texture = t;
     this.ddata = new Float32Array(this.DN * this.DN * 4);
-    const d = new DataTexture(this.ddata, this.DN, this.DN, RGBAFormat, FloatType);
-    d.wrapS = RepeatWrapping;
-    d.wrapT = RepeatWrapping;
-    d.magFilter = LinearFilter;
-    d.minFilter = LinearFilter;
-    d.generateMipmaps = false;
-    this.deltaTexture = d;
     this.uniforms.uWakeTex.value = t;
-    this.uniforms.uWakeDTex.value = d;
     this.buildTexture(this.shape);
     this.buildDeltaTexture();
   }
@@ -354,7 +351,15 @@ export class WakeField {
       this.ddata[p * 4 + 2] = dd * g[p * 3 + 2];
       this.ddata[p * 4 + 3] = 0;
     }
-    this.deltaTexture.needsUpdate = true;
+    // layer 2 of the array: the delta tile repeated (N / DN)^2 times
+    const NN = this.N, L2 = 2 * NN * NN * 4;
+    for (let j = 0; j < NN; j++) {
+      for (let i = 0; i < NN; i++) {
+        const s = ((j % N) * N + (i % N)) * 4, o = L2 + (j * NN + i) * 4;
+        this.data[o] = this.ddata[s]; this.data[o + 1] = this.ddata[s + 1]; this.data[o + 2] = this.ddata[s + 2]; this.data[o + 3] = this.ddata[s + 3];
+      }
+    }
+    this.texture.needsUpdate = true;
   }
 
   /** Configure for the local ring patch at the frame anchor. */
@@ -400,6 +405,16 @@ export class WakeField {
     }
     this.uniforms.uWakeClock.value.set(phi, sh.asyncD, 2 * sh.envW, on ? this.strength : 0);
     this.uniforms.uWakeDelta.value.set(hashFloat(ny + rz, 3), hashFloat(ny + rz, 4), this.qShear * (tau - ny * P), this.dscale / this.tile);
+    // Plateau handover (smoothstep over 2 envW, wakes.glsl wakeEnvYoung): once phi - asyncD delta >= 2 envW for every
+    // delta in [0, 1] the young generation's envelope is exactly 1 and the old one's exactly 0 everywhere (55 % of each
+    // cycle with the A set, 60 % with B), and at phi = 0 the young one is exactly 0: then delta cannot change a result
+    // (its fetches are skipped) nor can the zero generation (skipped: its early-out would return the same). The margin
+    // keeps the float32 comparison in the shader on the same side.
+    let deltaOn = sh.asyncD > 0 ? 1 : 0, g0 = 1, g1 = 1;
+    if (2 * sh.envW > 0) {
+      if (phi - sh.asyncD >= 2 * sh.envW + 1e-5) { deltaOn = 0; g0 = 0; } else if (phi <= 0) { deltaOn = 0; g1 = 0; }
+    }
+    this.uniforms.uWakeOpt.value.set(deltaOn, g0, g1, 0);
     this._tau = tau;
   }
   private _tau = 0;
