@@ -14,7 +14,7 @@
 //   1. per active class: (re-base / init the state rows when needed), update pass -> R0 rows: camera-relative
 //      position + radius + "drawn" flag (LOD draw probability with a stable per-particle threshold,
 //      view-frustum and statistical occlusion culling)
-//  1b. contact resolution (NearContact.ts): the particles resolved on screen (3 -> 6 render px radius, not
+//  1b. contact resolution (NearContact.ts): the particles resolved on screen (4 -> 6 render px radius, not
 //      statistically occluded, near the view) are pushed apart where their analytic positions overlap (hash grid per
 //      size class, mass-weighted Jacobi iterations, displacements bounded by the overlaps), written back into R0
 //      before anything reads it; presence unchanged, drawn flags only set for particles moved into view
@@ -598,7 +598,7 @@ export class NearFieldPass implements RenderPass {
     this.lap('contact');
     if (!this.skip.update && !this.skip.contact) {
       this.contact.run({
-        renderer: r, frame: f, lod, profile: ctx.profile, wakes: ctx.wakes, r0RT: this.r0RT, texRows: this.texRows,
+        renderer: r, frame: f, lod, profile: ctx.profile, wakes: ctx.wakes, tauCam: u.uTauCam.value as number, r0RT: this.r0RT, texRows: this.texRows,
         active: this.classes.map((c) => c.active), quality: this.qualityU.value, layoutChanged: this.contactLayoutChanged,
       });
       this.contactLayoutChanged = false;

@@ -295,21 +295,27 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   resolution** pushes the visibly resolved particles out of each other's overlaps and writes their positions back
   into R0; (2) HistoPyramid compaction of R0 into the point / quad / caster lists; (3) the sun shadow map (shared
   as `ctx.nearShadow`); (4) the draw. Everything after 1b sees the same positions. The contract of 1b:
-  - *who*: present particles (drawn or not) weighted by smooth fades — resolved (3 → 6 render px radius: an overlap
-    is typically ~0.3 of the smaller radius deep, about a pixel at 3 px), not statistically occluded (slab
-    line-of-sight τ 4 → 5 with a conservative path τ, as the update pass's cull), near the view frustum (dilated by
-    two contact distances, the reach of a push; within R0's out-of-view coverage rb + mw), and not around the camera
-    (a body containing the camera is not drawn — the camera is a ghost — so it must not push its neighbours out of
-    an empty hollow; fading over d/ρ 1 → 1.15). A pair is corrected with the smaller weight, so every correction
-    fades in continuously.
+  - *who*: present particles (drawn or not) weighted by smooth fades — resolved (4 → 6 render px radius: an overlap
+    is typically ~0.3 of the smaller radius deep, about a pixel at 3–4 px), not statistically occluded (slab
+    line-of-sight τ 4 → 5 above the camera's local mid-plane, with a conservative path τ as the update pass's cull:
+    the lowest τ in range × `wakeMinDensity()` × 0.8, the floor read from the WakeField's `uWakeBounds.x`), near the
+    view frustum (dilated by two contact distances, the reach of a push; within R0's out-of-view coverage rb + mw),
+    and not around the camera (a body containing the camera is not drawn — the camera is a ghost — so it must not
+    push its neighbours out of an empty hollow; fading over d/ρ 1 → 1.15). A pair is corrected with the smaller
+    weight, so every correction fades in continuously.
   - *contact distance*: the sum of the drawn base shapes' radial extents along the centre line,
     ρ = a / √(nᵀM′n), M′ = R diag(1/shape²) Rᵀ (`nearShape` / `nearOrientation`: ellipsoids at high quality,
-    spheres otherwise); the high-quality relief (±~0.1 a) interlocks with the neighbour's.
+    spheres otherwise); the high-quality relief (±~0.1 a) interlocks with the neighbour's. **Shape mirror**: the
+    shapes come from `nearShape` / `nearOrientation` directly; only the largest base semi-axis / a, `SHAPE_EXT_HIGH`
+    (1.37, `NearContact.ts`), must follow when they change (grid cells, search reach; the test reads it back).
+    Fully 3-D: a mid-plane tilted by the vertical relief changes nothing (`test:contact` mimas53 / titan views).
   - *solver*: per round (3) a hash grid (one level per size class, 16-entry buckets built in one stencil-routed
-    point pass: deterministic, no atomics), an 8-neighbour list per particle (smallest normalized surface gaps),
-    then 4 Jacobi iterations with constraint averaging (12 in all): mass-weighted shares (∝ a³) within a size
-    class, the smaller particle yields entirely across classes; a small particle lying entirely inside a larger
-    one is hidden and left alone (ejecting it would cascade).
+    point pass: deterministic, no atomics; sized to the list each frame), an 8-neighbour list per particle (smallest
+    normalized surface gaps), then 8 Jacobi iterations with constraint averaging (24 in all, damped: ω = 0.7):
+    mass-weighted shares (∝ a³) within a size class, the smaller particle yields entirely across classes; a small
+    particle lying entirely inside a larger one is hidden and left alone (ejecting it would cascade).
+  - *idle*: nothing runs when the camera is farther from the layer than the largest particles are resolved at; with
+    an empty contact set only the list compaction runs, every 4th frame.
   - *bounds*: |x − x_analytic| ≤ 4 D_i (D_i = the particle's largest initial pair correction, raised by contacts
     that appear later only up to 0.5 a): no particle moves farther than overlaps require. Presence is never
     changed; drawn flags are kept, except that a present particle moved into the view frustum becomes drawn
