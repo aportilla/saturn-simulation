@@ -351,7 +351,7 @@ export class Pipeline {
           wD += Math.max(D, 0) / nb;
         }
         if (wD > 0) groups.push(wD, mPrev);
-      } else groups.push(1, 1);
+      } else groups.push(1, L.pack[3] > 0.5 ? L.packM(tauNear, 1) : 1);
       // the layer's two-sided tail fraction beyond +-z (units of H) over (weight, sigma) components
       const comp = this.slabComp;
       comp.length = 0;
