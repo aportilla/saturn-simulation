@@ -132,12 +132,18 @@ vec3 ringStructureModNoPropellers(float aL, float dth, float fp) { return vec3(r
 // nearUpdate.glsl), only their lighting column is the undisturbed one; #define RS_LIGHT_TEXTURE adds the texture at a
 // footprint >= RS_LIGHT_FP, whose finer octaves average out along any sun or view path through the layer), NONE (the
 // march's map cache: the march applies the modulation per step itself).
+// A program that only does lighting / occlusion lookups (the near field's draw, ...) defines RS_LIGHT_ONLY before the
+// chunks: the FULL branch is compiled out, so the modulation's code and its sampler (uRtNoise) are not part of the
+// program -- the near-field draw program is at the 16 texture units ANGLE/Metal allows (MAX_TEXTURE_IMAGE_UNITS). In
+// such a program ringStream / ringStreamRelief return the LIGHT modulation: don't use them there for medium tau.
 #define RS_MOD_FULL 0
 #define RS_MOD_LIGHT 1
 #define RS_MOD_NONE 2
 #define RS_LIGHT_FP 64.0
 vec3 rsModFor(int mm, float aL, float dth, float fp) {
+#ifndef RS_LIGHT_ONLY
   if (mm == RS_MOD_FULL) return ringStructureMod(aL, dth, fp);
+#endif
 #ifdef RS_LIGHT_TEXTURE
   if (mm == RS_MOD_LIGHT) return vec3(rsTauModTexture(aL, dth, max(fp, RS_LIGHT_FP)).x, 0.0, 1.0);
 #endif

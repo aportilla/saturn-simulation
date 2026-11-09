@@ -345,8 +345,11 @@ export class NearFieldPass implements RenderPass {
     });
     const listGlsl = NEAR_CLASSIFY_GLSL + NEAR_PYR_GLSL;
     // (the particles' shadow lookups use the relief-profiled caster outlines; the astronaut's the plain ellipses)
-    const vs = common + listGlsl + NEAR_SHADOW_PROFILE_GLSL + NEAR_SHADOW_LOOKUP_GLSL + nearDrawVert;
-    const fs = common + NEAR_SHADOW_PROFILE_GLSL + NEAR_SHADOW_LOOKUP_GLSL + nearDrawFrag;
+    // RS_LIGHT_ONLY: the draw only does lighting lookups (sv_ringStructure LIGHT modulation), so the modulation's code
+    // and sampler stay out of this program, which is at the 16 texture units ANGLE/Metal allows
+    const lightOnly = '#define RS_LIGHT_ONLY\n';
+    const vs = lightOnly + common + listGlsl + NEAR_SHADOW_PROFILE_GLSL + NEAR_SHADOW_LOOKUP_GLSL + nearDrawVert;
+    const fs = lightOnly + common + NEAR_SHADOW_PROFILE_GLSL + NEAR_SHADOW_LOOKUP_GLSL + nearDrawFrag;
     const drawMat = (quad: number) =>
       new RawShaderMaterial({
         glslVersion: GLSL3,
