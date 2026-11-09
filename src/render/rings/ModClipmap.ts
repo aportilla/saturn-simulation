@@ -7,7 +7,7 @@
 // Level k: MC_NR x MC_NS texels of dr_k x MC_ASPECT dr_k, dr_k = d0 2^k (d0 = 1 m), centred on the camera's Lagrangian
 // position (snapped to the level's texels, so texel centres are fixed in the ring frame), coverage +-MC_NR/2 dr_k;
 // levels are added until they cover the largest near-field particle box (RingLod.maxBox) or MC_LEVELS. Stacked
-// vertically in one RG32F atlas (LINEAR: bilinear lookups).
+// vertically in one RGBA32F atlas (LINEAR: bilinear lookups): (M, wake factor, tau0 x M for maxNear, -).
 //
 // Refresh (incremental, like the wake clipmap): a level is re-rendered when it is invalid, the ring frame was
 // re-anchored, the camera moved by > 1/16 of its coverage, or the pattern drifted by > 1/8 of an azimuthal texel since
@@ -21,11 +21,12 @@
 // MC_BLOCK x MC_BLOCK texels of every level, dilated by one texel (a bilinear lookup inside a block reaches one texel
 // beyond it), and reads it back asynchronously (pixel-pack buffer + fence). The CPU bounds M over a square around the
 // camera's Lagrangian position by the blocks overlapping it, in every level valid at the read-back -- the values the
-// near field's presence test actually uses (texture x propellers jointly, at each level's prefilter), so the particles
-// of a size class need to be generated only at tau_max x that local maximum (Pipeline.updateLocalRing), not at the
-// modulation's global bound (the texture's 3-sigma clamp: 1.43 in the B-ring core).
+// near field's presence test actually uses (texture x propellers jointly, at each level's prefilter) -- and likewise
+// tau0 x M jointly (a third channel: the largest tau0 over each texel's support x its M), so the particles of a size
+// class need to be generated only at that local maximum of their presence factor (Pipeline.updateLocalRing), not at
+// max tau0 x the modulation's global bound (the texture's 3-sigma clamp: 1.43 in the B-ring core).
 import {
-  ClampToEdgeWrapping, FloatType, LinearFilter, NearestFilter, RedFormat, RGFormat, Vector4, WebGLRenderTarget, type WebGLRenderer,
+  ClampToEdgeWrapping, FloatType, LinearFilter, NearestFilter, RGBAFormat, Vector4, WebGLRenderTarget, type WebGLRenderer,
 } from 'three';
 import type { FrameState } from '../../core/FrameState';
 import type { RingStructure } from '../../rings/RingStructure';
@@ -48,7 +49,7 @@ const MC_PROP_REACH = 4700;
 export const MC_BLOCK = 16;
 const MC_BR = MC_NR / MC_BLOCK, MC_BS = MC_NS / MC_BLOCK;
 
-// maximum of M over each block (+ a one-texel ring) of each level; one fragment per block
+// maxima of M and of P = tau0 x M over each block (+ a one-texel ring) of each level; one fragment per block
 const MAX_FRAG = /* glsl */ `
 precision highp float;
 precision highp int;
@@ -61,24 +62,38 @@ void main() {
   int y0 = level * ${MC_NS};
   ivec2 lo = ivec2(0, y0), hi = ivec2(${MC_NR - 1}, y0 + ${MC_NS - 1});
   ivec2 t0 = ivec2(b.x * ${MC_BLOCK}, y0 + (b.y - level * ${MC_BS}) * ${MC_BLOCK}) - 1;
-  float m = 0.0;
+  vec2 m = vec2(0.0);
   for (int dy = 0; dy < ${MC_BLOCK + 2}; dy++) {
-    for (int dx = 0; dx < ${MC_BLOCK + 2}; dx++) m = max(m, texelFetch(tMc, clamp(t0 + ivec2(dx, dy), lo, hi), 0).r);
+    for (int dx = 0; dx < ${MC_BLOCK + 2}; dx++) m = max(m, texelFetch(tMc, clamp(t0 + ivec2(dx, dy), lo, hi), 0).rb);
   }
-  outColor = vec4(m, 0.0, 0.0, 1.0);
+  outColor = vec4(m, 0.0, 1.0);
 }`;
 
 const FRAG = /* glsl */ `
 ${SV_HEADER_ALL}
 uniform vec4 uMcB;   // level being built: (centre aL, centre S, dr, first atlas row)
 layout(location = 0) out vec4 outColor;
+// the largest tau0 (level-0 profile at the Lagrangian radius, as the presence test reads it) over [aL - dr, aL + dr]:
+// the profile is piecewise linear, so at the interval's ends or at an interior node
+float mcTauMaxSupport(float aL, float dr) {
+  float m = max(ringSampleLagrangian(aL - dr, 0.0).tau, ringSampleLagrangian(aL + dr, 0.0).tau);
+  float i0 = uRsIdx0.y + (aL - dr) / uRingDr0, i1 = uRsIdx0.y + (aL + dr) / uRingDr0;
+  float n0 = ceil(i0);
+  for (int j = 0; j < 4; j++) {
+    float n = n0 + float(j);
+    if (n > i1) break;
+    m = max(m, ringSampleIdxPrecise(uRsIdx0.x, n, 0.0).tau);
+  }
+  return m;
+}
 void main() {
   float dr = uMcB.z;
   float aL = uMcB.x + (gl_FragCoord.x - 0.5 * ${MC_NR}.0) * dr;
   float S = uMcB.y + (gl_FragCoord.y - uMcB.w - 0.5 * ${MC_NS}.0) * dr * ${MC_ASPECT}.0;
-  // (M, -, wake factor) prefiltered at the level's radial texel
+  // (M, -, wake factor) prefiltered at the level's radial texel; P = the largest tau0 this texel's lookups can meet x M
+  // (the allocation bound's joint maximum, maxNear)
   vec3 m = ringStructureMod(aL, S / uRingR0, dr);
-  outColor = vec4(m.x, m.z, 0.0, 1.0);
+  outColor = vec4(m.x, m.z, mcTauMaxSupport(aL, dr) * m.x, 1.0);
 }`;
 
 interface LevelState {
@@ -117,19 +132,19 @@ export class ModClipmap {
   private maxFs: FullscreenPass;
   private maxDirty = false;
   private maxPending: { pbo: WebGLBuffer; fence: WebGLSync; st: LevelState[] } | null = null;
-  private readonly maxBuf = new Float32Array(MC_BR * MC_BS * MC_LEVELS);
+  private readonly maxBuf = new Float32Array(MC_BR * MC_BS * MC_LEVELS * 4);
   private maxState: LevelState[] | null = null;
   /** read-backs of the block maxima completed (tests) */
   maxVersion = 0;
 
   constructor(shared: Record<string, { value: any }>) {
     this.maxRT = new WebGLRenderTarget(MC_BR, MC_BS * MC_LEVELS, {
-      type: FloatType, format: RedFormat, minFilter: NearestFilter, magFilter: NearestFilter,
+      type: FloatType, format: RGBAFormat, minFilter: NearestFilter, magFilter: NearestFilter,
       depthBuffer: false, stencilBuffer: false, generateMipmaps: false,
     });
     this.rt = new WebGLRenderTarget(MC_NR, MC_NS * MC_LEVELS, {
       type: FloatType,
-      format: RGFormat,
+      format: RGBAFormat,
       minFilter: LinearFilter,
       magFilter: LinearFilter,
       wrapS: ClampToEdgeWrapping,
@@ -168,6 +183,9 @@ export class ModClipmap {
     if (key !== this.modelKey) {
       this.modelKey = key;
       for (const s of this.st) s.valid = false;
+      // (the last block maxima describe the old model; an in-flight read-back too)
+      this.maxState = null;
+      if (this.maxPending) this.maxPending.st.forEach((s) => { s.valid = false; });
     }
     const r0 = f.ring.r0, c = f.ring.camLocal;
     // the camera's Lagrangian position (radial offset of its streamline, arc at r0)
@@ -253,7 +271,7 @@ export class ModClipmap {
     renderer.setRenderTarget(this.maxRT);
     gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo);
     gl.bufferData(gl.PIXEL_PACK_BUFFER, this.maxBuf.byteLength, gl.STREAM_READ);
-    gl.readPixels(0, 0, MC_BR, MC_BS * MC_LEVELS, gl.RED, gl.FLOAT, 0);
+    gl.readPixels(0, 0, MC_BR, MC_BS * MC_LEVELS, gl.RGBA, gl.FLOAT, 0);
     gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
     renderer.setRenderTarget(null);
     const fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
@@ -278,13 +296,15 @@ export class ModClipmap {
   }
 
   /**
-   * Upper bound of the cached M (the values rsModCached returns: bilinear lookups and level blends never exceed the
-   * texels they combine) over the square |aL - aLc| <= hw, |S - sc| <= hw (Lagrangian polar offsets, m), from the last
-   * read-back of the block maxima; null when nothing usable was read back yet, the ring frame was re-anchored since,
-   * or no valid level covered the whole square then (points outside every level are evaluated directly: unbounded
-   * here).
+   * Upper bound over the square |aL - aLc| <= hw, |S - sc| <= hw (Lagrangian polar offsets, m) of the cached M (which
+   * = 0: the values rsModCached returns -- bilinear lookups and level blends never exceed the texels they combine) or
+   * of tau0 x M, the presence test's tau (which = 1: each texel holds the largest tau0 over its +-dr support x its M;
+   * at any point tau0 is at most every surrounding texel's support maximum and M at most the largest surrounding M, so
+   * the product is at most that texel's value), from the last read-back of the block maxima; null when nothing usable
+   * was read back yet, the ring frame was re-anchored since, or no valid level covered the whole square then (points
+   * outside every level are evaluated directly: unbounded here).
    */
-  maxNear(aLc: number, sc: number, hw: number, anchorId: number): number | null {
+  maxNear(aLc: number, sc: number, hw: number, anchorId: number, which: 0 | 1 = 0): number | null {
     const S = this.maxState;
     if (!S || !this.enabled) return null;
     let m = 0, covered = false;
@@ -303,7 +323,7 @@ export class ModClipmap {
       const j0 = Math.max(0, Math.floor((s0 - s.cs) / bs + MC_BS / 2)), j1 = Math.min(MC_BS - 1, Math.floor((s1 - s.cs) / bs + MC_BS / 2));
       for (let j = j0; j <= j1; j++) {
         const row = (k * MC_BS + j) * MC_BR;
-        for (let i = i0; i <= i1; i++) m = Math.max(m, this.maxBuf[row + i]);
+        for (let i = i0; i <= i1; i++) m = Math.max(m, this.maxBuf[(row + i) * 4 + which]);
       }
     }
     return covered && m > 0 ? m : null;

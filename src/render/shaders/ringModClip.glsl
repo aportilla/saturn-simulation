@@ -10,7 +10,7 @@
 //
 // Level k: MC_NR x MC_NS texels of dr_k x (MC_ASPECT dr_k) (radial x azimuthal: the texture's and the propellers'
 // structures are 5-10x longer along the orbit than across it), dr_k = d0 2^k, centred (snapped to its texels) on the
-// camera's Lagrangian position, coverage +-MC_NR / 2 dr_k both ways, stacked vertically in one RG32F atlas. Texel
+// camera's Lagrangian position, coverage +-MC_NR / 2 dr_k both ways, stacked vertically in one RGBA32F atlas. Texel
 // values: M and the wake factor prefiltered at the footprint fp = dr_k (rsTauModTexture / rsPropellersMod at that
 // footprint): identical to the point values while dr_k <= ~5 m (every texture octave resolved: the finest, 15.6 m,
 // fades only above fp = 5.2 m; the propellers' smallest lobes are >= 16 m wide), a mean-preserving smoothing of the
@@ -25,7 +25,7 @@
 #define SV_RING_MOD_CLIP
 
 #define MC_LEVELS 9
-uniform sampler2D uMcTex;          // RG32F atlas MC_NR x (MC_NS * MC_LEVELS): (M, wake factor); LINEAR, CLAMP
+uniform sampler2D uMcTex;          // RGBA32F atlas MC_NR x (MC_NS * MC_LEVELS): (M, wake factor, -, -); LINEAR, CLAMP
 uniform vec4 uMcLev[MC_LEVELS];    // per level: (centre aL [m], centre S [m], 1 / dr [1/m], usable 0 / 1)
 uniform vec4 uMcInfo;              // (levels in use, MC_NR, MC_NS, MC_ASPECT); x = 0: no cache
 

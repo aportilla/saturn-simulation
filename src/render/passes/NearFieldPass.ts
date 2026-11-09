@@ -68,7 +68,7 @@ import {
 
 const TEX_W = 2048;
 const TWO_PI = Math.PI * 2;
-/** levels of the ring layer's wake clipmap (WAKE_CLIP_MAX_LEVELS; NF_WC_LEVELS in nearUpdate.glsl) */
+/** levels of the ring layer's wake clipmap (WAKE_CLIP_MAX_LEVELS; NF_WC_LEVELS in nearOcclusion.glsl) */
 const NF_WC_LEVELS = 6;
 /** largest sprite radius (px) handled by the point pass (GL max point size is 511 here) */
 const PT_MAX_PX = 180;
@@ -193,7 +193,7 @@ export class NearFieldPass implements RenderPass {
   cullTau = 5;
   /**
    * where the emptiest-gap bound cannot decide, the cull integrates the actual self-gravity-wake density along the line
-   * of sight (the ring layer's wake clipmap, ctx.wakeClip; nearUpdate.glsl nfPathWake); false: the bound alone
+   * of sight (the ring layer's wake clipmap, ctx.wakeClip; nearOcclusion.glsl nearLosTau); false: the bound alone
    */
   cullPathWakes = true;
   /**
@@ -591,8 +591,8 @@ export class NearFieldPass implements RenderPass {
     // cam.x + st.da (st.da = a' - r = -xi_cam), and the optical depth at the camera is tau0(a') J
     const st = ctx.structure.cam;
     u.uTauCam.value = ctx.profile.tauAtKm((ring.r0 + cam.x + st.da) / 1000) * st.J;
-    // line-of-sight wake density for the cull: the ring layer's wake clipmap as rendered so far (its level states
-    // describe the texture's content until the ring layer refreshes levels later in this frame)
+    // the ring layer's wake clipmap as rendered so far (its level states describe the texture's content until the ring
+    // layer refreshes levels later in this frame): the cull's line-of-sight wake density, the particles' sun-path nodes
     const wc = ctx.wakeClip, ou = this.occlusionUniforms;
     const lam = ctx.wakes.lambda;
     const nWc = wc && (ctx.wakes.uniforms.uWakeOn.value as number) > 0.5 && Number.isFinite(lam) && lam > 0
@@ -606,8 +606,11 @@ export class NearFieldPass implements RenderPass {
       }
     }
     // node spacing along the line of sight: an eighth of the wake spacing (resolves the wake profile); the cull's path
-    // test on / off; the particles' sun path from the clipmap on / off (w)
-    ou.uNfWcInfo.value.set(wc ? wc.n : 1024, Math.max(Number.isFinite(lam) ? lam : 60, 20) / 8, this.cullEnabled && this.cullPathWakes ? 1 : 0, this.sunPathClip ? 1 : 0);
+    // test on / off -- off at |warp| > 200, where the clipmap (<= 2 levels re-rendered per frame, stale after 0.003 rad of
+    // orbital phase) lags the live pattern the particles follow: the conservative bound alone then; the particles' sun
+    // path from the clipmap on / off (w; the medium reads the same, lagging or not)
+    const pathOn = this.cullEnabled && this.cullPathWakes && Math.abs(f.timeWarp) <= 200;
+    ou.uNfWcInfo.value.set(wc ? wc.n : 1024, Math.max(Number.isFinite(lam) ? lam : 60, 20) / 8, pathOn ? 1 : 0, this.sunPathClip ? 1 : 0);
     this.fsMesh.material = this.updMat;
     for (const c of this.classes) {
       if (!c.active || this.skip.update) continue;

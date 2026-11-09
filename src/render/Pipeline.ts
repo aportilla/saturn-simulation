@@ -27,6 +27,8 @@ import { RingStructure } from '../rings/RingStructure';
 import { SharedUniforms } from './SharedUniforms';
 import { FullscreenPass } from './fullscreen';
 import { ModClipmap } from './rings/ModClipmap';
+import { registerShaderChunks } from './shaders/chunks';
+import { SKY_DISTANCE } from '../core/constants';
 
 /** margin on the modulation cache's maximum for the near-field allocation bound (the cache evolves between checks) */
 const MOD_BOUND_MARGIN = 1.02;
@@ -36,8 +38,6 @@ const MOD_BOUND_MARGIN = 1.02;
  * the texture's 3-sigma bound, the A ring's 20-30 %)
  */
 const BOUND_REFIT_DOWN = 0.9;
-import { registerShaderChunks } from './shaders/chunks';
-import { SKY_DISTANCE } from '../core/constants';
 
 export interface PipelineContext {
   renderer: WebGLRenderer;
@@ -242,22 +242,22 @@ export class Pipeline {
     // the camera's height above the local mid-plane (vertical relief; the frame stays in the SEF plane)
     const camZ = f.ring.camLocal.z - f.ring.zMid;
     // The particles are thinned by tau0 M / tauMax with M the 2-D modulation (sub-km texture, propellers): each class's
-    // tauMax covers the largest M in its box -- the cached M's maximum over the box where the modulation cache covers
-    // it (ModClipmap.maxNear: what the presence test actually uses), else the analytic bound (texture clamp x the
-    // propellers' lobes: RingStructure.maxTauModNear). Propellers drift through the co-orbiting boxes and the pattern
-    // evolves: the analytic propeller bounds are re-checked every 60 frames, the whole bound every 15 frames (re-fit when
-    // a class's need exceeds its tau_max, or is >= 10 % below it: BOUND_REFIT_DOWN).
+    // tauMax covers the largest tau0 M in its box -- where the modulation cache covers the box, the cache's joint maximum
+    // of tau0 x M there (ModClipmap.maxNear: what the presence test actually reads), else max tau0 x the analytic bound
+    // of M (texture clamp x the propellers' lobes: RingStructure.maxTauModNear). Propellers drift through the co-orbiting
+    // boxes and the pattern evolves: the analytic propeller bounds are re-checked every 60 frames, the whole bound every
+    // 15 frames (re-fit when a class's need exceeds its tau_max, or is >= 10 % below it: BOUND_REFIT_DOWN).
     const thCam = Math.atan2(f.camPos.y, f.camPos.x);
     const driftKm = c.structure.maxDisplacementNear(rKmE * 1000) / 1000;
     // the camera's Lagrangian polar position in the ring frame (the cache's coordinates: aL = a' - r0, S = r0 dth)
     const aLcam = rKm * 1000 - f.ring.r0;
     const sCam = f.ring.r0 * Math.atan2(f.ring.camLocal.y, f.ring.r0 + f.ring.camLocal.x);
-    const modBound = (hw: number): number => {
-      const h = hw + driftKm * 1000;
-      const m = c.modClip.maxNear(aLcam, sCam, h, f.ring.anchorId);
-      return m !== null ? m * MOD_BOUND_MARGIN : c.structure.maxTauModNear(rKm * 1000, h);
+    const tauMaxAt = (halfWidth: number): number => {
+      const h = halfWidth + driftKm * 1000;
+      const p = c.modClip.maxNear(aLcam, sCam, h, f.ring.anchorId, 1);
+      if (p !== null) return p * MOD_BOUND_MARGIN;
+      return c.profile.maxTauKm(rKm, halfWidth / 1000 + driftKm) * c.structure.maxTauModNear(rKm * 1000, h);
     };
-    const tauMaxAt = (halfWidth: number) => c.profile.maxTauKm(rKm, halfWidth / 1000 + driftKm) * modBound(halfWidth);
     let modKey = this.lastModKey;
     if (++this.modCheckFrame % 60 === 0 && c.lod.active) {
       c.structure.prepareNear(rKm * 1000, thCam);

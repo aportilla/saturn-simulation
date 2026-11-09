@@ -213,7 +213,7 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   `sv_ringStructure`; `src/render/rings/ModClipmap.ts`, `ctx.modClip`): (M, wake factor) = `ringStructureMod(aL, dth,
   fp).xz` on a camera-centred clipmap in Lagrangian polar coordinates (aL, S = r0 dth): levels of 512 × 128 texels of
   dr × 4 dr (the texture's and the propellers' structures are 5–10× longer along the orbit), dr = 1 m · 2^k, centred on
-  the camera's Lagrangian position, up to 9 levels (the largest particle box × 1.5 + 600 m), RG32F, bilinear; texels
+  the camera's Lagrangian position, up to 9 levels (the largest particle box × 1.5 + 600 m), RGBA32F, bilinear; texels
   prefiltered at fp = dr (identical to M at fp = 0 for dr ≤ 4 m — every texture octave resolved, the finest fades above
   5.2 m — a mean-preserving smoothing of sub-texel structure beyond); a point blends into the next level over the outer
   20 % of its level. Refreshed incrementally like the wake clipmap (anchor, model switches `texture.amp` /
@@ -405,13 +405,14 @@ include the chunks you need, in order: `sv_common`, `sv_saturn`, `sv_ringProfile
   which it falls below the handover band (with zoom headroom) from the lowest camera height served (dz above
   the slab; 0 normally), so nothing is simulated where it could not be drawn; radii within a class are sampled
   from n(a)·D(a)² (≤ 6 power-law pieces, box a power of a on each: ~1% over the exact D), boxes up to 60 km
-  (10 m boulders are ≥ 1 px out to ~20 km at 1080p), each class generated at the max τ over its own box (+ 500 m)
-  times the bound of the 2-D modulation there: the modulation cache's local maximum over the box (`ModClipmap.maxNear`
-  × 1.02: the values presence actually reads, texture × propellers jointly — 1.18–1.42 in the A ring, ~1.26 in the
-  B-ring core, depending on the box) where the cache covers it, else the analytic bound
-  (`RingStructure.maxTauModNear`: texture 1 + 0.70 A, i.e. 1.22 in the A ring and 1.43 in the B-ring core; a propeller's
-  lobe factor 1.27 × its wake bound only where a propeller's band crosses the box — `prepareNear` / `nearBoundKey`,
-  re-checked every 60 frames). `Pipeline.updateLocalRing` re-checks the bound every 15 frames: a class whose need exceeds
+  (10 m boulders are ≥ 1 px out to ~20 km at 1080p), each class generated at the largest presence factor τ0·M over its
+  own box (+ 500 m): where the modulation cache covers the box, its joint maximum of τ0 × M (`ModClipmap.maxNear(…, 1)`
+  × 1.02: each texel holds the largest τ0 over its bilinear support × its M, so the block maxima bound exactly what the
+  presence test reads, texture × propellers jointly; M's local maximum is 1.18–1.42 in the A ring and ~1.26 in the
+  B-ring core, depending on the box), else max τ0 × the analytic bound of M (`RingStructure.maxTauModNear`: texture
+  1 + 0.70 A, i.e. 1.22 in the A ring and 1.43 in the B-ring core; a propeller's lobe factor 1.27 × its wake bound only
+  where a propeller's band crosses the box — `prepareNear` / `nearBoundKey`, re-checked every 60 frames).
+  `Pipeline.updateLocalRing` re-checks the bound every 15 frames: a class whose need exceeds
   its τ_max re-fits, and one whose need fell ≥ 10 % below it (`BOUND_REFIT_DOWN`; `RingLod.reallocRequested`) — the
   first allocation after loading / re-anchoring uses the analytic bound until the cache's maxima are read back. Presence
   then accepts τ0 J M / bound.

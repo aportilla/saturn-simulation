@@ -100,7 +100,7 @@ run caught tiny negative radiances from the F-ring line profiles, since fixed).
    0.991 … 1.028 with presence read from the modulation cache, Nov 2026).
 2. **HUD count line** (`near.count`) starts with `complete` at those places; above the dense B ring
    (`--heights 100,1000,5000` m) it states the status explicitly — `complete…` or `DEFICIT: ~x% …` (measured: a
-   2.9 % deficit at 100 m with the 12M-slot cap binding, boxes clipped at 573 m — 0.3 % before the sub-km texture,
+   2.9 % deficit at 100 m with the 12M-slot cap binding, boxes clipped at 583 m — 0.3 % before the sub-km texture,
    9.2 % with its global allocation bound 1.43 in the B-ring core, 2.9 % with the modulation cache's local maximum
    there, ~1.26 — complete at 1 and 5 km).
 3. **radius sampler**: the per-class radius/box sampler (`RingLod.pieceP/pieceB`, mirrored from `nearRadiusBox`
@@ -371,6 +371,7 @@ the GLSL through ring-layer and near-field read-backs; t = 2026-11-08T12:00Z.
 | presence | near-field particles ≥ 1 px of the busiest class, 400 m above a belt propeller's outer partial gap, grouped by the CPU M at each particle's drawn position: drawn / expected (counts.mjs Monte Carlo of n_k τ0 M with frustum, layer, radii; 4M samples) — gap (M < 0.75), flank (0.75–0.95), undisturbed / enhanced (≥ 0.95) | 1 ± max(0.08, 4/√n) | 1.002 (3,039) / 0.975 (3,927) / 1.026 (9,970) — presence is decided at the guiding centre, the classification uses the drawn (wake- and epicycle-displaced) position, which moves a few % across the group boundaries |
 | | near-field cost gate (`uRpNearMask`): present particles (count and position checksum) with the CPU class mask vs the enumeration forced for every class, in the presence view and at `a-ring-30m` | identical | identical (inside a belt no class is gated: the gate saves work outside the belts; since Nov 2026 presence reads the modulation cache, the gate only matters where no cache level covers a particle) |
 | cache | the modulation cache presence reads (`ModClipmap`, `sv_ringModClip`) at `propeller-belt` and `a-ring-1km`: max / rms \|M cache − M CPU\| at texel centres, each level at its prefilter fp = texel; levels with texels ≤ 4 m vs fp = 0 | ≤ 4e-3 / ≤ 1e-3; ≤ 4e-3 | ≤ 6.6e-4 / ≤ 2.0e-4 (float32); ≤ 2.2e-3 (coarser levels vs fp = 0: rms 0.5 % at 8 m … 4 % at 128 m — the prefilter) |
+| | the joint channel the allocation bound reads (largest τ0 over each texel's ±dr support × M) ≥ τ0 × M at the texel centre (CPU profile), every sampled texel | all | all |
 | | drawn particles whose presence differs between the cache and the direct evaluation (same frame and particles) | ≤ 2 % | 0.99 % / 0.83 % (distant particles on prefiltered coarse levels; 0.04 % in b-ring-inside, all on ≤ 2 m levels); switched with `modClip.useInShaders` (`enabled = false` also withdraws the allocation bound: the near field re-fits) |
 | bodies | presets `propeller-bleriot`, `propeller-belt`: moonlets drawn (pass stats); opaque distance at the projected centre of the largest-looking body in view − its distance, in units of R | ≥ 1; −1.4 … 0.1 | 1 / 113 drawn; −0.93 / −0.89 |
 | all | console / GL errors, passes ok, NaN / negative pixels (structure views, presets) | none | none |
