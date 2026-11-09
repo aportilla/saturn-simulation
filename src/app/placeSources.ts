@@ -15,13 +15,16 @@ export const PLACE_SOURCES: Record<string, string[]> = {
   'a-ring-30m': ['becker2016', 'harbison2013', 'zebker1985', 'colwell2006', 'hapke1984', 'poulet2002', 'dones1993'],
   'a-ring-1km': ['salo1992', 'colwell2006', 'hedman2007b', 'french2007', 'salo2004', 'jerousek2016', 'rein2012'],
   'b-ring-inside': ['hedmannicholson2016', 'colwell2007', 'colwell2010', 'couvis8001', 'marouf2008', 'cuzzi2009', 'robbins2010', 'nicholsonhedman2010'],
-  'c-ring-inside': ['jerousek2020', 'harbison2013', 'hedmannicholson2014', 'afigbo2025', 'nicholson2014b', 'baillie2011', 'cooke1991'],
+  'c-ring-inside': ['jerousek2020', 'harbison2013', 'hedmannicholson2014', 'afigbo2025', 'nicholson2014b', 'baillie2011', 'hedman2011', 'cooke1991'],
   'cassini-division': ['jerousek2020', 'french2016', 'tiscareno2007', 'tiscareno2013', 'nicholson2014a', 'spitale2010', 'hedman2013'],
   shadow: ['archinal2018', 'park2021', 'altobelli2014', 'morishima2010', 'karkoschka1994', 'dones1993'],
   'under-rings': ['salo2004', 'dones1993', 'french2007', 'colwell2010', 'corss8001', 'couvis8001'],
+  'bending-wave': ['shu1983', 'sega2024', 'koh2022', 'nicholson2024', 'lissauer1985', 'pia11676', 'jplHorizons'],
   // ---------------------------------------------------------------- gaps and shepherds
   'encke-gap': ['showalter1986', 'cuzzi1985', 'henon1986', 'porco2007', 'weiss2009', 'thomas2018shapes', 'buratti2019', 'charnoz2007'],
-  'keeler-gap': ['weiss2009', 'tajeddine2017', 'henon1986', 'cuzzi1985', 'porco2007', 'thomas2018shapes', 'buratti2019'],
+  'keeler-gap': ['weiss2009', 'pia11656', 'tajeddine2017', 'henon1986', 'cuzzi1985', 'porco2007', 'thomas2018shapes', 'buratti2019'],
+  'propeller-bleriot': ['tiscareno2010', 'seiss2005', 'sremcevic2007', 'sremcevic2002', 'hoffmann2015', 'hoffmann2013', 'porco2007', 'spahn2000'],
+  'propeller-belt': ['tiscareno2008', 'tiscareno2006', 'sremcevic2007', 'seiss2005', 'salo1995', 'pia07792', 'spahn2000'],
   'f-ring': ['murray2005', 'albers2012', 'bosh2002', 'porco2007', 'thomas2013', 'thomas2018shapes'],
   // ---------------------------------------------------------------- moons
   enceladus: ['porco2006', 'verbiscer2007', 'thomas2016', 'hedman2012', 'bland2018', 'usgsEnceladus'],
@@ -99,14 +102,15 @@ export function contextSources(o: { moon?: string | null; rKm: number; zM: numbe
 }
 
 /**
- * Planned places and features (not in the app yet). Listed so the references stay in the bibliography and are
- * ready when the place lands: move a list to PLACE_SOURCES under the new preset id. Not shown in the app.
+ * Features without a place of their own (planned, or rendered but not yet a preset). Listed so the references stay in
+ * the bibliography and are ready when the place lands: move a list to PLACE_SOURCES under the new preset id. Not
+ * shown in the app.
  */
 export const PLANNED_SOURCES: Record<string, string[]> = {
-  'giant-propellers': ['tiscareno2010', 'tiscareno2008', 'seiss2005', 'spahn2000'],
-  'belt-propellers': ['tiscareno2006', 'sremcevic2007', 'tiscareno2008', 'seiss2005', 'spahn2000'],
-  'bending-waves': ['shu1983', 'rosen1988', 'nicholsonhedman2016', 'lissauer1985', 'tiscareno2013'],
-  'c-ring-corrugation': ['hedman2011', 'french2025', 'nicholsonhedman2016'],
+  // rendered since the relief work (no place yet): the Titan −1:0 wave and the 1983 corrugation of the C / D rings
+  'titan-bending-wave': ['nicholsonhedman2016', 'rosen1988', 'koh2022', 'shu1983', 'french2025'],
+  'c-ring-corrugation': ['hedman2011', 'hedman2015', 'french2025', 'hedman2007a'],
+  'b-ring-edge-region-a': ['spitale2010', 'pia11668', 'nicholson2014a'],
   'ring-grazing-textures': ['tiscareno2019', 'buratti2019'],
   'ring-moon-flybys': ['buratti2019', 'thomas2018shapes', 'charnoz2007'],
   'nbody-wakes': ['salo1992', 'salo2004', 'wisdom1988', 'rein2012', 'reintremaine2011', 'robbins2010', 'bridges1984'],

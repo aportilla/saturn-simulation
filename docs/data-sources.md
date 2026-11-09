@@ -71,7 +71,7 @@ Sources:
   edge waves (Weiss et al. 2009, 8.4×10¹³ kg). "(est.)" = volume × assumed density (500 kg/m³; Methone 310 kg/m³ from its
   equilibrium shape, Thomas et al. 2013; irregulars 1500 kg/m³).
 * **p_V** (visual geometric albedo, `MoonState.albedo`): Verbiscer et al. 2007 (*Science* 315:815) for Mimas–Rhea and
-  the co-orbital/Lagrangian moons; ring moons Verbiscer 2007 / Buratti et al. 2019; Titan 0.22, Hyperion 0.3, Phoebe
+  the co-orbital/Lagrangian moons; ring moons Verbiscer et al. 2007 / Buratti et al. 2019; Titan 0.22, Hyperion 0.3, Phoebe
   0.081 (JPL SSD/Horizons); the tiny moons and irregulars are assumptions (0.5 / 0.06). **Iapetus 0.31** is the
   area-weighted mean normal albedo of its calibrated texture (dark leading side 0.04, bright trailing side 0.55), so that
   `albedo × L/meanLinear` reproduces both hemispheres.

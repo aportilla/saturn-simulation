@@ -80,11 +80,12 @@ const TITAN = { id: 606, n: (22.576976 * DEG) / DAY, pidot: (0.0014 * DEG) / DAY
 export const BENDING_WAVES: BendingWaveDef[] = [
   {
     // SCL83 linear theory with Sega et al. 2024 (Icarus 413, 115987; UVIS): sigma = 36.7 g/cm^2, nu = 576 cm^2/s, A_V =
-    // 472 m / sqrt(sigma_100) = 779 m -> peak 0.9 km, slope 17.5 deg. VIMS (Hedman, Sega et al., DPS 2022 / 2024):
-    // amplitude peaks at ~400-450 m (250 m at B_eff < 25 deg, likely an artefact), slopes ~10 deg: calibrated to 450 m.
+    // 472 m / sqrt(sigma_100) = 779 m -> peak 0.9 km, slope 17.5 deg. VIMS (Koh et al., DPS 2022; Nicholson et al., DDA
+    // 2024): amplitude peaks at ~400-450 m (250 m at B_eff < 25 deg, likely an artefact), slopes ~10 deg: calibrated to
+    // 450 m.
     id: 'mimas53', name: 'Mimas 5:3 bending wave', moonId: MIMAS.id, kind: 'ivr', m: 4, n: MIMAS.n, pidot: MIMAS.pidot, Omdot: MIMAS.Omdot,
     rGuess: 131_900e3, sigma: 367, nuVisc: 0.0576, forcing: { gm: MIMAS.gm, a: MIMAS.a, inc: MIMAS.inc }, calib: { peak: 450 },
-    source: 'SCL83; Sega et al. 2024 (sigma, nu); VIMS amplitude (DPS 2022/2024)',
+    source: 'SCL83; Sega et al. 2024 (sigma, nu); VIMS amplitude (Koh et al. 2022, Nicholson et al. 2024)',
   },
   {
     // Lissauer 1985 (via Hedman & Nicholson 2016): sigma 54 g/cm^2 (= the profile's B5 sigma). No measured amplitude:
@@ -96,12 +97,12 @@ export const BENDING_WAVES: BendingWaveDef[] = [
   {
     // Nicholson & Hedman 2016 (Icarus 279, 78): IVR at 77,525.5 km (J2..J6 alone put it 33 km inward: the nodal rate
     // is sensitive to J8..J12), lambda = 5 km at 25 km -> sigma0 = 0.6 g/cm^2 (their eq. 14), 5-12 crests over
-    // 77,535-77,575 km. Sega & Stewart (DPS 2022): local slopes up to ~45 deg, amplitudes 0.5-1.5 km at 15-45 km
+    // 77,535-77,575 km. Koh et al. (DPS 2022): local slopes up to ~45 deg, amplitudes 0.5-1.5 km at 15-45 km
     // (a strongly nonlinear wave; linear A_V = 334 m / sqrt(sigma0) = 431 m): calibrated to a 45 deg maximum slope.
     // Viscosity: 1.6 cm^2/s (French et al. 2025, inner C ring at 75,500 km).
     id: 'titan10', name: 'Titan -1:0 nodal bending wave', moonId: TITAN.id, kind: 'nodal', m: 1, n: TITAN.n, pidot: TITAN.pidot, Omdot: TITAN.Omdot,
     rV: 77_525.5e3, rGuess: 77_520e3, sigma: 6, nuVisc: 1.6e-4, calib: { maxSlope: 45 * DEG },
-    source: 'Nicholson & Hedman 2016 (location, sigma); Sega & Stewart DPS 2022 (slopes); French et al. 2025 (nu)',
+    source: 'Nicholson & Hedman 2016 (location, sigma); Koh et al. 2022 (slopes); French et al. 2025 (nu)',
   },
 ];
 

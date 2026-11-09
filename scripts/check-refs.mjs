@@ -9,11 +9,12 @@
 //  1. references.ts is well formed: unique ids, known type and topics, authors, year, title, venue, usedFor, DOI and
 //     arXiv syntax, a verification source on every entry, a note on every unverified one, a licence on data
 //     products and software.
-//  2. Every author–year citation in README.md, docs/ring-physics.md and docs/data-sources.md resolves to an entry:
-//     inline forms "Surname 2010", "Surname & Other (2010)", "A, B & C 2009", "P. C. Thomas, J. Joseph & T. Ansty
-//     (2018)", "Surname et al. 2007, 2013", "H&N 2016", and the reference list of ring-physics.md ("Surname, I.,
-//     Other, I. 2010, …"). Ambiguous citations ("Hedman et al. 2007" with 2007a/b/c) and loose ones ("Verbiscer
-//     2007" for Verbiscer et al. 2007) are listed as notes; they don't fail.
+//  2. Every author–year citation in README.md, docs/ring-physics.md, docs/data-sources.md and docs/ARCHITECTURE.md
+//     resolves to an entry: inline forms "Surname 2010", "Surname & Other (2010)", "A, B & C 2009", "P. C. Thomas,
+//     J. Joseph & T. Ansty (2018)", "Surname et al. 2007, 2013", "Surname et al., DPS 2022", "H&N 2016", and the
+//     reference lists of ring-physics.md ("Surname, I., Other, I. 2010, …", "…, DPS 2022 / 2024"; a leading bold
+//     label is skipped). Ambiguous citations ("Hedman et al. 2007" with 2007a/b/c) and loose ones ("Verbiscer 2007"
+//     for Verbiscer et al. 2007) are listed as notes; they don't fail.
 //  3. Every DOI, arXiv id, PDS volume id (CORSS_8001 …) and Photojournal id (PIA…) in those docs belongs to an entry
 //     (IGNORE_IDS lists the deliberate exceptions, with the reason).
 //  4. Every entry is cited somewhere: in those docs, in src/ (references.ts and placeSources.ts excluded; author–year
@@ -25,7 +26,8 @@
 // --online (network, ~2 min) re-checks every entry against the registries: DOIs via Crossref (DataCite for data
 // DOIs): first author, year (±1: print vs online edition), title (every word of the registry title in ours, or
 // ≥ 70 % overlap — registries often hold only the main title), volume, first page / article number; arXiv ids via
-// the arXiv API (title); landing pages (url) must answer HTTP 2xx. --only restricts it to some ids.
+// the arXiv API (title); landing pages (url) must answer HTTP 2xx (BOT_BLOCKED hosts, which refuse scripted requests,
+// are noted instead). --only restricts it to some ids.
 //
 // Writes <out>/results.json (default <os tmp>/space-viz-test/refs-<stamp>/). Documented in scripts/test/README.md.
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -42,7 +44,7 @@ const out = outputDir('refs', args.str('out'));
 const rep = new Report('check-refs', out);
 const verbose = args.flag('verbose');
 
-const DOCS = ['README.md', 'docs/ring-physics.md', 'docs/data-sources.md'];
+const DOCS = ['README.md', 'docs/ring-physics.md', 'docs/data-sources.md', 'docs/ARCHITECTURE.md'];
 const REF_FILE = 'src/app/references.ts';
 const PLACE_FILE = 'src/app/placeSources.ts';
 const PRESET_FILE = 'src/app/presets.ts';
@@ -60,7 +62,11 @@ const STOP = new Set(('January February March April May June July August Septemb
   'Saturn Titan Mimas Enceladus Tethys Dione Rhea Iapetus Hyperion Phoebe Pan Daphnis Atlas Prometheus Pandora Janus ' +
   'Epimetheus Aegaeon Methone Anthe Pallene Calypso Telesto Polydeuces Helene Cassini Voyager Huygens Hubble Horizons ' +
   'Earth Sun Equinox Solstice Python Node Chrome Mission Release Edition Outside Inside Between Over Under Through ' +
-  'Around Near Above Below Within Beyond Prior Every Each Year Years Epoch Data').split(/\s+/));
+  'Around Near Above Below Within Beyond Prior Every Each Year Years Epoch Data The A An This That These Those Its ' +
+  'Their Our For With To Of And Or But If When While Where Which What How All Both Some Many Most No Not Only Also ' +
+  'Then Here There Today Now Until Event Impact').split(/\s+/));
+/** hosts that refuse scripted requests (bot protection): --online notes them instead of failing */
+const BOT_BLOCKED = ['baas.aas.org', 'ui.adsabs.harvard.edu'];
 
 // ------------------------------------------------------------------------------------------------ load
 const read = (p) => readFileSync(join(REPO, p), 'utf8');
@@ -87,9 +93,11 @@ const INI = `(?:${UP}\\.(?:-${UP}\\.)?\\s?)+`;
 const AUTH = `(?:${INI})?${SUR}`;
 const YEAR = '(?:19|20)\\d\\d[a-c]?(?![\\d\\-])';
 const YEARS = `${YEAR}(?:\\s*[,/]\\s*${YEAR})*`;
+/** a meeting / journal acronym between the authors and the year ("Koh et al., DPS 2022") */
+const VENUE = '(?:[A-Z]{2,6}\\s+)?';
 const RX = {
-  etal: new RegExp(`(${AUTH})\\s+et\\s+al\\.?,?\\s*\\(?(${YEARS})`, 'gu'),
-  list: new RegExp(`(${AUTH}(?:,\\s*${AUTH})*),?\\s*(?:&|\\band\\b)\\s*(${AUTH}),?\\s*\\(?(${YEARS})`, 'gu'),
+  etal: new RegExp(`(${AUTH})\\s+et\\s+al\\.?,?\\s*\\(?${VENUE}(${YEARS})`, 'gu'),
+  list: new RegExp(`(${AUTH}(?:,\\s*${AUTH})*),?\\s*(?:&|\\band\\b)\\s*(${AUTH}),?\\s*\\(?${VENUE}(${YEARS})`, 'gu'),
   abbr: new RegExp(`(?<!\\p{L})(${UP})&(${UP})\\s*\\(?(${YEAR})`, 'gu'),
   single: new RegExp(`(?<![\\p{L}.])(${AUTH})\\s*\\(?(${YEARS})`, 'gu'),
 };
@@ -144,9 +152,10 @@ function extractReferenceList(text) {
     pos = at + para.length;
     if (!para.includes(' · ')) continue;
     let k = at;
-    for (const raw of para.replace(/\n/g, ' ').split(' · ')) {
+    // a leading bold label ("**§13 (vertical relief):** Shu, F. H., …") is not part of the first item
+    for (const raw of para.replace(/\n/g, ' ').replace(/^\s*\*\*[^*]+\*\*\s*/, '').split(' · ')) {
       const item = raw.trim();
-      const ym = new RegExp(`(?:^|\\s)(${YEAR})(?=[,\\s(]|$)`, 'u').exec(item);
+      const ym = new RegExp(`(?:^|\\s)(${YEARS})(?=[,\\s(]|$)`, 'u').exec(item);
       const idx = text.indexOf(item.slice(0, 20).split(' ')[0], k);
       k = Math.max(k, idx);
       if (!ym) {
@@ -158,6 +167,7 @@ function extractReferenceList(text) {
       let etAl = false;
       for (const tk of toks) {
         if (/^et al\.?$/.test(tk)) etAl = true;
+        else if (/^[A-Z]{2,6}$/.test(tk)) continue; // a meeting / journal acronym before the year ("…, DPS 2022")
         else if (!new RegExp(`^${INI}$`, 'u').test(tk)) surnames.push(norm(tk));
       }
       items.push({ surnames, etAl, years: splitYears(ym[1]), text: item.slice(0, 90), idx, list: true });
@@ -463,7 +473,9 @@ async function online(only) {
     }
     if (r.url) {
       const u = await get(r.url, { headers: { 'User-Agent': 'Mozilla/5.0 (space-viz check-refs)' } });
-      if (!u.ok) issues.push(`url HTTP ${u.status}`);
+      const blocked = BOT_BLOCKED.includes(new URL(r.url).hostname) && [401, 403, 429].includes(u.status);
+      if (blocked) notes.push(`url not checked (${new URL(r.url).hostname} refuses scripted requests: HTTP ${u.status})`);
+      else if (!u.ok) issues.push(`url HTTP ${u.status}`);
       else await u.arrayBuffer?.().catch(() => {});
       await sleep(150);
     }

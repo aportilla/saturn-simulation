@@ -708,7 +708,7 @@ Toomre-stable dispersion. The τ deficit is largest here (55–62 %, the weakest
 **Decision (Nov 2026): weak wakes with the zone's sizes.** The wake signal of the outer A ring is observed: the azimuthal
 brightness asymmetry persists beyond the Encke gap and weakens outward (Dones et al. 1993; French et al. 2007), and
 occultations find wakes there, weaker and less coherent than in the mid A ring (Colwell et al. 2006; Hedman et al.
-2007). The occultation size data constrain a_min (Becker et al. 2016) but give no smaller a_max than the 5–10 m of the
+2007b). The occultation size data constrain a_min (Becker et al. 2016) but give no smaller a_max than the 5–10 m of the
 A ring (§3), so a_max stays 7 m (particle counts unchanged). The wake strength stays the zone value 0.6 × the λ/a_max
 test: 0.36–0.39 inside 135,000 km, falling to ~0.2 at the outer edge (λ ∝ Σr³ shrinks outward). That is the level
 of the weak wakes of the a_max = 3 m run: synthetic runs with its particles at strength 0.15 / 0.3 / 0.45 give density
@@ -1228,14 +1228,14 @@ exp(−(x/x_D)³), x_D³ = 6πGΣW⁴ / (ν_visc μ) (the damping form of SCL83)
 
 * Mimas 5:3: Σ and ν from Sega et al. 2024 (UVIS); linear theory gives a 0.9 km peak and 17.5° slopes, VIMS
   occultations show ~400–450 m peaks (~250 m at low effective elevations, likely an artefact) and ~10° slopes
-  (Hedman, Sega et al., DPS 2022 / 2024): the profile is scaled to a 450 m peak (one factor, the shape stays linear
-  theory; the resulting maximum slope is 8.5°).
+  (Koh et al., DPS 2022; Nicholson et al., DDA 2024): the profile is scaled to a 450 m peak (one factor, the shape
+  stays linear theory; the resulting maximum slope is 8.5°).
 * Mimas 4:2: Σ from Lissauer 1985 (the profile's B5 value); no amplitude measurement — pure linear theory (uncertain
   by ~2×, as the 5:3 comparison shows).
 * Titan −1:0: the nodal resonance θ + λ' − ϖ' − Ω' (pattern speed −n' + ϖ̇' + Ω̇' < 0) makes it propagate OUTWARD as a
   leading spiral (Nicholson & Hedman 2016, whose r_V = 77,525.5 km is used: J2–J6 alone put it 33 km inward; Σ from
   their λ = 5 km at 25 km; first analysed in Voyager data by Rosen & Lissauer 1988). The wave is strongly nonlinear —
-  slopes up to ~45° and 0.5–1.5 km amplitudes at 15–45 km (Sega & Stewart, DPS 2022) — so the linear profile
+  slopes up to ~45° and 0.5–1.5 km amplitudes at 15–45 km (Koh et al., DPS 2022) — so the linear profile
   (A_V = 431 m) is scaled to a 45° maximum slope (|z| 1.16 / 0.92 / 0.68 / 0.24 km at 10 / 20 / 30 / 45 km);
   ν = 1.6 cm²/s (French et al. 2025).
 * The waves keep the profile's τ (the occultation profile already contains their τ signature; its de-projection
@@ -1300,10 +1300,12 @@ reference is used for; `npm run check:refs` fails when a citation here has no en
 nowhere). Add new references to both.
 
 **§13 (vertical relief):** Shu, F. H., Cuzzi, J. N., Lissauer, J. J. 1983, Icarus 53, 185 (SCL83, bending waves) ·
-Sega, D. D., et al. 2024, Icarus 413, 115987 (Mimas 5:3 Σ, ν) · Hedman, M. M., Sega, D. D., et al., DPS 2022 / 2024
-abstracts (VIMS bending-wave amplitudes) · Lissauer, J. J. 1985 (Mimas 4:2 Σ, via Hedman & Nicholson 2016) ·
+Sega, D. D., et al. 2024, Icarus 413, 115987 (Mimas 5:3 Σ, ν) · Koh, Z.-W., Nicholson, P. D., Hedman, M. M., French,
+R. G. 2022, BAAS 54(8), 301.07 (DPS 54 abstract: VIMS / RSS bending-wave amplitudes and slopes, Mimas 5:3 and Titan)
+· Nicholson, P. D., Koh, Z.-W., French, R. G., Hedman, M. M. 2024, BAAS 56(6), 303.07 (DDA 55 abstract: Mimas 5:3
+amplitude vs opening angle) · Lissauer, J. J. 1985 (Mimas 4:2 Σ, via Hedman & Nicholson 2016) ·
 Nicholson, P. D., Hedman, M. M. 2016, Icarus 279, 78 (Titan −1:0) · Rosen, P. A., Lissauer, J. J. 1988, Science 241,
-690 · Sega, D. D., Stewart, G. R., DPS 2022 abstract (Titan wave slopes) · Hedman, M. M., et al. 2011, Science 332,
+690 · Hedman, M. M., et al. 2011, Science 332,
 708 (corrugated C ring) · Hedman, M. M., et al. 2015, Icarus 248, 137 · French, R. G., et al. 2025, Icarus (C-ring
 ripples, impact epoch) · Spitale, J. N., Porco, C. C. 2010, AJ 140, 1747 (region A, S/2009 S1) · Weiss, J. W.,
 Porco, C. C., Tiscareno, M. S. 2009, AJ 138, 272 (Daphnis' edge waves) · NASA/JPL PIA11655, PIA11656, PIA11668,
